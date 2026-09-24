@@ -1,11 +1,9 @@
 import CourseCharacter from "./CourseCharacter";
 import CourseSection from "./CourseSection";
 import RaceSources from "./RaceSources";
-import { raceRegistry } from "./raceRegistry";
+import { homepageRaceRecord, raceRegistry } from "./raceRegistry";
 import RaceSearch from "./RaceSearch";
 import CourseAnalysis from "./CourseAnalysis";
-
-const currentRaceRecord = raceRegistry[0];
 
 export default function Home() {
   return (
@@ -187,15 +185,15 @@ export default function Home() {
           </div>
 
           {/* COURSE VISUAL */}
-          <CourseSection raceRecord={currentRaceRecord} />
-          <CourseCharacter data={currentRaceRecord.intelligence.courseCharacter} />
-          <RaceSources sources={currentRaceRecord.sources} />
+          <CourseSection raceRecord={homepageRaceRecord} />
+          <CourseCharacter data={homepageRaceRecord.intelligence.courseCharacter} />
+          <RaceSources sources={homepageRaceRecord.sources} />
   
         </div>
       </section>
 
 
-      <CourseAnalysis analysis={currentRaceRecord.courseAnalysis} />
+      <CourseAnalysis analysis={homepageRaceRecord.courseAnalysis} />
 
       {/* FOOTER */}
       <footer className="border-t border-white/10 bg-[#17211c] px-6 py-10 text-white lg:px-10">

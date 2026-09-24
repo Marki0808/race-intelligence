@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { istria110kRaceRecord } from "./istria110kData.ts";
+import { homepageRaceRecord, raceRegistry } from "./raceRegistry.ts";
 import { createRaceResolver, getRaceRoute } from "./raceResolver.ts";
 
-const resolveRace = createRaceResolver([istria110kRaceRecord]);
+const istria110kRaceRecord = homepageRaceRecord;
+const resolveRace = createRaceResolver(raceRegistry);
+
+test("registry contains only the currently available race record", () => {
+  assert.equal(raceRegistry.length, 1);
+  assert.equal(raceRegistry[0], istria110kRaceRecord);
+});
 
 test("resolves the Istria 110K race name", () => {
   assert.deepEqual(resolveRace("Istria 110K"), {
