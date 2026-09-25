@@ -25,7 +25,7 @@ export type RaceIntelligenceData = {
 export type RaceSourceData = {
   title: string;
   url: string;
-  type: "official" | "gpx" | "previous-edition" | "estimated";
+  type: "official" | "gpx" | "previous-edition" | "estimated" | "unknown";
 };
 export type RaceEditionData = {
   year: number;

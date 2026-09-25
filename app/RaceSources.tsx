@@ -5,6 +5,7 @@ const provenanceLabels: Record<RaceSourceData["type"], string> = {
   gpx: "GPX",
   "previous-edition": "Previous edition",
   estimated: "Estimated",
+  unknown: "Unknown",
 };
 
 const provenanceStyles: Record<RaceSourceData["type"], string> = {
@@ -12,6 +13,7 @@ const provenanceStyles: Record<RaceSourceData["type"], string> = {
   gpx: "bg-[#e4edf5] text-[#426b8c]",
   "previous-edition": "bg-[#f5efd9] text-[#8a7130]",
   estimated: "bg-[#f4e6dc] text-[#94613f]",
+  unknown: "bg-[#ecebea] text-[#66645f]",
 };
 
 export default function RaceSources({
@@ -52,7 +54,9 @@ export default function RaceSources({
                           ? "bg-[#5f87a6]"
                           : source.type === "previous-edition"
                             ? "bg-[#c2a344]"
-                            : "bg-[#b77b50]"
+                            : source.type === "estimated"
+                              ? "bg-[#b77b50]"
+                              : "bg-[#85827b]"
                     }`}
                   />
                   <div>
