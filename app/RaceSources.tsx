@@ -1,20 +1,5 @@
 import type { RaceSourceData } from "./raceTypes";
-
-const provenanceLabels: Record<RaceSourceData["type"], string> = {
-  official: "Official",
-  gpx: "GPX",
-  "previous-edition": "Previous edition",
-  estimated: "Estimated",
-  unknown: "Unknown",
-};
-
-const provenanceStyles: Record<RaceSourceData["type"], string> = {
-  official: "bg-[#e8f0d6] text-[#536b2e]",
-  gpx: "bg-[#e4edf5] text-[#426b8c]",
-  "previous-edition": "bg-[#f5efd9] text-[#8a7130]",
-  estimated: "bg-[#f4e6dc] text-[#94613f]",
-  unknown: "bg-[#ecebea] text-[#66645f]",
-};
+import RaceProvenanceBadge from "./RaceProvenanceBadge";
 
 export default function RaceSources({
   sources,
@@ -40,7 +25,7 @@ export default function RaceSources({
 
               return (
                 <div
-                  key={`${source.type}-${source.url}`}
+                  key={source.id}
                   className={`grid grid-cols-[auto_1fr] gap-4 p-5 ${
                     index < sources.length - 1 ? "border-b border-black/10" : ""
                   }`}
@@ -62,11 +47,7 @@ export default function RaceSources({
                   <div>
                     <div className="flex flex-wrap items-center gap-3">
                       <p className="font-semibold">{source.title}</p>
-                      <span
-                        className={`rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] ${provenanceStyles[source.type]}`}
-                      >
-                        {provenanceLabels[source.type]}
-                      </span>
+                      <RaceProvenanceBadge type={source.type} />
                     </div>
                     {isExternal ? (
                       <a

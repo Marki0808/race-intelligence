@@ -8,6 +8,7 @@ type KeyMomentProps = {
   text: string;
   source: string;
   onSelect?: () => void;
+  compact?: boolean;
   focusStartKm?: number;
 focusEndKm?: number;
 };
@@ -20,14 +21,18 @@ export default function KeyMoment({
   text,
   source,
   onSelect,
+  compact = false,
 }: KeyMomentProps) {
   return (
     <div>
-      <h3
-  onClick={onSelect}
-  className="mt-12 cursor-pointer text-xl font-semibold"
->
-        {title}
+      <h3 className={compact ? "text-xl font-semibold" : "mt-12 text-xl font-semibold"}>
+        <button
+          type="button"
+          onClick={onSelect}
+          className={onSelect ? "cursor-pointer text-left" : "cursor-default text-left"}
+        >
+          {title}
+        </button>
       </h3>
 
       <div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-black/45">

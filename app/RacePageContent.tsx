@@ -2,6 +2,7 @@ import Link from "next/link";
 import CourseAnalysis from "./CourseAnalysis";
 import CourseCharacter from "./CourseCharacter";
 import CourseSection from "./CourseSection";
+import RaceEditionInformation from "./RaceEditionInformation";
 import RaceSources from "./RaceSources";
 import type { RaceRecordData } from "./raceTypes";
 
@@ -103,6 +104,10 @@ export default function RacePageContent({
         </div>
       </section>
 
+      <RaceEditionInformation
+        information={record.edition.information}
+        sources={record.sources}
+      />
       <RaceSources sources={record.sources} />
       <CourseAnalysis analysis={record.courseAnalysis} />
 

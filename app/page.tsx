@@ -1,3 +1,4 @@
+import Link from "next/link";
 import CourseCharacter from "./CourseCharacter";
 import CourseSection from "./CourseSection";
 import RaceSources from "./RaceSources";
@@ -74,6 +75,12 @@ export default function Home() {
             </p>
 
             <RaceSearch records={raceRegistry} />
+            <Link
+              href="/route"
+              className="mt-4 inline-flex rounded-full border border-white/20 px-5 py-2.5 text-sm text-white/80 transition hover:bg-white/10 hover:text-white"
+            >
+              Analyze a GPX route
+            </Link>
 
             <div className="mt-10 flex flex-wrap gap-3">
               <a
