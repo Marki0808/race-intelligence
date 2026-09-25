@@ -57,6 +57,11 @@ export type OSMWayFeature = {
   geometry?: Array<{ lat: number; lon: number }>;
 };
 export type GeoRoutePoint = Pick<GpxRoutePointData, "latitude" | "longitude" | "distanceM">;
+export type RouteCorridorWindow = {
+  box: NonNullable<ReturnType<typeof getRouteBoundingBox>>;
+  startDistanceKm: number;
+  endDistanceKm: number;
+};
 
 const relevantTags = ["surface", "highway", "tracktype", "smoothness", "sac_scale", "trail_visibility", "incline", "width", "informal", "trailblazed", "assisted_trail"] as const;
 
@@ -200,10 +205,19 @@ export function getRouteBoundingBoxes(
   overlapKm = 1,
   paddingDegrees = 0.003,
 ) {
+  return getRouteCorridorWindows(points, windowKm, overlapKm, paddingDegrees).map((window) => window.box);
+}
+
+export function getRouteCorridorWindows(
+  points: GeoRoutePoint[],
+  windowKm = 5,
+  overlapKm = 1,
+  paddingDegrees = 0.003,
+): RouteCorridorWindow[] {
   const totalKm = (points.at(-1)?.distanceM ?? 0) / 1000;
   if (points.length < 2 || totalKm <= 0 || windowKm <= overlapKm) return [];
   const stepKm = windowKm - overlapKm;
-  const boxes: NonNullable<ReturnType<typeof getRouteBoundingBox>>[] = [];
+  const windows: RouteCorridorWindow[] = [];
   for (let startKm = 0; startKm < totalKm; startKm += stepKm) {
     const endKm = Math.min(totalKm, startKm + windowKm);
     const portion = points.filter((point) => {
@@ -212,9 +226,9 @@ export function getRouteBoundingBoxes(
     });
     if (portion.length < 2) continue;
     const box = getRouteBoundingBox(portion, paddingDegrees);
-    if (box) boxes.push(box);
+    if (box) windows.push({ box, startDistanceKm: startKm, endDistanceKm: endKm });
   }
-  return boxes;
+  return windows;
 }
 
 export function isUsefulBoundingBox(box: NonNullable<ReturnType<typeof getRouteBoundingBox>>) {

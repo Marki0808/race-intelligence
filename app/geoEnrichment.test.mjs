@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { createGeoEnrichment, getRouteBoundingBoxes, isUsefulBoundingBox, normalizeOsmTags, thinRouteForMatching } from "./geoEnrichment.ts";
+import { createGeoEnrichment, getRouteBoundingBoxes, getRouteCorridorWindows, isUsefulBoundingBox, normalizeOsmTags, thinRouteForMatching } from "./geoEnrichment.ts";
 import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis.ts";
-import { buildOverpassQuery, enrichRouteWithOsm, parseOverpassWays } from "./geoEnrichmentService.ts";
+import { buildOverpassQuery, createOverpassCorridorQueries, enrichRouteWithOsm, MAX_CORRIDOR_BOXES_PER_QUERY, MAX_CORRIDOR_QUERIES_PER_ROUTE, mergeOsmWays, parseOverpassWays } from "./geoEnrichmentService.ts";
 import { POST as postGeoEnrichment } from "./api/geo-enrichment/route.ts";
 
 const fixtures = [
@@ -18,6 +18,18 @@ const route = Array.from({ length: 11 }, (_, index) => ({
   longitude: index / 1000,
   distanceM: index * 100,
 }));
+
+function makeLongRoute(totalKm, startLongitude = 0) {
+  return Array.from({ length: totalKm + 1 }, (_, index) => ({
+    latitude: 45 + Math.sin(index / 30) * 0.01,
+    longitude: startLongitude + index * 0.014,
+    distanceM: index * 1000,
+  }));
+}
+
+function overpassResponse(ways) {
+  return new Response(JSON.stringify({ elements: ways }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
 
 test("normalizes OSM tags without collapsing their meanings or provenance", () => {
   const normalized = normalizeOsmTags({ highway: "track", surface: "gravel", tracktype: "grade2", sac_scale: "mountain_hiking" });
@@ -92,10 +104,71 @@ test("builds an Overpass query with the Istria GPX bounds in south,west,north,ea
   assert.equal(boxes.length, 28);
   assert.equal(boxes.every(isUsefulBoundingBox), true);
   const query = buildOverpassQuery(boxes);
-  assert.match(query, /^\[out:json\]\[timeout:20\];\(/);
+  assert.match(query, /^\[out:json\]\[timeout:8\];\(/);
   assert.match(query, /way\["highway"~"\^\(path\|track/);
   assert.match(query, /\);out tags geom;$/);
   assert.equal((query.match(/way\["highway"/g) ?? []).length, boxes.length);
+});
+
+test("splits a short route into one query with bounded corridor boxes", () => {
+  const queries = createOverpassCorridorQueries(makeLongRoute(4));
+  assert.equal(queries?.length, 1);
+  assert.ok(queries[0].boxes.length <= MAX_CORRIDOR_BOXES_PER_QUERY);
+  assert.ok(queries[0].boxes.every(isUsefulBoundingBox));
+});
+
+test("splits a long route into a bounded number of small corridor queries", () => {
+  const routePoints = makeLongRoute(180);
+  const windows = getRouteCorridorWindows(routePoints);
+  const queries = createOverpassCorridorQueries(routePoints);
+  assert.equal(windows.length, 45);
+  assert.equal(queries?.length, 6);
+  assert.ok(queries.every((query) => query.boxes.length <= MAX_CORRIDOR_BOXES_PER_QUERY));
+  assert.ok(queries.every((query) => query.boxes.every(isUsefulBoundingBox)));
+  assert.ok(queries.length <= MAX_CORRIDOR_QUERIES_PER_ROUTE);
+});
+
+test("each corridor window bounds only its local GPX section", () => {
+  const routePoints = makeLongRoute(24);
+  const windows = getRouteCorridorWindows(routePoints);
+  const wholeRoute = getRouteBoundingBoxes(routePoints, 100, 1)[0];
+  assert.ok(windows.length > 1);
+  assert.ok(windows.every((window) => window.box.east - window.box.west < wholeRoute.east - wholeRoute.west));
+  for (const window of windows) {
+    const localPoints = routePoints.filter((point) => point.distanceM / 1000 >= window.startDistanceKm && point.distanceM / 1000 <= window.endDistanceKm);
+    assert.ok(localPoints.every((point) => point.latitude >= window.box.south && point.latitude <= window.box.north && point.longitude >= window.box.west && point.longitude <= window.box.east));
+  }
+});
+
+test("corridor windows overlap by the existing one kilometre tolerance", () => {
+  const windows = getRouteCorridorWindows(makeLongRoute(20));
+  assert.ok(windows.length > 1);
+  for (let index = 1; index < windows.length; index += 1) {
+    assert.equal(windows[index - 1].endDistanceKm - windows[index].startDistanceKm, 1);
+  }
+});
+
+test("refuses routes exceeding the safe corridor budget without making network requests", async (context) => {
+  const routePoints = makeLongRoute(205);
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; return overpassResponse([]); };
+  context.after(() => { globalThis.fetch = originalFetch; });
+  assert.ok(getRouteCorridorWindows(routePoints).length > MAX_CORRIDOR_BOXES_PER_QUERY * MAX_CORRIDOR_QUERIES_PER_ROUTE);
+  assert.equal(createOverpassCorridorQueries(routePoints), null);
+  const result = await enrichRouteWithOsm(routePoints);
+  assert.equal(calls, 0);
+  assert.equal(result.availability, "unknown");
+  assert.match(result.note, /more safe OpenStreetMap corridor queries/);
+});
+
+test("deduplicates overlapping OSM ways by identity while preserving combined tags and best geometry", () => {
+  const shorter = { id: 42, type: "way", tags: { highway: "path", surface: "dirt" }, geometry: [{ lat: 45, lon: 0 }, { lat: 45, lon: 0.001 }] };
+  const longer = { id: 42, type: "way", tags: { highway: "path", tracktype: "grade2" }, geometry: [{ lat: 45, lon: 0 }, { lat: 45, lon: 0.001 }, { lat: 45, lon: 0.002 }] };
+  const merged = mergeOsmWays([[shorter], [longer], [{ ...shorter, id: 41 }]]);
+  assert.deepEqual(merged.map((way) => way.id), [41, 42]);
+  assert.deepEqual(merged[1].tags, { highway: "path", surface: "dirt", tracktype: "grade2" });
+  assert.equal(merged[1].geometry.length, 3);
 });
 
 test("parses actual Overpass JSON way geometry in latitude/longitude order", () => {
@@ -163,14 +236,80 @@ test("the route API returns matched OSM evidence and a non-cacheable API respons
   assert.equal(body.segments[0].surface.value, "gravel");
 });
 
+test("one short-route query returns OSM evidence through the existing match layer", async (context) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  const routePoints = makeLongRoute(3, 2);
+  globalThis.fetch = async () => {
+    calls += 1;
+    return overpassResponse([{ type: "way", id: 9201, tags: { highway: "track", surface: "gravel" }, geometry: routePoints.map((point) => ({ lat: point.latitude, lon: point.longitude })) }]);
+  };
+  context.after(() => { globalThis.fetch = originalFetch; });
+  const result = await enrichRouteWithOsm(routePoints);
+  assert.equal(calls, 1);
+  assert.equal(result.availability, "available");
+  assert.ok(result.segments.some((segment) => segment.osmWays.some((way) => way.sourceId === "way/9201")));
+});
+
+test("partial corridor success retains real matched ways and reports coverage", async (context) => {
+  const originalFetch = globalThis.fetch;
+  const routePoints = makeLongRoute(36, 3);
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) return overpassResponse([{ type: "way", id: 9301, tags: { highway: "path", surface: "dirt" }, geometry: routePoints.slice(0, 12).map((point) => ({ lat: point.latitude, lon: point.longitude })) }]);
+    return new Response("Overpass unavailable", { status: 504 });
+  };
+  context.after(() => { globalThis.fetch = originalFetch; });
+  const result = await enrichRouteWithOsm(routePoints);
+  assert.equal(calls, 2);
+  assert.ok(result.matchedRoutePercent > 0);
+  assert.ok(result.matchedRoutePercent < 100);
+  assert.match(result.note, /partial: 1 of 2 corridor queries succeeded/);
+  assert.ok(result.segments.some((segment) => segment.osmWays.some((way) => way.sourceId === "way/9301")));
+  assert.ok(result.segments.some((segment) => segment.surface.availability === "unknown"));
+});
+
+test("all corridor failures remain unknown and do not fabricate evidence", async (context) => {
+  const originalFetch = globalThis.fetch;
+  const routePoints = makeLongRoute(36, 4);
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; return new Response("temporary failure", { status: 503 }); };
+  context.after(() => { globalThis.fetch = originalFetch; });
+  const result = await enrichRouteWithOsm(routePoints);
+  assert.equal(calls, 2);
+  assert.equal(result.availability, "unknown");
+  assert.equal(result.matchedRoutePercent, 0);
+  assert.equal(result.segments.length, 0);
+  assert.match(result.note, /currently unavailable/);
+});
+
+test("multiple failures preserve real evidence from successful corridors", async (context) => {
+  const originalFetch = globalThis.fetch;
+  const routePoints = makeLongRoute(100, 5);
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 2 || calls === 4) return new Response("temporary failure", { status: 502 });
+    const start = calls === 1 ? 0 : 48;
+    return overpassResponse([{ type: "way", id: 9400 + calls, tags: { highway: "track", surface: "gravel" }, geometry: routePoints.slice(start, start + 12).map((point) => ({ lat: point.latitude, lon: point.longitude })) }]);
+  };
+  context.after(() => { globalThis.fetch = originalFetch; });
+  const result = await enrichRouteWithOsm(routePoints);
+  assert.equal(calls, 4);
+  assert.ok(result.matchedRoutePercent > 0);
+  assert.match(result.note, /partial: 2 of 4 corridor queries succeeded/);
+  assert.ok(result.segments.some((segment) => segment.osmWays.length > 0));
+});
+
 test("the full Istria route reaches Overpass instead of hitting the route-window guard", async (context) => {
   const originalFetch = globalThis.fetch;
-  let query = "";
+  const queries = [];
   const gpx = parseGpxText(readFileSync(new URL("../public/ISTRIA_110K_2027.gpx", import.meta.url), "utf8"));
   const analysis = analyzeGpxRoute(gpx);
   const routePoints = thinRouteForMatching(analysis.points);
   globalThis.fetch = async (_input, init) => {
-    query = new URLSearchParams(String(init?.body)).get("data") ?? "";
+    queries.push(new URLSearchParams(String(init?.body)).get("data") ?? "");
     return new Response(JSON.stringify({
       elements: [{
         type: "way",
@@ -183,7 +322,9 @@ test("the full Istria route reaches Overpass instead of hitting the route-window
   context.after(() => { globalThis.fetch = originalFetch; });
 
   const result = await enrichRouteWithOsm(routePoints);
-  assert.equal((query.match(/way\["highway"/g) ?? []).length, 28);
+  assert.equal(queries.length, 4);
+  assert.equal(queries.reduce((count, query) => count + (query.match(/way\["highway"/g) ?? []).length, 0), 28);
+  assert.ok(queries.every((query) => (query.match(/way\["highway"/g) ?? []).length <= MAX_CORRIDOR_BOXES_PER_QUERY));
   assert.ok(result.matchedRoutePercent > 0);
   assert.ok(result.segments.some((segment) => segment.osmWays.some((way) => way.sourceId === "way/9001")));
   assert.notEqual(result.note, "The route covers too large an area for a safe OSM query.");

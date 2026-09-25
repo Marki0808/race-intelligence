@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { aggregateTerrainEvidence, classifyOsmSurface } from "./terrainAggregation.ts";
+import { getTerrainSummaryPresentation, LOW_TERRAIN_EVIDENCE_COVERAGE } from "./terrainEvidencePresentation.ts";
 import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis.ts";
 
 function makeData(runs, { availability = "available", matchedRoutePercent = 100 } = {}) {
@@ -170,6 +171,37 @@ test("keeps the global mixed summary independent from persistent local sections"
   ]));
   assert.equal(result.dominantTerrain, "mixed-trail");
   assert.deepEqual(result.sections.map((section) => section.dominantTerrain), ["gravel", "dirt-ground", "paved"]);
+});
+
+test("high route coverage keeps the existing route-level summary wording", () => {
+  const aggregation = aggregateTerrainEvidence(makeData([{ start: 0, end: 12, surface: "gravel" }]));
+  const presentation = getTerrainSummaryPresentation(aggregation);
+  assert.equal(LOW_TERRAIN_EVIDENCE_COVERAGE, 0.2);
+  assert.equal(presentation.limited, false);
+  assert.equal(presentation.heading, "Gravel");
+  assert.deepEqual(presentation.evidenceItems, ["Gravel 100%"]);
+  assert.equal(presentation.mappedEvidenceText, null);
+  assert.equal(presentation.coverageText, null);
+});
+
+test("low-coverage paved evidence is clearly scoped and leaves unknown sections unchanged", () => {
+  const aggregation = aggregateTerrainEvidence(makeData([
+    { start: 0, end: 2, surface: "asphalt" },
+    { start: 2, end: 33, surface: null, surfaceAvailability: "unknown" },
+  ]));
+  const beforePresentation = structuredClone(aggregation);
+  const presentation = getTerrainSummaryPresentation(aggregation);
+
+  assert.ok(aggregation.evidenceCoverage < LOW_TERRAIN_EVIDENCE_COVERAGE);
+  assert.equal(Math.round(aggregation.evidenceCoverage * 100), 6);
+  assert.equal(aggregation.dominantTerrain, "paved");
+  assert.ok(aggregation.sections.some((section) => section.dominantTerrain === "unknown"));
+  assert.equal(presentation.limited, true);
+  assert.equal(presentation.heading, "Limited mapped surface evidence");
+  assert.equal(presentation.mappedEvidenceText, "Mapped evidence: Paved · 100%");
+  assert.equal(presentation.coverageText, "Coverage: 6% of route");
+  assert.notEqual(presentation.heading, "Paved");
+  assert.deepEqual(aggregation, beforePresentation);
 });
 
 test("summarizes diverse local surfaces as mixed while retaining an adjacent persistent change", () => {

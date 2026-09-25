@@ -20,6 +20,12 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Optional Mapillary terrain imagery
+
+Mapillary imagery is optional, additional visual evidence for the terrain sections shown in Route Mode. To enable it locally, copy `.env.example` to `.env.local` and set `MAPILLARY_ACCESS_TOKEN` to a token created in the [Mapillary developer dashboard](https://www.mapillary.com/dashboard/developers). This variable is read only by the server-side `/api/mapillary` route; do not prefix it with `NEXT_PUBLIC_` or commit a real token.
+
+When the token is missing, imagery availability is reported as unknown and the GPX and OpenStreetMap terrain evidence continue to work. Mapillary metadata and images are used in memory for the request and are not stored by this application.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

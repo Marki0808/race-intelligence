@@ -87,7 +87,7 @@ export default function RouteMode() {
               className="mt-4 block w-full min-w-0 cursor-pointer text-sm text-white/65 file:mr-4 file:rounded-full file:border-0 file:bg-[#a7c957] file:px-5 file:py-2.5 file:text-sm file:font-semibold file:text-[#17211c] hover:file:bg-[#b8d86b] disabled:cursor-wait"
             />
             <p className="mt-4 text-xs leading-5 text-white/40">
-              The GPX file stays in this browser and is not stored. If you request Terrain Evidence, route coordinates are sent to this app&apos;s matching endpoint and OpenStreetMap to find nearby mapped ways; the GPX file and elevation data are not sent.
+              The GPX file stays in this browser and is not stored. If you request Terrain Evidence, route coordinates are sent to this app&apos;s matching endpoint. For optional Mapillary imagery, bounded section search areas are queried server-side; the GPX file and elevation data are not uploaded to Mapillary or stored.
             </p>
             {isProcessing && (
               <p aria-live="polite" className="mt-4 text-sm text-[#a7c957]">

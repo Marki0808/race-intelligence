@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import CourseAnalysis from "./CourseAnalysis";
 import CourseCharacter from "./CourseCharacter";
 import CourseExplorer from "./CourseExplorer";
@@ -10,6 +10,10 @@ import { thinRouteForMatching } from "./geoEnrichment";
 import type { RouteAnalysisData, GpxRouteSegmentData } from "./gpxAnalysis";
 import { aggregateTerrainEvidence } from "./terrainAggregation";
 import type { TerrainCategory } from "./terrainAggregation";
+import TerrainSectionMap from "./TerrainSectionMap";
+import TerrainImageViewer from "./TerrainImageViewer";
+import { getTerrainSummaryPresentation, terrainCategoryLabel } from "./terrainEvidencePresentation";
+import type { MapillaryImageEvidence, MapillaryRoutePoint, MapillarySectionEvidence, MapillaryTerrainProofData, MapillaryTerrainSectionRequest } from "./mapillaryTerrainProof";
 
 export default function RouteAnalysisView({
   analysis,
@@ -19,6 +23,26 @@ export default function RouteAnalysisView({
   const [selectedMoment, setSelectedMoment] = useState<string | null>(null);
   const [geoEvidence, setGeoEvidence] = useState<GeoEnrichmentData | null>(null);
   const [geoLoading, setGeoLoading] = useState(false);
+  const [mapillaryEvidence, setMapillaryEvidence] = useState<MapillaryTerrainProofData | null>(null);
+  const [selectedTerrainImage, setSelectedTerrainImage] = useState<MapillaryImageEvidence | null>(null);
+
+  async function loadMapillaryEvidence(terrainSections: MapillaryTerrainSectionRequest[]) {
+    if (!terrainSections.length) return;
+    try {
+      const response = await fetch("/api/mapillary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sections: terrainSections }),
+      });
+      if (!response.ok) throw new Error("Mapillary lookup failed");
+      setMapillaryEvidence(await response.json() as MapillaryTerrainProofData);
+    } catch {
+      setMapillaryEvidence({
+        source: { type: "mapillary", name: "Mapillary", attribution: "© Mapillary" },
+        sections: terrainSections.map(({ id }) => ({ id, availability: "unknown", images: [], note: "Terrain imagery could not be loaded for this section." })),
+      });
+    }
+  }
 
   async function loadGeoEvidence() {
     setGeoLoading(true);
@@ -31,7 +55,15 @@ export default function RouteAnalysisView({
         }),
       });
       if (!response.ok) throw new Error("OSM lookup failed");
-      setGeoEvidence(await response.json() as GeoEnrichmentData);
+      const data = await response.json() as GeoEnrichmentData;
+      setGeoEvidence(data);
+      const sections = aggregateTerrainEvidence(data).sections.map((section) => ({
+        id: section.id,
+        startDistanceKm: section.startDistanceKm,
+        endDistanceKm: section.endDistanceKm,
+        points: getSectionRoutePoints(analysis.points, section.startDistanceKm, section.endDistanceKm),
+      })).filter((section) => section.points.length >= 2);
+      await loadMapillaryEvidence(sections);
     } catch {
       setGeoEvidence({
         source: { type: "osm", name: "OpenStreetMap", attribution: "© OpenStreetMap contributors" },
@@ -106,7 +138,7 @@ export default function RouteAnalysisView({
               )}
             </div>
             {geoEvidence ? (
-              <GeoEvidencePanel data={geoEvidence} />
+              <GeoEvidencePanel data={geoEvidence} routePoints={analysis.points} mapillary={mapillaryEvidence} selectedImage={selectedTerrainImage} onSelectImage={setSelectedTerrainImage} />
             ) : (
               <p className="mt-6 text-sm text-black/45">No map lookup has been requested for this route.</p>
             )}
@@ -165,12 +197,31 @@ export default function RouteAnalysisView({
         sourceLabel="GPX-derived"
         showExtendedMetrics
       />
+      <TerrainImageViewer image={selectedTerrainImage} onClose={() => setSelectedTerrainImage(null)} />
     </>
   );
 }
 
-function GeoEvidencePanel({ data }: { data: GeoEnrichmentData }) {
-  const aggregation = aggregateTerrainEvidence(data);
+function GeoEvidencePanel({
+  data,
+  routePoints,
+  mapillary,
+  selectedImage,
+  onSelectImage,
+}: {
+  data: GeoEnrichmentData;
+  routePoints: RouteAnalysisData["points"];
+  mapillary: MapillaryTerrainProofData | null;
+  selectedImage: MapillaryImageEvidence | null;
+  onSelectImage: (image: MapillaryImageEvidence) => void;
+}) {
+  const aggregation = useMemo(() => aggregateTerrainEvidence(data), [data]);
+  const routeSummary = getTerrainSummaryPresentation(aggregation);
+  const sectionGeometry = useMemo(() => new Map(aggregation.sections.map((section) => [
+    section.id,
+    getSectionRoutePoints(routePoints, section.startDistanceKm, section.endDistanceKm),
+  ])), [aggregation.sections, routePoints]);
+  const imageEvidence = useMemo(() => new Map(mapillary?.sections.map((section) => [section.id, section]) ?? []), [mapillary]);
   const fields: Array<[string, keyof Pick<GeoEnrichmentData["segments"][number], "surface" | "pathType" | "trackCondition" | "smoothness" | "hikingDifficulty" | "trailVisibility" | "incline" | "width" | "informal" | "trailblazed" | "assistedTrail">]> = [
     ["Surface", "surface"],
     ["Path type", "pathType"],
@@ -194,57 +245,53 @@ function GeoEvidencePanel({ data }: { data: GeoEnrichmentData }) {
         </p>
         <p className="text-black/45">Availability: {aggregation.availability}</p>
       </div>
+      {aggregation.availability === "available" && data.note && (
+        <p className="mt-2 text-xs text-black/45">{data.note}</p>
+      )}
       {aggregation.supportingTerrainEvidence.length > 0 && (
         <div className="mt-5 rounded-2xl border border-black/10 bg-white/70 p-5">
           <div className="flex flex-wrap items-baseline justify-between gap-3">
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-black/40">Route-level summary</p>
-              <p className="mt-1 text-lg font-semibold">{terrainCategoryLabel(aggregation.dominantTerrain)}</p>
+              <p className="mt-1 text-lg font-semibold">{routeSummary.heading}</p>
             </div>
             <p className="text-xs text-black/45">Share of mapped surface evidence · OSM-derived</p>
           </div>
-          <div className="mt-4 flex flex-wrap gap-2">
-            {aggregation.supportingTerrainEvidence.map((item) => (
-              <span key={item.category} className="rounded-full border border-black/10 px-3 py-1.5 text-xs text-black/60">
-                {terrainCategoryLabel(item.category)} {Math.round(item.evidenceShare * 100)}%
-              </span>
-            ))}
-          </div>
+          {routeSummary.limited ? (
+            <div className="mt-4 flex flex-wrap gap-2">
+              {routeSummary.mappedEvidenceText && (
+                <span className="rounded-full border border-black/10 px-3 py-1.5 text-xs text-black/60">
+                  {routeSummary.mappedEvidenceText}
+                </span>
+              )}
+              {routeSummary.coverageText && (
+                <span className="rounded-full border border-black/10 px-3 py-1.5 text-xs text-black/60">
+                  {routeSummary.coverageText}
+                </span>
+              )}
+            </div>
+          ) : (
+            <div className="mt-4 flex flex-wrap gap-2">
+              {routeSummary.evidenceItems.map((item, index) => (
+                <span key={`${item}-${index}`} className="rounded-full border border-black/10 px-3 py-1.5 text-xs text-black/60">
+                  {item}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       )}
       {aggregation.sections.length > 0 && (
         <div className="mt-6 space-y-4">
           {aggregation.sections.map((section) => (
-            <article key={section.id} className="rounded-2xl border border-black/10 bg-white p-5 sm:p-6">
-              <div className="flex flex-wrap justify-between gap-3">
-                <div>
-                  <h3 className="font-semibold">{terrainSectionTitle(section.dominantTerrain)}</h3>
-                  <p className="mt-1 text-sm text-black/50">
-                    {section.startDistanceKm}–{section.endDistanceKm} km · {section.lengthKm} km
-                  </p>
-                </div>
-                <p className="text-xs text-black/45">
-                  Evidence · {aggregation.source.name} · {Math.round(section.evidenceCoverage * 100)}% coverage
-                </p>
-              </div>
-              <div className="mt-5 grid gap-4 sm:grid-cols-2">
-                <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-black/40">Dominant terrain</p>
-                  <p className="mt-1 text-base font-semibold">{terrainCategoryLabel(section.dominantTerrain)}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-black/40">Evidence confidence</p>
-                  <p className="mt-1 text-sm capitalize">{section.matchQuality} · {section.provenance}</p>
-                </div>
-              </div>
-              {section.supportingTerrainEvidence.length > 1 && (
-                <p className="mt-4 text-xs leading-5 text-black/45">
-                  Supporting surfaces: {section.supportingTerrainEvidence.map((item) =>
-                    `${terrainCategoryLabel(item.category)} (${Math.round(item.evidenceShare * 100)}%)`,
-                  ).join(" · ")}
-                </p>
-              )}
-            </article>
+            <TerrainSectionCard
+              key={section.id}
+              section={section}
+              points={sectionGeometry.get(section.id) ?? []}
+              imageEvidence={imageEvidence.get(section.id) ?? null}
+              selectedImage={selectedImage}
+              onSelectImage={onSelectImage}
+            />
           ))}
         </div>
       )}
@@ -286,6 +333,95 @@ function GeoEvidencePanel({ data }: { data: GeoEnrichmentData }) {
   );
 }
 
+function TerrainSectionCard({
+  section,
+  points,
+  imageEvidence,
+  selectedImage,
+  onSelectImage,
+}: {
+  section: ReturnType<typeof aggregateTerrainEvidence>["sections"][number];
+  points: MapillaryRoutePoint[];
+  imageEvidence: MapillarySectionEvidence | null;
+  selectedImage: MapillaryImageEvidence | null;
+  onSelectImage: (image: MapillaryImageEvidence) => void;
+}) {
+  return (
+    <article className="rounded-2xl border border-black/10 bg-white p-5 sm:p-6">
+      <div className="flex flex-wrap justify-between gap-3">
+        <div>
+          <h3 className="font-semibold">{terrainSectionTitle(section.dominantTerrain)}</h3>
+          <p className="mt-1 text-sm text-black/50">
+            {section.startDistanceKm}–{section.endDistanceKm} km · {section.lengthKm} km
+          </p>
+        </div>
+        <p className="text-xs text-black/45">
+          Evidence · OpenStreetMap · {Math.round(section.evidenceCoverage * 100)}% coverage
+        </p>
+      </div>
+      {points.length >= 2 && (
+        <TerrainSectionMap
+          points={points}
+          images={imageEvidence?.images ?? []}
+          startDistanceKm={section.startDistanceKm}
+          endDistanceKm={section.endDistanceKm}
+          selectedImage={selectedImage}
+          onSelectImage={onSelectImage}
+        />
+      )}
+      <div className="mt-3 flex flex-wrap justify-between gap-2 text-xs text-black/45">
+        <span>Terrain imagery · {imageEvidence?.availability ?? "pending"}</span>
+        <span>{imageEvidence?.availability === "available" ? `${imageEvidence.images.length} photo${imageEvidence.images.length === 1 ? "" : "s"} · click a map point · © Mapillary` : imageEvidence?.note ?? "Terrain imagery lookup pending."}</span>
+      </div>
+      <div className="mt-5 grid gap-4 sm:grid-cols-2">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-black/40">Dominant terrain</p>
+          <p className="mt-1 text-base font-semibold">{terrainCategoryLabel(section.dominantTerrain)}</p>
+        </div>
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-black/40">Evidence confidence</p>
+          <p className="mt-1 text-sm capitalize">{section.matchQuality} · {section.provenance}</p>
+        </div>
+      </div>
+      {section.supportingTerrainEvidence.length > 1 && (
+        <p className="mt-4 text-xs leading-5 text-black/45">
+          Supporting surfaces: {section.supportingTerrainEvidence.map((item) =>
+            `${terrainCategoryLabel(item.category)} (${Math.round(item.evidenceShare * 100)}%)`,
+          ).join(" · ")}
+        </p>
+      )}
+    </article>
+  );
+}
+
+function thinSectionPoints(points: RouteAnalysisData["points"], maxPoints = 120) {
+  if (points.length <= maxPoints) return points.map(({ latitude, longitude, distanceM }) => ({ latitude, longitude, distanceM }));
+  const step = (points.length - 1) / (maxPoints - 1);
+  return Array.from({ length: maxPoints }, (_, index) => {
+    const point = points[Math.round(index * step)];
+    return { latitude: point.latitude, longitude: point.longitude, distanceM: point.distanceM };
+  });
+}
+
+function getSectionRoutePoints(
+  routePoints: RouteAnalysisData["points"],
+  startKm: number,
+  endKm: number,
+) {
+  const startM = startKm * 1000;
+  const endM = endKm * 1000;
+  const points = routePoints.filter((point) => point.distanceM >= startM && point.distanceM <= endM);
+  const nearestStart = routePoints.reduce<typeof routePoints[number] | null>((nearest, point) =>
+    !nearest || Math.abs(point.distanceM - startM) < Math.abs(nearest.distanceM - startM) ? point : nearest, null);
+  const nearestEnd = routePoints.reduce<typeof routePoints[number] | null>((nearest, point) =>
+    !nearest || Math.abs(point.distanceM - endM) < Math.abs(nearest.distanceM - endM) ? point : nearest, null);
+  for (const endpoint of [nearestStart, nearestEnd]) {
+    if (endpoint && !points.some((point) => point.distanceM === endpoint.distanceM)) points.push(endpoint);
+  }
+  points.sort((a, b) => a.distanceM - b.distanceM);
+  return thinSectionPoints(points);
+}
+
 function terrainSectionTitle(category: TerrainCategory) {
   const titles: Record<TerrainCategory, string> = {
     paved: "Paved section",
@@ -297,19 +433,6 @@ function terrainSectionTitle(category: TerrainCategory) {
     unknown: "Terrain evidence section",
   };
   return titles[category];
-}
-
-function terrainCategoryLabel(category: TerrainCategory) {
-  const labels: Record<TerrainCategory, string> = {
-    paved: "Paved",
-    gravel: "Gravel",
-    "dirt-ground": "Dirt / ground",
-    "rocky-rough": "Rocky / rough",
-    "natural-trail": "Unpaved / natural surface",
-    "mixed-trail": "Mixed trail",
-    unknown: "Unknown",
-  };
-  return labels[category];
 }
 
 function EvidenceField({ label, evidence }: { label: string; evidence: EvidenceValue }) {
