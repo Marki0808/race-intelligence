@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { aggregateTerrainEvidence, classifyOsmSurface } from "./terrainAggregation.ts";
+import { aggregateTerrainEvidenceV3 } from "./terrainAggregationV3.ts";
 import { getTerrainSummaryPresentation, LOW_TERRAIN_EVIDENCE_COVERAGE } from "./terrainEvidencePresentation.ts";
 import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis.ts";
 
@@ -234,6 +235,132 @@ test("reports unknown with no OSM terrain evidence", () => {
   assert.equal(result.dominantTerrain, "unknown");
   assert.equal(result.evidenceCoverage, 0);
   assert.deepEqual(result.sections, []);
+});
+
+test("V3 keeps a long unsupported tail separate from terrain sections", () => {
+  const input = makeData([
+    { start: 0, end: 35, surface: "gravel" },
+    { start: 35, end: 170, surface: null, surfaceAvailability: "unknown" },
+  ]);
+  const v2 = aggregateTerrainEvidence(input);
+  const v3 = aggregateTerrainEvidenceV3(input);
+
+  assert.equal(v2.sections.at(-1).dominantTerrain, "unknown");
+  assert.ok(v2.sections.at(-1).lengthKm > 100);
+  assert.deepEqual(v3.sections.map(({ dominantTerrain }) => dominantTerrain), ["gravel"]);
+  assert.deepEqual(v3.sections.map(({ startDistanceKm, endDistanceKm }) => [startDistanceKm, endDistanceKm]), [[0, 35]]);
+  assert.deepEqual(v3.insufficientEvidenceRanges.map(({ startDistanceKm, endDistanceKm, kind }) => [startDistanceKm, endDistanceKm, kind]), [[35, 170, "insufficient-evidence"]]);
+  assert.equal(v3.insufficientEvidenceRanges[0].evidenceCoverage, 0);
+});
+
+test("V3 converts the observed long sparse V2 tail into an unknown evidence range", () => {
+  const input = makeData([
+    { start: 38.04, end: 173.83, surface: "asphalt", count: 1 },
+  ], { availability: "available", matchedRoutePercent: 37 });
+  const [template] = input.segments;
+  const sparseCoverage = 0.0229;
+  const pavedShare = 0.8391;
+  input.segments = [
+    {
+      ...template,
+      id: "tail-paved-evidence",
+      evidenceCoverage: sparseCoverage * pavedShare,
+      osmWays: template.osmWays.map((way) => ({ ...way, sourceId: "way/tail-paved" })),
+    },
+    {
+      ...template,
+      id: "tail-rock-evidence",
+      evidenceCoverage: sparseCoverage * (1 - pavedShare),
+      surface: { value: "rock", rawValue: "rock", provenance: "osm", availability: "available" },
+      osmWays: template.osmWays.map((way) => ({ ...way, sourceId: "way/tail-rock", tags: { surface: "rock" } })),
+    },
+  ];
+  input.note = "OpenStreetMap evidence is partial: 2 of 6 corridor queries succeeded.";
+  const v2 = aggregateTerrainEvidence(input);
+  const v3 = aggregateTerrainEvidenceV3(input);
+
+  assert.deepEqual(v2.sections.map(({ startDistanceKm, endDistanceKm, dominantTerrain, availability }) => [
+    startDistanceKm, endDistanceKm, dominantTerrain, availability,
+  ]), [[38.04, 173.83, "unknown", "available"]]);
+  assert.ok(Math.abs(v2.sections[0].evidenceCoverage - sparseCoverage) < 0.00001);
+  assert.deepEqual(v2.sections[0].supportingTerrainEvidence.map((item) => [item.category, Number(item.evidenceShare.toFixed(4))]), [
+    ["paved", 0.8391], ["rocky-rough", 0.1609],
+  ]);
+  assert.deepEqual(v3.sections, []);
+  assert.deepEqual(v3.insufficientEvidenceRanges.map(({ startDistanceKm, endDistanceKm, dominantTerrain, availability, evidenceCoverage }) => [
+    startDistanceKm, endDistanceKm, dominantTerrain, availability, evidenceCoverage,
+  ]), [[38.04, 173.83, "unknown", "unknown", 0.0229]]);
+  assert.deepEqual(v3.insufficientEvidenceRanges[0].supportingTerrainEvidence.map((item) => [item.category, Number(item.evidenceShare.toFixed(4))]), [
+    ["paved", 0.8391], ["rocky-rough", 0.1609],
+  ]);
+  assert.equal(v3.rawEvidence.note, "OpenStreetMap evidence is partial: 2 of 6 corridor queries succeeded.");
+});
+
+test("V3 preserves multiple separated evidence clusters and their unsupported gaps", () => {
+  const v3 = aggregateTerrainEvidenceV3(makeData([
+    { start: 0, end: 10, surface: "gravel" },
+    { start: 10, end: 50, surface: null, surfaceAvailability: "unknown" },
+    { start: 50, end: 70, surface: "rock" },
+    { start: 70, end: 170, surface: null, surfaceAvailability: "unknown" },
+  ]));
+
+  assert.deepEqual(v3.sections.map(({ dominantTerrain }) => dominantTerrain), ["gravel", "rocky-rough"]);
+  assert.deepEqual(v3.sections.map(({ startDistanceKm, endDistanceKm }) => [startDistanceKm, endDistanceKm]), [[0, 10], [50, 70]]);
+  assert.deepEqual(v3.insufficientEvidenceRanges.map(({ startDistanceKm, endDistanceKm }) => [startDistanceKm, endDistanceKm]), [[10, 50], [70, 170]]);
+  assert.ok(v3.sections.every((section) => section.availability === "available"));
+});
+
+test("partial Overpass coverage preserves successful clusters without classifying failed ranges", () => {
+  const input = makeData([
+    { start: 0, end: 18, surface: "gravel" },
+    { start: 18, end: 62, surface: null, surfaceAvailability: "unknown" },
+    { start: 62, end: 80, surface: "asphalt" },
+    { start: 80, end: 174, surface: null, surfaceAvailability: "unknown" },
+  ]);
+  input.note = "OpenStreetMap evidence is partial: 3 of 6 corridor queries succeeded.";
+  const v3 = aggregateTerrainEvidenceV3(input);
+  const withoutQueryStatus = structuredClone(input);
+  delete withoutQueryStatus.note;
+  const sameEvidenceWithoutQueryStatus = aggregateTerrainEvidenceV3(withoutQueryStatus);
+
+  assert.deepEqual(v3.sections.map(({ dominantTerrain }) => dominantTerrain), ["gravel", "paved"]);
+  assert.deepEqual(v3.insufficientEvidenceRanges.map(({ dominantTerrain, availability }) => [dominantTerrain, availability]), [["unknown", "unknown"], ["unknown", "unknown"]]);
+  assert.ok(v3.insufficientEvidenceRanges.every((range) => range.supportingTerrainEvidence.length === 0));
+  assert.equal(v3.rawEvidence.note, "OpenStreetMap evidence is partial: 3 of 6 corridor queries succeeded.");
+  assert.notEqual(v3.sections.length, 6);
+  assert.deepEqual(v3.sections, sameEvidenceWithoutQueryStatus.sections);
+  assert.deepEqual(v3.insufficientEvidenceRanges, sameEvidenceWithoutQueryStatus.insufficientEvidenceRanges);
+});
+
+test("V3 returns only an insufficient-evidence range when a route has no surface evidence", () => {
+  const v3 = aggregateTerrainEvidenceV3(makeData([
+    { start: 0, end: 30, surface: null, surfaceAvailability: "unknown" },
+  ], { availability: "unknown", matchedRoutePercent: 0 }));
+
+  assert.equal(v3.availability, "unknown");
+  assert.equal(v3.evidenceCoverage, 0);
+  assert.deepEqual(v3.sections, []);
+  assert.equal(v3.insufficientEvidenceRanges.length, 1);
+  assert.equal(v3.insufficientEvidenceRanges[0].dominantTerrain, "unknown");
+  assert.equal(v3.insufficientEvidenceRanges[0].lengthKm, 30);
+});
+
+test("V3 preserves supported Istria sections and is deterministic for identical evidence", () => {
+  const gpx = parseGpxText(readFileSync(new URL("../public/ISTRIA_110K_2027.gpx", import.meta.url), "utf8"));
+  const routeLengthKm = analyzeGpxRoute(gpx).metrics.distanceKm;
+  const proportions = [0, 0.25, 0.5, 0.75, 1];
+  const surfaces = ["gravel", "dirt", "gravel", "asphalt"];
+  const input = makeData(surfaces.map((surface, index) => ({
+    start: routeLengthKm * proportions[index],
+    end: routeLengthKm * proportions[index + 1],
+    surface,
+  })));
+  const v2 = aggregateTerrainEvidence(input);
+  const v3 = aggregateTerrainEvidenceV3(input);
+
+  assert.deepEqual(v3.sections, v2.sections);
+  assert.deepEqual(v3.insufficientEvidenceRanges, []);
+  assert.deepEqual(aggregateTerrainEvidenceV3(input), v3);
 });
 
 test("Istria GPX length supports multiple local regimes even when its global summary is mixed", () => {

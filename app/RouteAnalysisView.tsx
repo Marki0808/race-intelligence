@@ -10,6 +10,7 @@ import { thinRouteForMatching } from "./geoEnrichment";
 import type { RouteAnalysisData, GpxRouteSegmentData } from "./gpxAnalysis";
 import { aggregateTerrainEvidence } from "./terrainAggregation";
 import type { TerrainCategory } from "./terrainAggregation";
+import { aggregateTerrainEvidenceV3 } from "./terrainAggregationV3";
 import TerrainSectionMap from "./TerrainSectionMap";
 import TerrainImageViewer from "./TerrainImageViewer";
 import { getTerrainSummaryPresentation, terrainCategoryLabel } from "./terrainEvidencePresentation";
@@ -215,7 +216,7 @@ function GeoEvidencePanel({
   selectedImage: MapillaryImageEvidence | null;
   onSelectImage: (image: MapillaryImageEvidence) => void;
 }) {
-  const aggregation = useMemo(() => aggregateTerrainEvidence(data), [data]);
+  const aggregation = useMemo(() => aggregateTerrainEvidenceV3(data), [data]);
   const routeSummary = getTerrainSummaryPresentation(aggregation);
   const sectionGeometry = useMemo(() => new Map(aggregation.sections.map((section) => [
     section.id,
@@ -295,6 +296,22 @@ function GeoEvidencePanel({
           ))}
         </div>
       )}
+      {aggregation.insufficientEvidenceRanges.length > 0 && (
+        <section className="mt-6 space-y-3" aria-label="Insufficient mapped evidence ranges">
+          <h3 className="text-sm font-semibold text-black/65">Insufficient mapped evidence</h3>
+          {aggregation.insufficientEvidenceRanges.map((range) => (
+            <TerrainSectionCard
+              key={range.id}
+              section={range}
+              points={getSectionRoutePoints(routePoints, range.startDistanceKm, range.endDistanceKm)}
+              imageEvidence={imageEvidence.get(range.id) ?? null}
+              selectedImage={selectedImage}
+              onSelectImage={onSelectImage}
+              isInsufficientEvidence
+            />
+          ))}
+        </section>
+      )}
 
       {data.segments.length > 0 && (
         <details className="mt-6 rounded-2xl border border-black/10 bg-white/60 p-5">
@@ -339,18 +356,20 @@ function TerrainSectionCard({
   imageEvidence,
   selectedImage,
   onSelectImage,
+  isInsufficientEvidence = false,
 }: {
   section: ReturnType<typeof aggregateTerrainEvidence>["sections"][number];
   points: MapillaryRoutePoint[];
   imageEvidence: MapillarySectionEvidence | null;
   selectedImage: MapillaryImageEvidence | null;
   onSelectImage: (image: MapillaryImageEvidence) => void;
+  isInsufficientEvidence?: boolean;
 }) {
   return (
-    <article className="rounded-2xl border border-black/10 bg-white p-5 sm:p-6">
+    <article className={`rounded-2xl border p-5 sm:p-6 ${isInsufficientEvidence ? "border-dashed border-black/15 bg-[#f4f2ed]/60" : "border-black/10 bg-white"}`}>
       <div className="flex flex-wrap justify-between gap-3">
         <div>
-          <h3 className="font-semibold">{terrainSectionTitle(section.dominantTerrain)}</h3>
+          <h3 className="font-semibold">{isInsufficientEvidence ? "Insufficient mapped evidence" : terrainSectionTitle(section.dominantTerrain)}</h3>
           <p className="mt-1 text-sm text-black/50">
             {section.startDistanceKm}–{section.endDistanceKm} km · {section.lengthKm} km
           </p>
@@ -385,7 +404,7 @@ function TerrainSectionCard({
       </div>
       {section.supportingTerrainEvidence.length > 1 && (
         <p className="mt-4 text-xs leading-5 text-black/45">
-          Supporting surfaces: {section.supportingTerrainEvidence.map((item) =>
+          {isInsufficientEvidence ? "Mapped surface evidence within this range" : "Supporting surfaces"}: {section.supportingTerrainEvidence.map((item) =>
             `${terrainCategoryLabel(item.category)} (${Math.round(item.evidenceShare * 100)}%)`,
           ).join(" · ")}
         </p>
