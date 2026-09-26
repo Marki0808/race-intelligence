@@ -48,7 +48,28 @@ export type GeoEnrichmentData = {
   segments: GeoSegmentEvidence[];
   matchedRoutePercent: number;
   note?: string;
+  retrieval?: GeoRetrievalSummary;
   attribution: string;
+};
+export type GeoDistanceRange = { startDistanceKm: number; endDistanceKm: number };
+export type GeoRetrievalFailureCounts = {
+  http429: number;
+  http504: number;
+  timeout: number;
+  otherTransient: number;
+  permanent: number;
+  budgetExhausted: number;
+};
+export type GeoRetrievalSummary = {
+  queryAttempts: number;
+  requestsSent: number;
+  requestsSucceeded: number;
+  requestsFailed: number;
+  cacheHits: number;
+  retrievalCoveragePercent: number;
+  retrievedRanges: GeoDistanceRange[];
+  unavailableRanges: GeoDistanceRange[];
+  failureCounts: GeoRetrievalFailureCounts;
 };
 export type OSMWayFeature = {
   id: number;

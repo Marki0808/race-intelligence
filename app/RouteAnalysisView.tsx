@@ -246,6 +246,12 @@ function GeoEvidencePanel({
         </p>
         <p className="text-black/45">Availability: {aggregation.availability}</p>
       </div>
+      {data.retrieval && (
+        <p className="mt-2 text-xs text-black/45">
+          OSM retrieval coverage: {data.retrieval.retrievalCoveragePercent}% of route distance queried
+          {data.retrieval.unavailableRanges.length > 0 && ` · ${data.retrieval.unavailableRanges.length} range${data.retrieval.unavailableRanges.length === 1 ? "" : "s"} unavailable`}
+        </p>
+      )}
       {aggregation.availability === "available" && data.note && (
         <p className="mt-2 text-xs text-black/45">{data.note}</p>
       )}
