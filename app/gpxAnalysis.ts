@@ -3,6 +3,9 @@ import type {
   GpxCourseAnalysisData,
   KeyMomentData,
 } from "./raceTypes";
+import { analyzeRouteDynamics, type RouteDynamicsResult } from "./routeDynamics.ts";
+import { buildRouteSections, type RouteSection } from "./routeSectionEngine.ts";
+import { createRouteKeyMoments } from "./routeKeyMoments.ts";
 
 export type GpxAnalysisErrorCode =
   | "invalid-gpx"
@@ -50,6 +53,8 @@ export type RouteAnalysisData = {
   majorClimbs: GpxRouteSegmentData[];
   majorDescents: GpxRouteSegmentData[];
   sections: GpxRouteSegmentData[];
+  routeDynamics: RouteDynamicsResult;
+  routeSections: RouteSection[];
   keyMoments: KeyMomentData[];
   courseCharacter: CourseCharacterData;
 };
@@ -178,12 +183,9 @@ export function analyzeGpxRoute(
   const majorClimbs = findMajorSegments(points, "climb");
   const majorDescents = findMajorSegments(points, "descent");
   const sections = createRouteSections(points);
-  const keyMoments = createRouteMoments(
-    points,
-    metrics,
-    majorClimbs,
-    majorDescents,
-  );
+  const routeDynamics = analyzeRouteDynamics(points);
+  const routeSections = buildRouteSections(routeDynamics, points);
+  const keyMoments = createRouteKeyMoments(points, metrics, routeDynamics);
 
   return {
     name: input.name?.trim() || fallbackName,
@@ -192,6 +194,8 @@ export function analyzeGpxRoute(
     majorClimbs,
     majorDescents,
     sections,
+    routeDynamics,
+    routeSections,
     keyMoments,
     courseCharacter: createCourseCharacter(metrics, majorClimbs, majorDescents),
   };
@@ -293,60 +297,6 @@ function summarizeRange(
     elevationGainM: Math.round(gain),
     elevationLossM: Math.round(loss),
   };
-}
-
-function createRouteMoments(
-  points: GpxRoutePointData[],
-  metrics: GpxRouteMetricsData,
-  climbs: GpxRouteSegmentData[],
-  descents: GpxRouteSegmentData[],
-): KeyMomentData[] {
-  const totalKm = points.at(-1)!.distanceM / 1000;
-  const momentSpecs: Array<{ title: string; segment: GpxRouteSegmentData }> = [];
-
-  if (climbs[0]) momentSpecs.push({ title: "Major climb", segment: climbs[0] });
-
-  const highPointIndex = points.findIndex(
-    (point) => point.elevationM === metrics.highestPointM &&
-      Number((point.distanceM / 1000).toFixed(1)) === metrics.highestPointDistanceKm,
-  );
-  const contextKm = Math.min(5, totalKm);
-  const highPointKm = highPointIndex >= 0 ? points[highPointIndex].distanceM / 1000 : 0;
-  const highStartKm = Math.max(0, Math.min(highPointKm - contextKm / 2, totalKm - contextKm));
-  momentSpecs.push({
-    title: "High point",
-    segment: summarizeRange(points, highStartKm, highStartKm + contextKm, "high-point"),
-  });
-
-  if (descents[0]) momentSpecs.push({ title: "Major descent", segment: descents[0] });
-  if (climbs[1]) momentSpecs.push({ title: "Further climbing", segment: climbs[1] });
-
-  const finalStartKm = Math.max(0, totalKm - Math.min(5, totalKm));
-  momentSpecs.push({
-    title: "Final approach",
-    segment: summarizeRange(points, finalStartKm, totalKm, "final-approach"),
-  });
-
-  const uniqueMoments = momentSpecs.filter(
-    (moment, index) =>
-      momentSpecs.findIndex((candidate) => candidate.title === moment.title) === index,
-  );
-
-  return uniqueMoments.map(({ title, segment }, index) => ({
-    id: `route-moment-${index + 1}`,
-    number: String(index + 1).padStart(2, "0"),
-    title,
-    distance:
-      title === "High point"
-        ? `~${metrics.highestPointDistanceKm} km`
-        : `${segment.startKm}–${segment.endKm} km`,
-    focusStartKm: segment.startKm,
-    focusEndKm: segment.endKm,
-    gain: `+${segment.elevationGainM.toLocaleString("en-US")} m`,
-    loss: `−${segment.elevationLossM.toLocaleString("en-US")} m`,
-    text: `GPX-derived elevation changes across this route section.`,
-    source: "GPX-derived",
-  }));
 }
 
 function createCourseCharacter(
