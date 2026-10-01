@@ -113,6 +113,7 @@ export type RouteSection = {
     stability: number;
   };
   description: string;
+  terrainEvidenceCoveragePercent?: number;
   terrainEvidence?: RouteSectionTerrainEvidence[];
   mapillaryEvidence?: RouteSectionMapillaryEvidence;
   mapData?: RouteSectionMapPoint[];
@@ -120,7 +121,7 @@ export type RouteSection = {
 
 export type RouteSectionTerrainEvidence = {
   terrain: string;
-  coveragePercent: number;
+  evidenceSharePercent: number;
   provenance: "osm";
 };
 export type RouteSectionMapillaryEvidence = {

@@ -12,6 +12,7 @@ import TerrainImageViewer from "./TerrainImageViewer";
 import TerrainSectionMap from "./TerrainSectionMap";
 import { attachTerrainEvidenceToRouteSections } from "./routeEvidenceAdapter";
 import { sortRouteEmbeddedEventsForDisplay, type RouteSection } from "./routeSectionEngine";
+import { getRouteImageryPresentation, getSurfaceEvidencePresentation } from "./routeSectionPresentation";
 
 export default function RouteAnalysisView({ analysis }: { analysis: RouteAnalysisData }) {
   const [selectedMoment, setSelectedMoment] = useState<string | null>(null);
@@ -93,13 +94,6 @@ export default function RouteAnalysisView({ analysis }: { analysis: RouteAnalysi
               ))}
             </div>
           ) : <p className="text-sm text-black/45">No stable route rhythm could be distinguished from this GPX elevation profile.</p>}
-          {(geoEvidence || mapillaryEvidence) && (
-            <div className="mt-6 flex flex-wrap gap-4 text-xs text-black/45">
-              <span>OSM · {geoEvidence?.availability ?? "pending"}{geoEvidence?.retrieval ? ` · ${geoEvidence.retrieval.retrievalCoveragePercent}% retrieval coverage` : ""}</span>
-              <span>Mapillary · {mapillaryEvidence?.sections.some((section) => section.availability === "available") ? "evidence available" : mapillaryEvidence ? "no imagery available" : "pending"}</span>
-              <span>© OpenStreetMap contributors · © Mapillary</span>
-            </div>
-          )}
         </div>
       </section>
 
@@ -139,6 +133,8 @@ function RouteSectionCard({
     rolling: "Rolling",
     flat: "Flat",
   };
+  const surface = getSurfaceEvidencePresentation(section, section.terrainEvidenceCoveragePercent !== undefined);
+  const imagery = getRouteImageryPresentation(imageEvidence);
   return (
     <article className="rounded-3xl border border-black/10 bg-[#f4f2ed] p-6 sm:p-8">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -164,21 +160,41 @@ function RouteSectionCard({
           </ul>
         </details>
       )}
-      <div className="mt-5 grid gap-4 border-t border-black/10 pt-5 sm:grid-cols-2">
-        <div>
-          <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-black/40">OpenStreetMap · optional evidence</p>
-          {section.terrainEvidence?.length ? (
-            <p className="mt-2 text-sm text-black/60">{section.terrainEvidence.map((item) => `${terrainLabel(item.terrain)} · ${item.coveragePercent}%`).join(" · ")}</p>
-          ) : <p className="mt-2 text-sm text-black/40">{section.terrainEvidence ? "No classifiable surface evidence overlaps this section." : "Not requested"}</p>}
-        </div>
-        <div>
-          <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-black/40">Mapillary · independent imagery evidence</p>
-          <p className="mt-2 text-sm text-black/60">{imageEvidence?.availability ?? "Not requested"}{imageEvidence?.availability === "available" ? ` · ${imageEvidence.images.length} photo${imageEvidence.images.length === 1 ? "" : "s"} · © Mapillary` : imageEvidence?.note ? ` · ${imageEvidence.note}` : ""}</p>
-        </div>
+      <div className="mt-6 border-t border-black/10 pt-5">
+        <SectionSubheading>Section map · GPX-derived</SectionSubheading>
+        <TerrainSectionMap points={section.mapData ?? []} images={imageEvidence?.images ?? []} startDistanceKm={section.startKm} endDistanceKm={section.endKm} selectedImage={selectedImage} onSelectImage={onSelectImage} />
       </div>
-      {imageEvidence?.images.length && section.mapData && section.mapData.length >= 2 ? (
-        <TerrainSectionMap points={section.mapData} images={imageEvidence.images} startDistanceKm={section.startKm} endDistanceKm={section.endKm} selectedImage={selectedImage} onSelectImage={onSelectImage} />
-      ) : null}
+      <section className="mt-6 min-w-0 border-t border-black/10 pt-5" aria-label="Surface evidence">
+        <SectionSubheading>Surface evidence · OpenStreetMap</SectionSubheading>
+        {surface.status === "mapped" ? (
+          <div className="mt-2">
+            <p className="text-sm font-medium text-black/70">{surface.coverageLabel}</p>
+            <p className="mt-3 text-xs text-black/45">{surface.distributionLabel}</p>
+            <ul className="mt-2 grid grid-cols-1 gap-x-6 gap-y-1.5 text-sm text-black/60 sm:grid-cols-2">
+              {surface.categories.map((item) => <li key={item.label} className="flex min-w-0 justify-between gap-3"><span className="truncate">{item.label}</span><span className="shrink-0 tabular-nums">{item.sharePercent}%</span></li>)}
+            </ul>
+            <p className="mt-3 text-[11px] text-black/35">© OpenStreetMap contributors</p>
+          </div>
+        ) : <p className="mt-2 text-sm text-black/45">{surface.message}</p>}
+      </section>
+      {imagery && (
+        <section className="mt-6 min-w-0 border-t border-black/10 pt-5" aria-label="Route imagery">
+          <SectionSubheading>Route imagery · Mapillary</SectionSubheading>
+          {imagery.status === "available" ? (
+            <>
+              <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {imagery.images.map((image) => (
+                  <button key={image.id} type="button" onClick={() => onSelectImage(image)} aria-label={`Open Mapillary image around ${image.distanceAlongRouteKm.toFixed(2)} km`} className="group min-w-0 overflow-hidden rounded-xl border border-black/10 bg-white text-left transition hover:border-[#71805d] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d]">
+                    <span className="block aspect-[4/3] bg-[#e7e8e2] bg-cover bg-center" style={image.thumbnailUrl ? { backgroundImage: `url("${image.thumbnailUrl}")` } : undefined} />
+                    <span className="block truncate px-2.5 py-2 text-xs text-black/55">~{image.distanceAlongRouteKm.toFixed(2)} km · © Mapillary</span>
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 text-[11px] text-black/35">© Mapillary</p>
+            </>
+          ) : <p className="mt-2 text-sm text-black/40">{imagery.message}</p>}
+        </section>
+      )}
     </article>
   );
 }
@@ -232,11 +248,6 @@ function unknownMapillaryEvidence(requests: MapillaryTerrainSectionRequest[]): M
   };
 }
 
-function terrainLabel(value: string) {
-  const labels: Record<string, string> = { paved: "Paved", gravel: "Gravel", "dirt-ground": "Dirt / ground", "rocky-rough": "Rocky", "natural-trail": "Natural trail", "mixed-trail": "Mixed trail" };
-  return labels[value] ?? value;
-}
-
 function Metric({ label, value }: { label: string; value: string }) {
   return <div className="rounded-2xl border border-black/10 bg-white p-4 sm:p-5"><p className="text-[10px] uppercase tracking-[0.15em] text-black/40 sm:text-xs">{label}</p><p className="mt-2 break-words text-xl font-semibold sm:text-2xl">{value}</p></div>;
 }
@@ -247,4 +258,8 @@ function SectionMetric({ label, value }: { label: string; value: string }) {
 
 function SectionHeading({ eyebrow, title }: { eyebrow: string; title: string }) {
   return <div className="mb-8"><p className="text-xs font-semibold uppercase tracking-[0.25em] text-[#71805d]">{eyebrow}</p><h2 className="mt-3 text-3xl font-semibold tracking-[-0.035em] sm:text-4xl">{title}</h2></div>;
+}
+
+function SectionSubheading({ children }: { children: string }) {
+  return <h4 className="text-[10px] font-semibold uppercase tracking-[0.15em] text-black/40">{children}</h4>;
 }

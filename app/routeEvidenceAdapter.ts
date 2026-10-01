@@ -29,15 +29,15 @@ export function attachTerrainEvidenceToRouteSections(
       .sort((a, b) => b[1].weight - a[1].weight)
       .map(([terrain, value]) => ({
         terrain,
-        coveragePercent: Math.round((value.weight / sectionLength) * 100),
+        evidenceSharePercent: classifiableKm > 0 ? Math.round((value.weight / classifiableKm) * 100) : 0,
         provenance: value.provenance,
       }));
     if (!terrainEvidence.length && classifiableKm > 0) {
       const coveredTerrain = aggregation.sections.find((terrain) => terrain.endDistanceKm > section.startKm && terrain.startDistanceKm < section.endKm);
       if (coveredTerrain && coveredTerrain.dominantTerrain !== "unknown") {
-        terrainEvidence.push({ terrain: coveredTerrain.dominantTerrain, coveragePercent: Math.round((classifiableKm / sectionLength) * 100), provenance: "osm" });
+        terrainEvidence.push({ terrain: coveredTerrain.dominantTerrain, evidenceSharePercent: 100, provenance: "osm" });
       }
     }
-    return { ...section, terrainEvidence };
+    return { ...section, terrainEvidenceCoveragePercent: Math.round((classifiableKm / sectionLength) * 100), terrainEvidence };
   });
 }

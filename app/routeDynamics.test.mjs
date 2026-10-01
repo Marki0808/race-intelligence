@@ -6,6 +6,7 @@ import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis.ts";
 import { applyRunnerFacingSectionSignificance, buildConsolidatedRouteSections, buildRouteSections, buildRouteSectionsWithSignificance, consolidateRoutePhases, mergeRoutePhases, sortRouteEmbeddedEventsForDisplay } from "./routeSectionEngine.ts";
 import { createRouteKeyMoments } from "./routeKeyMoments.ts";
 import { attachTerrainEvidenceToRouteSections } from "./routeEvidenceAdapter.ts";
+import { getRouteImageryPresentation, getSurfaceEvidencePresentation } from "./routeSectionPresentation.ts";
 
 function makeRoute(parts, { spacingM = 100, noise = 0 } = {}) {
   const points = [{ latitude: 45, longitude: 13, elevationM: 100, distanceM: 0 }];
@@ -395,7 +396,58 @@ test("OSM evidence attaches by overlap without defining Route Section boundaries
   };
   const enriched = attachTerrainEvidenceToRouteSections(route.sections, geo);
   assert.deepEqual(enriched.map((section) => [section.startKm, section.endKm]), route.sections.map((section) => [section.startKm, section.endKm]));
-  assert.ok(enriched.some((section) => section.terrainEvidence?.some((evidence) => evidence.terrain === "gravel")));
+  const firstSection = enriched[0];
+  assert.equal(firstSection.startKm, route.sections[0].startKm);
+  assert.equal(firstSection.endKm, route.sections[0].endKm);
+  assert.equal(firstSection.ascentM, route.sections[0].ascentM);
+  assert.equal(firstSection.descentM, route.sections[0].descentM);
+  assert.ok(firstSection.mapData?.length >= 2);
+  assert.deepEqual(getSurfaceEvidencePresentation(firstSection, true), {
+    status: "mapped",
+    coveragePercent: 100,
+    coverageLabel: "Mapped evidence · 100% of section",
+    distributionLabel: "Surface distribution among mapped evidence",
+    categories: [{ label: "Gravel", sharePercent: 100 }],
+  });
+  assert.equal(getRouteImageryPresentation(null), null);
+
+  const partialGeo = { ...geo, segments: geo.segments.map((segment) => ({ ...segment, evidenceCoverage: 0.35 })) };
+  const partial = attachTerrainEvidenceToRouteSections(route.sections, partialGeo)[0];
+  assert.equal(partial.terrainEvidenceCoveragePercent, 35);
+  assert.deepEqual(getSurfaceEvidencePresentation(partial, true), {
+    status: "mapped",
+    coveragePercent: 35,
+    coverageLabel: "Mapped evidence · 35% of section",
+    distributionLabel: "Surface distribution among mapped evidence",
+    categories: [{ label: "Gravel", sharePercent: 100 }],
+  });
+
+  const noEvidence = attachTerrainEvidenceToRouteSections(route.sections, {
+    ...geo, availability: "unknown", segments: [],
+  })[0];
+  assert.deepEqual(getSurfaceEvidencePresentation(noEvidence, true), {
+    status: "missing", message: "No reliable mapped surface evidence for this section.",
+  });
+  assert.equal(noEvidence.distanceKm, route.sections[0].distanceKm);
+  assert.equal(noEvidence.dominantRhythm, route.sections[0].dominantRhythm);
+  assert.equal(noEvidence.elevationProfile.length, route.sections[0].elevationProfile.length);
+  assert.equal(getSurfaceEvidencePresentation(route.sections[0], false).status, "not-requested");
+
+  const imageryOnly = {
+    id: route.sections[0].id,
+    availability: "available",
+    images: [{ id: "photo-1", latitude: 45, longitude: 13, distanceAlongRouteKm: 2.4, capturedAt: null, sequenceId: null, thumbnailUrl: null, sourceUrl: "https://www.mapillary.com/app/?pKey=photo-1" }],
+  };
+  assert.equal(route.sections[0].terrainEvidence, undefined);
+  assert.equal(getRouteImageryPresentation(imageryOnly).status, "available");
+  const osmWithoutImagery = getRouteImageryPresentation({ id: route.sections[0].id, availability: "not-found", images: [] });
+  assert.deepEqual(osmWithoutImagery, { status: "not-found", message: "No route imagery available for this section." });
+});
+
+test("Route Sections contain the only course segmentation presentation", () => {
+  const source = readFileSync(new URL("./RouteAnalysisView.tsx", import.meta.url), "utf8");
+  assert.equal((source.match(/title="Route Sections"/g) ?? []).length, 1);
+  assert.doesNotMatch(source, /title="Terrain Evidence"|<h[1-6][^>]*>Terrain Evidence<\/h[1-6]>/);
 });
 
 test("a small descent between long climbs becomes one climb section with a preserved event", () => {
