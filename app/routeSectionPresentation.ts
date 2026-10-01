@@ -1,5 +1,9 @@
 import type { MapillarySectionEvidence } from "./mapillaryTerrainProof.ts";
-import type { RouteSection } from "./routeSectionEngine.ts";
+import type { RouteSection, RouteSectionMapPoint } from "./routeSectionEngine.ts";
+
+export function hasRenderableSectionMap(points: readonly Pick<RouteSectionMapPoint, "latitude" | "longitude">[]): boolean {
+  return points.length >= 2 && points.every((point) => Number.isFinite(point.latitude) && Number.isFinite(point.longitude));
+}
 
 export type SurfaceEvidencePresentation =
   | { status: "not-requested"; message: string }

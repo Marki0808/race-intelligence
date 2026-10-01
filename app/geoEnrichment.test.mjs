@@ -6,6 +6,7 @@ import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis.ts";
 import { buildOverpassQuery, createOverpassCorridorQueries, enrichRouteWithOsm, MAX_ADAPTIVE_RETRIES_PER_ROUTE, MAX_ADAPTIVE_SUBDIVISION_DEPTH, MAX_CORRIDOR_BOXES_PER_QUERY, MAX_CORRIDOR_QUERIES_PER_ROUTE, MAX_OVERPASS_ATTEMPTS_PER_ROUTE, mergeOsmWays, parseOverpassWays, runAdaptiveRetrieval, subdivideOverpassCorridorQuery } from "./geoEnrichmentService.ts";
 import { POST as postGeoEnrichment } from "./api/geo-enrichment/route.ts";
 import { aggregateTerrainEvidenceV3 } from "./terrainAggregationV3.ts";
+import { attachTerrainEvidenceToRouteSections } from "./routeEvidenceAdapter.ts";
 
 const fixtures = [
   { id: 101, type: "way", tags: { highway: "track", surface: "gravel", tracktype: "grade2" }, geometry: [{ lat: 45, lon: 0 }, { lat: 45, lon: 0.002 }] },
@@ -529,4 +530,18 @@ test("the full Istria route reaches Overpass instead of hitting the route-window
   assert.ok(result.matchedRoutePercent > 0);
   assert.ok(result.segments.some((segment) => segment.osmWays.some((way) => way.sourceId === "way/9001")));
   assert.notEqual(result.note, "The route covers too large an area for a safe OSM query.");
+
+  const aggregation = aggregateTerrainEvidenceV3(result);
+  const attachedSections = attachTerrainEvidenceToRouteSections(analysis.routeSections, result);
+  const [firstSection, secondSection, unsupportedSection] = attachedSections;
+  assert.deepEqual([firstSection.startKm, firstSection.endKm], [0, 30.45]);
+  assert.ok(aggregation.sections.length === 0);
+  assert.ok(aggregation.insufficientEvidenceRanges.some((range) => range.supportingTerrainEvidence.some((evidence) => evidence.category === "gravel")));
+  assert.equal(firstSection.terrainEvidenceCoveragePercent, 3);
+  assert.ok(firstSection.terrainEvidence.some((evidence) => evidence.terrain === "gravel"));
+  assert.deepEqual([secondSection.startKm, secondSection.endKm, secondSection.terrainEvidenceCoveragePercent], [30.45, 42.75, 5]);
+  assert.ok(secondSection.terrainEvidence.some((evidence) => evidence.terrain === "gravel"));
+  assert.equal(unsupportedSection.terrainEvidenceCoveragePercent, 0);
+  assert.deepEqual(unsupportedSection.terrainEvidence, []);
+  assert.equal(firstSection.mapData.length, analysis.routeSections[0].mapData.length);
 });

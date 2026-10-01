@@ -1,43 +1,115 @@
 import type { GeoEnrichmentData } from "./geoEnrichment.ts";
 import { aggregateTerrainEvidenceV3 } from "./terrainAggregationV3.ts";
+import type { TerrainCategory } from "./terrainAggregation.ts";
 import type { RouteSection, RouteSectionTerrainEvidence } from "./routeSectionEngine.ts";
 
-/** Attaches existing OSM summaries by overlap; terrain boundaries never alter Route Sections. */
+type ClassifiableEvidenceBand = {
+  startKm: number;
+  endKm: number;
+  coverage: number;
+  matchConfidence: number;
+  category: TerrainCategory;
+  evidenceShare: number;
+};
+
+/** Attaches classified OSM evidence by clipped route-distance overlap; evidence never sets section boundaries. */
 export function attachTerrainEvidenceToRouteSections(
   sections: readonly RouteSection[],
   data: GeoEnrichmentData,
 ): RouteSection[] {
   const aggregation = aggregateTerrainEvidenceV3(data);
+  const evidenceBands = createClassifiableEvidenceBands(aggregation);
   return sections.map((section) => {
-    const sectionLength = Math.max(0.001, section.endKm - section.startKm);
-    const weights = new Map<string, { weight: number; provenance: "osm" }>();
+    const sectionLengthKm = Math.max(0, section.endKm - section.startKm);
+    const boundaries = [...new Set([
+      section.startKm,
+      section.endKm,
+      ...evidenceBands.flatMap((band) => [
+        Math.max(section.startKm, band.startKm),
+        Math.min(section.endKm, band.endKm),
+      ]).filter((distanceKm) => distanceKm > section.startKm && distanceKm < section.endKm),
+    ])].sort((left, right) => left - right);
+    const categoryWeights = new Map<TerrainCategory, number>();
     let classifiableKm = 0;
-    for (const terrain of aggregation.sections) {
-      const overlapKm = Math.max(0, Math.min(section.endKm, terrain.endDistanceKm) - Math.max(section.startKm, terrain.startDistanceKm));
-      if (!overlapKm) continue;
-      const supportedKm = overlapKm * terrain.evidenceCoverage;
-      classifiableKm += supportedKm;
-      for (const item of terrain.supportingTerrainEvidence) {
-        const weight = supportedKm * item.evidenceShare;
-        const key = item.category;
-        const current = weights.get(key) ?? { weight: 0, provenance: "osm" as const };
-        current.weight += weight;
-        weights.set(key, current);
+
+    for (let index = 0; index < boundaries.length - 1; index += 1) {
+      const startKm = boundaries[index];
+      const endKm = boundaries[index + 1];
+      const overlapKm = endKm - startKm;
+      if (overlapKm <= 0) continue;
+      const activeBands = evidenceBands.filter((band) => band.startKm < endKm && band.endKm > startKm);
+      if (!activeBands.length) continue;
+
+      // Distinct upstream ranges can overlap. Use the best mapped-distance coverage for each
+      // atomic interval once, and combine overlapping categories by their relative support.
+      const mappedCoverage = Math.max(...activeBands.map((band) => band.coverage));
+      const uniqueClassifiableKm = overlapKm * mappedCoverage;
+      classifiableKm += uniqueClassifiableKm;
+      const categorySupport = new Map<TerrainCategory, number>();
+      for (const band of activeBands) {
+        const support = band.evidenceShare * band.matchConfidence;
+        categorySupport.set(band.category, Math.max(categorySupport.get(band.category) ?? 0, support));
+      }
+      const totalSupport = [...categorySupport.values()].reduce((sum, value) => sum + value, 0);
+      if (totalSupport <= 0) continue;
+      for (const [category, support] of categorySupport) {
+        categoryWeights.set(category, (categoryWeights.get(category) ?? 0) + uniqueClassifiableKm * support / totalSupport);
       }
     }
-    const terrainEvidence: RouteSectionTerrainEvidence[] = [...weights.entries()]
-      .sort((a, b) => b[1].weight - a[1].weight)
-      .map(([terrain, value]) => ({
+
+    const totalCategoryWeight = [...categoryWeights.values()].reduce((sum, value) => sum + value, 0);
+    const terrainEvidence: RouteSectionTerrainEvidence[] = [...categoryWeights.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .map(([terrain, weight]) => ({
         terrain,
-        evidenceSharePercent: classifiableKm > 0 ? Math.round((value.weight / classifiableKm) * 100) : 0,
-        provenance: value.provenance,
+        evidenceSharePercent: totalCategoryWeight > 0 ? Math.round(weight / totalCategoryWeight * 100) : 0,
+        provenance: "osm",
       }));
-    if (!terrainEvidence.length && classifiableKm > 0) {
-      const coveredTerrain = aggregation.sections.find((terrain) => terrain.endDistanceKm > section.startKm && terrain.startDistanceKm < section.endKm);
-      if (coveredTerrain && coveredTerrain.dominantTerrain !== "unknown") {
-        terrainEvidence.push({ terrain: coveredTerrain.dominantTerrain, evidenceSharePercent: 100, provenance: "osm" });
+
+    return {
+      ...section,
+      terrainEvidenceCoveragePercent: sectionLengthKm > 0
+        ? Math.round(classifiableKm / sectionLengthKm * 100)
+        : 0,
+      terrainEvidence,
+    };
+  });
+}
+
+function createClassifiableEvidenceBands(aggregation: ReturnType<typeof aggregateTerrainEvidenceV3>): ClassifiableEvidenceBand[] {
+  const classifiedIds = new Map<string, Map<TerrainCategory, number>>();
+  for (const range of [...aggregation.sections, ...aggregation.insufficientEvidenceRanges]) {
+    for (const evidence of range.supportingTerrainEvidence) {
+      for (const id of evidence.rawEvidenceSegmentIds) {
+        const categories = classifiedIds.get(id) ?? new Map<TerrainCategory, number>();
+        categories.set(evidence.category, Math.max(categories.get(evidence.category) ?? 0, evidence.evidenceShare));
+        classifiedIds.set(id, categories);
       }
     }
-    return { ...section, terrainEvidenceCoveragePercent: Math.round((classifiableKm / sectionLength) * 100), terrainEvidence };
-  });
+  }
+
+  const segmentsById = new Map(aggregation.rawEvidence.segments.map((segment) => [segment.id, segment]));
+  const bands: ClassifiableEvidenceBand[] = [];
+  for (const [id, categories] of classifiedIds) {
+    const segment = segmentsById.get(id);
+    if (!segment || segment.surface.availability !== "available" || segment.endDistanceKm <= segment.startDistanceKm) continue;
+    const coverage = clamp01(segment.evidenceCoverage);
+    const matchConfidence = segment.matchQuality === "high" ? 1 : segment.matchQuality === "moderate" ? 0.65 : 0;
+    if (coverage <= 0 || matchConfidence <= 0) continue;
+    for (const [category, evidenceShare] of categories) {
+      bands.push({
+        startKm: segment.startDistanceKm,
+        endKm: segment.endDistanceKm,
+        coverage,
+        matchConfidence,
+        category,
+        evidenceShare,
+      });
+    }
+  }
+  return bands;
+}
+
+function clamp01(value: number) {
+  return Math.max(0, Math.min(1, value));
 }

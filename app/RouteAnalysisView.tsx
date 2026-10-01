@@ -90,7 +90,7 @@ export default function RouteAnalysisView({ analysis }: { analysis: RouteAnalysi
           {analysis.routeSections.length ? (
             <div className="space-y-5">
               {displayedSections.map((section) => (
-                <RouteSectionCard key={section.id} section={section} imageEvidence={imageEvidence.get(section.id) ?? null} selectedImage={selectedImage} onSelectImage={setSelectedImage} />
+                <RouteSectionCard key={section.id} section={section} imageEvidence={imageEvidence.get(section.id) ?? null} onSelectImage={setSelectedImage} />
               ))}
             </div>
           ) : <p className="text-sm text-black/45">No stable route rhythm could be distinguished from this GPX elevation profile.</p>}
@@ -119,12 +119,10 @@ export default function RouteAnalysisView({ analysis }: { analysis: RouteAnalysi
 function RouteSectionCard({
   section,
   imageEvidence,
-  selectedImage,
   onSelectImage,
 }: {
   section: RouteSection;
   imageEvidence: MapillarySectionEvidence | null;
-  selectedImage: MapillaryImageEvidence | null;
   onSelectImage: (image: MapillaryImageEvidence) => void;
 }) {
   const title: Record<RouteSection["dominantRhythm"], string> = {
@@ -162,7 +160,7 @@ function RouteSectionCard({
       )}
       <div className="mt-6 border-t border-black/10 pt-5">
         <SectionSubheading>Section map · GPX-derived</SectionSubheading>
-        <TerrainSectionMap points={section.mapData ?? []} images={imageEvidence?.images ?? []} startDistanceKm={section.startKm} endDistanceKm={section.endKm} selectedImage={selectedImage} onSelectImage={onSelectImage} />
+        <TerrainSectionMap points={section.mapData ?? []} startDistanceKm={section.startKm} endDistanceKm={section.endKm} />
       </div>
       <section className="mt-6 min-w-0 border-t border-black/10 pt-5" aria-label="Surface evidence">
         <SectionSubheading>Surface evidence · OpenStreetMap</SectionSubheading>

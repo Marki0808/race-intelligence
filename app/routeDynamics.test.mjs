@@ -6,7 +6,7 @@ import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis.ts";
 import { applyRunnerFacingSectionSignificance, buildConsolidatedRouteSections, buildRouteSections, buildRouteSectionsWithSignificance, consolidateRoutePhases, mergeRoutePhases, sortRouteEmbeddedEventsForDisplay } from "./routeSectionEngine.ts";
 import { createRouteKeyMoments } from "./routeKeyMoments.ts";
 import { attachTerrainEvidenceToRouteSections } from "./routeEvidenceAdapter.ts";
-import { getRouteImageryPresentation, getSurfaceEvidencePresentation } from "./routeSectionPresentation.ts";
+import { getRouteImageryPresentation, getSurfaceEvidencePresentation, hasRenderableSectionMap } from "./routeSectionPresentation.ts";
 
 function makeRoute(parts, { spacingM = 100, noise = 0 } = {}) {
   const points = [{ latitude: 45, longitude: 13, elevationM: 100, distanceM: 0 }];
@@ -138,6 +138,42 @@ function sectionFixtures(specs) {
 
 function significanceFixture(specs) {
   return applyRunnerFacingSectionSignificance(sectionFixtures(specs));
+}
+
+function makeGeoSegment(id, startDistanceKm, endDistanceKm, surface, evidenceCoverage = 1) {
+  const value = surface ?? null;
+  const availability = value ? "available" : "unknown";
+  const evidenceValue = { value, rawValue: value, provenance: "osm", availability };
+  const notFound = { value: null, rawValue: null, provenance: "osm", availability: "not-found" };
+  return {
+    id, startDistanceKm, endDistanceKm, lengthKm: endDistanceKm - startDistanceKm, evidenceCoverage,
+    matchQuality: value ? "high" : "unknown", osmWays: [], surface: evidenceValue,
+    pathType: notFound, trackCondition: notFound, smoothness: notFound, hikingDifficulty: notFound,
+    trailVisibility: notFound, incline: notFound, width: notFound, informal: notFound,
+    trailblazed: notFound, assistedTrail: notFound,
+  };
+}
+
+function makeGeoData(segments) {
+  const hasSurface = segments.some((segment) => segment.surface.availability === "available");
+  return {
+    source: { type: "osm", name: "OpenStreetMap", attribution: "© OpenStreetMap contributors" },
+    availability: hasSurface ? "available" : "unknown", matchedRoutePercent: hasSurface ? 30 : 0,
+    segments, attribution: "© OpenStreetMap contributors",
+  };
+}
+
+function routeSectionRange(startKm, endKm, id = "route-section-test") {
+  return {
+    id, startKm, endKm, distanceKm: endKm - startKm, dominantRhythm: "climb",
+    elevationStartM: 100, elevationEndM: 300, elevationMinM: 100, elevationMaxM: 300,
+    ascentM: 200, descentM: 0, elevationProfile: [{ distanceM: startKm * 1000, elevationM: 100 }, { distanceM: endKm * 1000, elevationM: 300 }],
+    embeddedEvents: [], dynamicsSummary: { verticalIntensityMPerKm: 20, directionBalance: 1, directionStrength: 1, stability: 0.9 },
+    description: "Predominantly climbing section", mapData: [
+      { latitude: 45, longitude: 13, elevationM: 100, distanceM: startKm * 1000 },
+      { latitude: 45.01, longitude: 13.01, elevationM: 300, distanceM: endKm * 1000 },
+    ],
+  };
 }
 
 test("displayed embedded events are ordered chronologically with end distance as the tie-breaker", () => {
@@ -448,6 +484,119 @@ test("Route Sections contain the only course segmentation presentation", () => {
   const source = readFileSync(new URL("./RouteAnalysisView.tsx", import.meta.url), "utf8");
   assert.equal((source.match(/title="Route Sections"/g) ?? []).length, 1);
   assert.doesNotMatch(source, /title="Terrain Evidence"|<h[1-6][^>]*>Terrain Evidence<\/h[1-6]>/);
+});
+
+test("section maps depend only on GPX geometry across all OSM and Mapillary states", () => {
+  const section = routeSectionRange(0, 10);
+  const geometry = section.mapData;
+  const states = [
+    "OSM absent; Mapillary absent",
+    "OSM absent; Mapillary present",
+    "OSM present; Mapillary absent",
+  ];
+  for (const state of states) {
+    assert.equal(hasRenderableSectionMap(geometry), true, state);
+    assert.equal(hasRenderableSectionMap([]), false);
+  }
+  const mapSource = readFileSync(new URL("./TerrainSectionMap.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(mapSource, /Mapillary|images|selectedImage|onSelectImage/);
+  const viewSource = readFileSync(new URL("./RouteAnalysisView.tsx", import.meta.url), "utf8");
+  assert.equal((viewSource.match(/<TerrainSectionMap /g) ?? []).length, 1);
+});
+
+test("separated OSM ranges attach by clipped distance and normalize surfaces among mapped evidence", () => {
+  const section = routeSectionRange(0, 30);
+  const data = makeGeoData([
+    makeGeoSegment("unknown-a", 0, 5.2, null, 0),
+    makeGeoSegment("dirt-a", 5.2, 8.4, "dirt"),
+    makeGeoSegment("gravel", 8.4, 12.7, "gravel"),
+    makeGeoSegment("unknown-b", 12.7, 20.1, null, 0),
+    makeGeoSegment("dirt-b", 20.1, 24.8, "earth"),
+    makeGeoSegment("unknown-c", 24.8, 30, null, 0),
+  ]);
+  const [attached] = attachTerrainEvidenceToRouteSections([section], data);
+
+  assert.equal(attached.startKm, 0);
+  assert.equal(attached.endKm, 30);
+  assert.equal(attached.distanceKm, 30);
+  assert.equal(attached.terrainEvidenceCoveragePercent, 41);
+  assert.deepEqual(attached.terrainEvidence.map(({ terrain, evidenceSharePercent }) => [terrain, evidenceSharePercent]), [
+    ["dirt-ground", 65], ["gravel", 35],
+  ]);
+  assert.deepEqual(getSurfaceEvidencePresentation(attached, true), {
+    status: "mapped",
+    coveragePercent: 41,
+    coverageLabel: "Mapped evidence · 41% of section",
+    distributionLabel: "Surface distribution among mapped evidence",
+    categories: [
+      { label: "Dirt / ground", sharePercent: 65 },
+      { label: "Gravel", sharePercent: 35 },
+    ],
+  });
+});
+
+test("OSM ranges crossing a Route Section boundary are clipped independently to each side", () => {
+  const left = routeSectionRange(0, 10, "left");
+  const right = routeSectionRange(10, 30, "right");
+  const data = makeGeoData([
+    makeGeoSegment("unknown-before", 0, 8, null, 0),
+    makeGeoSegment("crossing-dirt", 8, 12, "dirt"),
+    makeGeoSegment("unknown-after", 12, 30, null, 0),
+  ]);
+  const attached = attachTerrainEvidenceToRouteSections([left, right], data);
+
+  assert.deepEqual(attached.map(({ startKm, endKm, terrainEvidenceCoveragePercent }) => [startKm, endKm, terrainEvidenceCoveragePercent]), [
+    [0, 10, 20], [10, 30, 10],
+  ]);
+  assert.deepEqual(attached.map((section) => section.terrainEvidence[0]?.evidenceSharePercent), [100, 100]);
+});
+
+test("overlapping OSM ranges count unique mapped distance once", () => {
+  const section = routeSectionRange(0, 10);
+  const data = makeGeoData([
+    makeGeoSegment("unknown-before", 0, 2, null, 0),
+    makeGeoSegment("dirt-overlap-left", 2, 6, "dirt"),
+    makeGeoSegment("gravel-overlap-right", 4, 8, "gravel"),
+    makeGeoSegment("unknown-after", 8, 10, null, 0),
+  ]);
+  const [attached] = attachTerrainEvidenceToRouteSections([section], data);
+
+  assert.equal(attached.terrainEvidenceCoveragePercent, 60);
+  assert.deepEqual(attached.terrainEvidence.map(({ terrain, evidenceSharePercent }) => [terrain, evidenceSharePercent]), [
+    ["dirt-ground", 50], ["gravel", 50],
+  ]);
+});
+
+test("Mapillary availability does not change OSM attachment and imagery stays independent without OSM", () => {
+  const section = routeSectionRange(0, 10);
+  const data = makeGeoData([
+    makeGeoSegment("partial-dirt", 2, 4, "dirt"),
+  ]);
+  const withImageryAlreadyOnSection = {
+    ...section,
+    mapillaryEvidence: { availability: "available", imageCount: 1 },
+  };
+  const [withoutMapillary] = attachTerrainEvidenceToRouteSections([section], data);
+  const [withMapillary] = attachTerrainEvidenceToRouteSections([withImageryAlreadyOnSection], data);
+  assert.equal(withoutMapillary.terrainEvidenceCoveragePercent, withMapillary.terrainEvidenceCoveragePercent);
+  assert.deepEqual(withoutMapillary.terrainEvidence, withMapillary.terrainEvidence);
+
+  const [withoutOsm] = attachTerrainEvidenceToRouteSections([section], makeGeoData([]));
+  const imagery = { id: section.id, availability: "available", images: [{ id: "photo-1", latitude: 45, longitude: 13, distanceAlongRouteKm: 3, capturedAt: null, sequenceId: null, thumbnailUrl: null, sourceUrl: "https://www.mapillary.com/app/?pKey=photo-1" }] };
+  const imageryUnavailable = { id: section.id, availability: "unknown", images: [] };
+  const states = [
+    { section: withoutMapillary, imagery, surfaceStatus: "mapped", imageStatus: "available" },
+    { section: withoutMapillary, imagery: null, surfaceStatus: "mapped", imageStatus: null },
+    { section: withoutOsm, imagery, surfaceStatus: "missing", imageStatus: "available" },
+    { section: withoutOsm, imagery: imageryUnavailable, surfaceStatus: "missing", imageStatus: "unavailable" },
+  ];
+  for (const state of states) {
+    assert.equal(hasRenderableSectionMap(state.section.mapData), true);
+    assert.equal(getSurfaceEvidencePresentation(state.section, true).status, state.surfaceStatus);
+    assert.equal(getRouteImageryPresentation(state.imagery)?.status ?? null, state.imageStatus);
+  }
+  assert.equal(getSurfaceEvidencePresentation(withoutOsm, true).status, "missing");
+  assert.equal(getRouteImageryPresentation(imagery).status, "available");
 });
 
 test("a small descent between long climbs becomes one climb section with a preserved event", () => {
