@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { analyzeRouteDynamics } from "./routeDynamics.ts";
-import { buildRouteSections, consolidateRoutePhases, mergeRoutePhases } from "./routeSectionEngine.ts";
+import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis.ts";
+import { applyRunnerFacingSectionSignificance, buildConsolidatedRouteSections, buildRouteSections, buildRouteSectionsWithSignificance, consolidateRoutePhases, mergeRoutePhases } from "./routeSectionEngine.ts";
 import { createRouteKeyMoments } from "./routeKeyMoments.ts";
 import { attachTerrainEvidenceToRouteSections } from "./routeEvidenceAdapter.ts";
 
@@ -96,6 +98,45 @@ function makeDynamicSample(distanceM, elevationM, rhythm, ascentM, descentM) {
     rhythm,
   };
   return { distanceM, elevationM, smoothedElevationM: elevationM, short: metrics, medium: metrics, long: metrics, rhythm, stability: 0.9 };
+}
+
+function sectionFixtures(specs) {
+  let startKm = 0;
+  return specs.map((spec, index) => {
+    const endKm = startKm + spec.distanceKm;
+    const ascentM = spec.ascentM ?? 0;
+    const descentM = spec.descentM ?? 0;
+    const verticalM = ascentM + descentM;
+    const directionBalance = verticalM ? (ascentM - descentM) / verticalM : 0;
+    const section = {
+      id: `fixture-section-${index + 1}`,
+      startKm,
+      endKm,
+      distanceKm: spec.distanceKm,
+      dominantRhythm: spec.rhythm,
+      elevationStartM: 100,
+      elevationEndM: 100 + ascentM - descentM,
+      elevationMinM: 50,
+      elevationMaxM: 500,
+      ascentM,
+      descentM,
+      elevationProfile: [],
+      embeddedEvents: [],
+      dynamicsSummary: {
+        verticalIntensityMPerKm: verticalM / spec.distanceKm,
+        directionBalance,
+        directionStrength: Math.abs(directionBalance),
+        stability: spec.stability ?? 0.9,
+      },
+      description: spec.rhythm,
+    };
+    startKm = endKm;
+    return section;
+  });
+}
+
+function significanceFixture(specs) {
+  return applyRunnerFacingSectionSignificance(sectionFixtures(specs));
 }
 
 test("pure climb is a stable climbing Route Section", () => {
@@ -340,4 +381,189 @@ test("OSM evidence attaches by overlap without defining Route Section boundaries
   const enriched = attachTerrainEvidenceToRouteSections(route.sections, geo);
   assert.deepEqual(enriched.map((section) => [section.startKm, section.endKm]), route.sections.map((section) => [section.startKm, section.endKm]));
   assert.ok(enriched.some((section) => section.terrainEvidence?.some((evidence) => evidence.terrain === "gravel")));
+});
+
+test("a small descent between long climbs becomes one climb section with a preserved event", () => {
+  const { sections, decisions } = significanceFixture([
+    { rhythm: "climb", distanceKm: 20, ascentM: 1000 },
+    { rhythm: "descent", distanceKm: 1, descentM: 60 },
+    { rhythm: "climb", distanceKm: 20, ascentM: 1000 },
+  ]);
+  assert.deepEqual(sections.map((section) => section.dominantRhythm), ["climb"]);
+  assert.ok(sections[0].embeddedEvents.some((event) => event.rhythm === "descent" && event.distanceKm === 1 && event.descentM === 60));
+  assert.equal(decisions[1].decision, "bridged");
+});
+
+test("a small climb between long descents becomes one descent section with a preserved event", () => {
+  const { sections } = significanceFixture([
+    { rhythm: "descent", distanceKm: 10, descentM: 600 },
+    { rhythm: "climb", distanceKm: 1, ascentM: 70 },
+    { rhythm: "descent", distanceKm: 10, descentM: 600 },
+  ]);
+  assert.deepEqual(sections.map((section) => section.dominantRhythm), ["descent"]);
+  assert.ok(sections[0].embeddedEvents.some((event) => event.rhythm === "climb" && event.ascentM === 70));
+});
+
+test("a short but vertically meaningful climb between descents remains standalone", () => {
+  const { sections, decisions } = significanceFixture([
+    { rhythm: "descent", distanceKm: 10, descentM: 600 },
+    { rhythm: "climb", distanceKm: 1.8, ascentM: 450 },
+    { rhythm: "descent", distanceKm: 10, descentM: 600 },
+  ]);
+  assert.deepEqual(sections.map((section) => section.dominantRhythm), ["descent", "climb", "descent"]);
+  assert.equal(decisions[1].decision, "kept");
+});
+
+test("an insignificant rolling bridge between climbs is absorbed", () => {
+  const { sections } = significanceFixture([
+    { rhythm: "climb", distanceKm: 20, ascentM: 1000 },
+    { rhythm: "rolling", distanceKm: 1, ascentM: 35, descentM: 35 },
+    { rhythm: "climb", distanceKm: 20, ascentM: 1000 },
+  ]);
+  assert.deepEqual(sections.map((section) => section.dominantRhythm), ["climb"]);
+  assert.ok(sections[0].embeddedEvents.some((event) => event.rhythm === "rolling"));
+});
+
+test("an insignificant rolling bridge between descents is absorbed", () => {
+  const { sections } = significanceFixture([
+    { rhythm: "descent", distanceKm: 20, descentM: 1000 },
+    { rhythm: "rolling", distanceKm: 1, ascentM: 35, descentM: 35 },
+    { rhythm: "descent", distanceKm: 20, descentM: 1000 },
+  ]);
+  assert.deepEqual(sections.map((section) => section.dominantRhythm), ["descent"]);
+  assert.ok(sections[0].embeddedEvents.some((event) => event.rhythm === "rolling"));
+});
+
+test("a long meaningful rolling phase stays standalone", () => {
+  const { sections } = significanceFixture([
+    { rhythm: "climb", distanceKm: 8, ascentM: 300 },
+    { rhythm: "rolling", distanceKm: 12, ascentM: 240, descentM: 240 },
+    { rhythm: "climb", distanceKm: 8, ascentM: 300 },
+  ]);
+  assert.deepEqual(sections.map((section) => section.dominantRhythm), ["climb", "rolling", "climb"]);
+});
+
+test("a long flat phase stays standalone", () => {
+  const { sections } = significanceFixture([
+    { rhythm: "climb", distanceKm: 10, ascentM: 500 },
+    { rhythm: "flat", distanceKm: 12 },
+    { rhythm: "descent", distanceKm: 10, descentM: 500 },
+  ]);
+  assert.deepEqual(sections.map((section) => section.dominantRhythm), ["climb", "flat", "descent"]);
+});
+
+test("a short, extremely intense climb stays standalone", () => {
+  const { sections } = significanceFixture([
+    { rhythm: "descent", distanceKm: 10, descentM: 700 },
+    { rhythm: "climb", distanceKm: 1.8, ascentM: 450 },
+    { rhythm: "descent", distanceKm: 10, descentM: 700 },
+  ]);
+  assert.deepEqual(sections.map((section) => section.dominantRhythm), ["descent", "climb", "descent"]);
+});
+
+test("a long steep descent remains significant at a small race-wide distance share", () => {
+  const { sections, decisions } = significanceFixture([
+    { rhythm: "climb", distanceKm: 40, ascentM: 4000 },
+    { rhythm: "descent", distanceKm: 40, descentM: 5000 },
+    { rhythm: "descent", distanceKm: 10, descentM: 1200 },
+    { rhythm: "climb", distanceKm: 40, ascentM: 4000 },
+    { rhythm: "descent", distanceKm: 44, descentM: 6000 },
+  ]);
+  assert.ok(decisions[2].distanceShare < 0.06);
+  assert.equal(decisions[2].decision, "kept");
+  assert.ok(sections.some((section) => section.startKm === 80 && section.endKm === 90));
+});
+
+test("a stable directional phase slightly above route-average intensity remains significant", () => {
+  const { sections, decisions } = significanceFixture([
+    { rhythm: "climb", distanceKm: 50, ascentM: 4000 },
+    { rhythm: "descent", distanceKm: 40, descentM: 3000 },
+    { rhythm: "rolling", distanceKm: 2.5, ascentM: 178, descentM: 211 },
+    { rhythm: "climb", distanceKm: 3, ascentM: 347 },
+    { rhythm: "descent", distanceKm: 7.28, descentM: 828 },
+    { rhythm: "descent", distanceKm: 71.22, descentM: 8936 },
+  ]);
+  assert.ok(decisions[3].distanceShare < 0.02);
+  assert.ok(decisions[3].verticalIntensityRatio > 1.1);
+  assert.equal(decisions[3].decision, "kept");
+  assert.ok(sections.some((section) => section.startKm === 92.5 && section.endKm === 95.5 && section.dominantRhythm === "climb"));
+});
+
+test("an insignificant opening section merges into its more coherent neighbor", () => {
+  const { sections, decisions } = significanceFixture([
+    { rhythm: "rolling", distanceKm: 0.5, ascentM: 3, descentM: 2 },
+    { rhythm: "climb", distanceKm: 12, ascentM: 600 },
+    { rhythm: "descent", distanceKm: 10, descentM: 500 },
+  ]);
+  assert.equal(sections[0].startKm, 0);
+  assert.equal(sections[0].dominantRhythm, "climb");
+  assert.equal(decisions[0].decision, "absorbed-next");
+});
+
+test("an insignificant final section merges into its more coherent neighbor", () => {
+  const { sections, decisions } = significanceFixture([
+    { rhythm: "climb", distanceKm: 12, ascentM: 600 },
+    { rhythm: "descent", distanceKm: 10, descentM: 500 },
+    { rhythm: "rolling", distanceKm: 0.5, ascentM: 3, descentM: 2 },
+  ]);
+  assert.equal(sections.at(-1).endKm, 22.5);
+  assert.equal(sections.at(-1).dominantRhythm, "descent");
+  assert.equal(decisions[2].decision, "absorbed-previous");
+});
+
+test("merge affinity can choose the next climb over a longer rolling neighbor", () => {
+  const { sections, decisions } = significanceFixture([
+    { rhythm: "rolling", distanceKm: 8, ascentM: 300, descentM: 300 },
+    { rhythm: "descent", distanceKm: 0.5, descentM: 10 },
+    { rhythm: "climb", distanceKm: 5, ascentM: 500 },
+  ]);
+  assert.equal(decisions[1].decision, "absorbed-next");
+  assert.equal(sections[0].dominantRhythm, "rolling");
+  assert.equal(sections[1].dominantRhythm, "climb");
+  assert.ok(sections[1].embeddedEvents.some((event) => event.rhythm === "descent"));
+});
+
+test("long complex routes keep meaningful repeated phases without a section-count cap", () => {
+  const specs = Array.from({ length: 32 }, (_, index) => ({
+    rhythm: index % 2 === 0 ? "climb" : "descent",
+    distanceKm: 3,
+    ascentM: index % 2 === 0 ? 200 : 0,
+    descentM: index % 2 === 0 ? 0 : 200,
+  }));
+  const { sections } = significanceFixture(specs);
+  assert.equal(sections.length, 32);
+  assert.equal(sections.at(-1).endKm, 96);
+});
+
+test("all absorbed phase facts and merge decisions remain inspectable", () => {
+  const { sections, decisions } = significanceFixture([
+    { rhythm: "climb", distanceKm: 20, ascentM: 1000 },
+    { rhythm: "descent", distanceKm: 1, descentM: 60 },
+    { rhythm: "climb", distanceKm: 20, ascentM: 1000 },
+  ]);
+  const absorbed = decisions[1];
+  assert.equal(absorbed.startKm, 20);
+  assert.equal(absorbed.endKm, 21);
+  assert.equal(absorbed.distanceKm, 1);
+  assert.equal(absorbed.ascentM, 0);
+  assert.equal(absorbed.descentM, 60);
+  assert.ok(absorbed.distanceShare > 0);
+  assert.ok(absorbed.verticalShare > 0);
+  assert.ok(absorbed.verticalIntensityMPerKm > 0);
+  assert.equal(absorbed.decision, "bridged");
+  assert.match(absorbed.mergeTarget, /same-rhythm bridge/);
+  assert.ok(sections[0].embeddedEvents.some((event) => event.startKm === absorbed.startKm && event.endKm === absorbed.endKm));
+});
+
+test("checked-in Istria GPX absorbs the low-significance 47 km phase and preserves the major descent interruption", () => {
+  const xml = readFileSync(new URL("../public/ISTRIA_110K_2027.gpx", import.meta.url), "utf8");
+  const analysis = analyzeGpxRoute(parseGpxText(xml));
+  const before = buildConsolidatedRouteSections(analysis.routeDynamics, analysis.points);
+  const after = buildRouteSectionsWithSignificance(analysis.routeDynamics, analysis.points).sections;
+  assert.equal(before.length, 17);
+  assert.ok(!after.some((section) => section.startKm === 47.35 && section.endKm === 49.25));
+  assert.ok(after.some((section) => section.startKm === 45.35 && section.endKm === 49.25));
+  assert.ok(after.some((section) => section.embeddedEvents.some((event) => event.startKm === 23.6 && event.endKm === 26.2 && event.descentM === 283)));
+  assert.equal(after[0].startKm, 0);
+  assert.equal(after.at(-1).endKm, analysis.metrics.distanceKm);
 });

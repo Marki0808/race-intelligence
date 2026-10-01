@@ -158,9 +158,9 @@ function RouteSectionCard({
       <MiniProfile section={section} />
       {section.embeddedEvents.length > 0 && (
         <details className="mt-5 rounded-2xl border border-black/10 bg-white/75 p-4">
-          <summary className="cursor-pointer text-sm font-semibold">Embedded elevation events ({section.embeddedEvents.length})</summary>
+          <summary className="cursor-pointer text-sm font-semibold">Notable changes within this section ({section.embeddedEvents.length})</summary>
           <ul className="mt-3 space-y-2 text-sm text-black/55">
-            {section.embeddedEvents.map((event) => <li key={event.id}>{event.startKm}–{event.endKm} km · {event.rhythm} · +{event.ascentM} m / −{event.descentM} m</li>)}
+            {section.embeddedEvents.map((event) => <li key={event.id}>{event.startKm}–{event.endKm} km · {event.distanceKm} km {event.rhythm} · +{event.ascentM} m / −{event.descentM} m</li>)}
           </ul>
         </details>
       )}

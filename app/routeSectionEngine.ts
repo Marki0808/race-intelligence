@@ -12,7 +12,80 @@ import {
 export type RouteEmbeddedEvent = Pick<
   RouteDynamicEvent,
   "id" | "rhythm" | "startKm" | "endKm" | "ascentM" | "descentM" | "significance"
->;
+> & { distanceKm: number };
+
+export type RunnerSectionSignificanceConfig = {
+  minimumScore: number;
+  directionalWeights: { distance: number; vertical: number; intensity: number };
+  neutralWeights: { distance: number; vertical: number; intensity: number };
+  intensityRatioKeepThreshold: number;
+  intenseSectionMinimumStability: number;
+  minimumDirectionalStrength: number;
+  minimumDirectionalDistanceShare: number;
+  minimumDirectionalVerticalShare: number;
+  neutralMinimumDistanceShare: number;
+  neutralMinimumScore: number;
+  localContextWeight: number;
+  bridgeMinimumDirectionStrength: number;
+  bridgeFlatMaximumIntensityMPerKm: number;
+  mergeAffinityWeights: {
+    sameRhythm: number;
+    matchingFlanks: number;
+    sameDirection: number;
+    oppositeDirection: number;
+    relativeNeighborSize: number;
+  };
+  stabilityFloor: number;
+  stabilityWeight: number;
+};
+
+export const DEFAULT_RUNNER_SECTION_SIGNIFICANCE_CONFIG: RunnerSectionSignificanceConfig = {
+  minimumScore: 0.17,
+  directionalWeights: { distance: 0.3, vertical: 0.5, intensity: 0.2 },
+  neutralWeights: { distance: 0.6, vertical: 0.25, intensity: 0.15 },
+  intensityRatioKeepThreshold: 1.2,
+  intenseSectionMinimumStability: 0.58,
+  minimumDirectionalStrength: 0.58,
+  minimumDirectionalDistanceShare: 0.05,
+  minimumDirectionalVerticalShare: 0.05,
+  neutralMinimumDistanceShare: 0.08,
+  neutralMinimumScore: 0.14,
+  localContextWeight: 0.35,
+  bridgeMinimumDirectionStrength: 0.25,
+  bridgeFlatMaximumIntensityMPerKm: 18,
+  mergeAffinityWeights: {
+    sameRhythm: 0.35,
+    matchingFlanks: 0.4,
+    sameDirection: 0.2,
+    oppositeDirection: 0.04,
+    relativeNeighborSize: 0.05,
+  },
+  stabilityFloor: 0.85,
+  stabilityWeight: 0.15,
+};
+
+export type RunnerSectionDecision = {
+  sectionId: string;
+  startKm: number;
+  endKm: number;
+  rhythm: RouteDominantRhythm;
+  distanceKm: number;
+  ascentM: number;
+  descentM: number;
+  distanceShare: number;
+  verticalShare: number;
+  verticalIntensityMPerKm: number;
+  verticalIntensityRatio: number;
+  significanceScore: number;
+  decision: "kept" | "absorbed-previous" | "absorbed-next" | "bridged";
+  mergeTarget: string | null;
+  reason: string;
+};
+
+export type RunnerSectionSignificanceResult = {
+  sections: RouteSection[];
+  decisions: RunnerSectionDecision[];
+};
 
 export type RouteSection = {
   id: string;
@@ -60,6 +133,24 @@ export function buildRouteSections(
   routePoints: readonly GpxRoutePointData[],
   config: RouteDynamicsConfig = DEFAULT_ROUTE_DYNAMICS_CONFIG,
 ): RouteSection[] {
+  return buildRouteSectionsWithSignificance(dynamics, routePoints, config).sections;
+}
+
+export function buildRouteSectionsWithSignificance(
+  dynamics: RouteDynamicsResult,
+  routePoints: readonly GpxRoutePointData[],
+  config: RouteDynamicsConfig = DEFAULT_ROUTE_DYNAMICS_CONFIG,
+  significanceConfig: RunnerSectionSignificanceConfig = DEFAULT_RUNNER_SECTION_SIGNIFICANCE_CONFIG,
+): RunnerSectionSignificanceResult {
+  return applyRunnerFacingSectionSignificance(buildConsolidatedRouteSections(dynamics, routePoints, config), significanceConfig);
+}
+
+/** Exposes the accepted pre-significance V1 output for deterministic review and A/B validation. */
+export function buildConsolidatedRouteSections(
+  dynamics: RouteDynamicsResult,
+  routePoints: readonly GpxRoutePointData[],
+  config: RouteDynamicsConfig = DEFAULT_ROUTE_DYNAMICS_CONFIG,
+): RouteSection[] {
   if (dynamics.samples.length === 0) return [];
   const analyticalPhases = mergeRoutePhases(createInitialPhases(dynamics, config), dynamics, config);
   const phases = consolidateRoutePhases(analyticalPhases, dynamics, config);
@@ -67,6 +158,335 @@ export function buildRouteSections(
     if (phase.rhythm === "transition") return [];
     return [createSection(phase, index, dynamics, routePoints)];
   });
+}
+
+/** Final user-facing pass over consolidated sections; dynamics classification is left untouched. */
+export function applyRunnerFacingSectionSignificance(
+  input: readonly RouteSection[],
+  config: RunnerSectionSignificanceConfig = DEFAULT_RUNNER_SECTION_SIGNIFICANCE_CONFIG,
+): RunnerSectionSignificanceResult {
+  const totalDistanceKm = input.reduce((sum, section) => sum + section.distanceKm, 0);
+  const totalAscentM = input.reduce((sum, section) => sum + section.ascentM, 0);
+  const totalDescentM = input.reduce((sum, section) => sum + section.descentM, 0);
+  const totalVerticalM = totalAscentM + totalDescentM;
+  const routeIntensity = totalDistanceKm > 0 ? totalVerticalM / totalDistanceKm : 0;
+  const work: SignificanceWorkSection[] = input.map((section) => ({ section, originals: [section] }));
+  const decisions = new Map<string, RunnerSectionDecision>();
+  const initialDiagnostics = new Map(input.map((section, sectionIndex) => [section.id,
+    calculateRunnerSectionDecision(section, totalDistanceKm, totalAscentM, totalDescentM, totalVerticalM, routeIntensity, config,
+      input[sectionIndex - 1], input[sectionIndex + 1]),
+  ]));
+
+  let index = 0;
+  while (index < work.length) {
+    const candidate = work[index];
+    if (candidate.originals.length !== 1) {
+      index += 1;
+      continue;
+    }
+    const previous = work[index - 1];
+    const next = work[index + 1];
+    const diagnostic = initialDiagnostics.get(candidate.section.id)!;
+    if (isSectionSignificant(candidate.section, diagnostic, config)) {
+      decisions.set(candidate.section.id, { ...diagnostic, decision: "kept", mergeTarget: null, reason: significanceReason(candidate.section, diagnostic, config) });
+      index += 1;
+      continue;
+    }
+
+    if (previous && next && previous.section.dominantRhythm === next.section.dominantRhythm &&
+      canPreserveDominantRhythm([previous.section, candidate.section, next.section], previous.section.dominantRhythm, config)) {
+      const absorbedFlanks = next.originals.flatMap((section) => {
+        const flankDiagnostic = initialDiagnostics.get(section.id)!;
+        return isSectionSignificant(section, flankDiagnostic, config) ? [] : [makeAbsorbedEvent(section, flankDiagnostic.significanceScore)];
+      });
+      const bridge = mergeSections([previous.section, candidate.section, next.section], previous.section.dominantRhythm, candidate.section, diagnostic.significanceScore, absorbedFlanks);
+      previous.section = bridge;
+      previous.originals.push(...candidate.originals, ...next.originals);
+      work.splice(index, 2);
+      decisions.set(candidate.section.id, {
+        ...diagnostic,
+        decision: "bridged",
+        mergeTarget: `${previous.section.startKm}–${previous.section.endKm} km (same-rhythm bridge)`,
+        reason: `Low relative score (${diagnostic.significanceScore.toFixed(3)}) and both neighbors are ${previous.section.dominantRhythm}; combined rhythm remains coherent.`,
+      });
+      for (const bridged of next.originals) {
+        if (decisions.has(bridged.id)) continue;
+        const flankDiagnostic = initialDiagnostics.get(bridged.id)!;
+        const flankIsSignificant = isSectionSignificant(bridged, flankDiagnostic, config);
+        decisions.set(bridged.id, {
+          ...flankDiagnostic,
+          decision: flankIsSignificant ? "kept" : "bridged",
+          mergeTarget: `${previous.section.startKm}–${previous.section.endKm} km (same-rhythm bridge)`,
+          reason: flankIsSignificant
+            ? `Its relative significance was retained; it shares the continuous ${previous.section.dominantRhythm} rhythm on the far side of the bridged interruption.`
+            : `Low relative score (${flankDiagnostic.significanceScore.toFixed(3)}); merged with the same-rhythm phase after an insignificant bridge.`,
+        });
+      }
+      index = Math.max(0, index - 1);
+      continue;
+    }
+
+    const target = chooseMergeTarget(candidate.section, previous?.section, next?.section, config);
+    if (!target) {
+      decisions.set(candidate.section.id, { ...diagnostic, decision: "kept", mergeTarget: null, reason: "No neighboring section is available to receive this phase." });
+      index += 1;
+      continue;
+    }
+    const targetWork = target.side === "previous" ? previous! : next!;
+    const targetRange = `${targetWork.section.startKm}–${targetWork.section.endKm} km`;
+    const merged = target.side === "previous"
+      ? mergeSections([targetWork.section, candidate.section], targetWork.section.dominantRhythm, candidate.section, diagnostic.significanceScore)
+      : mergeSections([candidate.section, targetWork.section], targetWork.section.dominantRhythm, candidate.section, diagnostic.significanceScore);
+    targetWork.section = merged;
+    targetWork.originals.push(...candidate.originals);
+    work.splice(index, 1);
+    for (const receiver of targetWork.originals) {
+      if (receiver.id === candidate.section.id || decisions.has(receiver.id)) continue;
+      const receiverDiagnostic = initialDiagnostics.get(receiver.id)!;
+      decisions.set(receiver.id, {
+        ...receiverDiagnostic,
+        decision: "kept",
+        mergeTarget: `${merged.startKm}–${merged.endKm} km (receiving phase)`,
+        reason: `Retained as the ${targetWork.section.dominantRhythm} receiving phase; the neighboring lower-significance phase was absorbed into this coherent section.`,
+      });
+    }
+    decisions.set(candidate.section.id, {
+      ...diagnostic,
+      decision: target.side === "previous" ? "absorbed-previous" : "absorbed-next",
+      mergeTarget: `${targetRange} → ${merged.startKm}–${merged.endKm} km`,
+      reason: `${target.reason}; candidate score ${diagnostic.significanceScore.toFixed(3)} is below ${config.minimumScore.toFixed(2)}.`,
+    });
+    index = Math.max(0, index - (target.side === "previous" ? 1 : 0));
+  }
+
+  const finalSections = work.map(({ section }, finalIndex) => ({ ...section, id: `route-section-${finalIndex + 1}` }));
+  return {
+    sections: finalSections,
+    decisions: input.map((section) => decisions.get(section.id) ?? {
+      ...initialDiagnostics.get(section.id)!,
+      decision: "kept" as const,
+      mergeTarget: null,
+      reason: "Retained as a runner-facing phase.",
+    }),
+  };
+}
+
+type SignificanceWorkSection = { section: RouteSection; originals: RouteSection[] };
+
+function calculateRunnerSectionDecision(
+  section: RouteSection,
+  totalDistanceKm: number,
+  totalAscentM: number,
+  totalDescentM: number,
+  totalVerticalM: number,
+  routeIntensity: number,
+  config: RunnerSectionSignificanceConfig,
+  previous?: RouteSection,
+  next?: RouteSection,
+): Omit<RunnerSectionDecision, "decision" | "mergeTarget" | "reason"> {
+  const distanceShare = totalDistanceKm > 0 ? section.distanceKm / totalDistanceKm : 0;
+  // Report directional shares as specified, but scale them by the route's overall share of that direction for scoring.
+  const directionalVerticalM = section.dominantRhythm === "climb" ? section.ascentM
+    : section.dominantRhythm === "descent" ? section.descentM
+      : section.ascentM + section.descentM;
+  const directionalTotalM = section.dominantRhythm === "climb" ? totalAscentM
+    : section.dominantRhythm === "descent" ? totalDescentM
+      : totalVerticalM;
+  const verticalShare = directionalTotalM > 0 ? directionalVerticalM / directionalTotalM : 0;
+  const routeDirectionShare = totalVerticalM > 0 ? directionalTotalM / totalVerticalM : 0;
+  const routeWeightedVerticalShare = verticalShare * routeDirectionShare;
+  const verticalIntensityMPerKm = section.distanceKm > 0 ? (section.ascentM + section.descentM) / section.distanceKm : 0;
+  const intensityRatio = routeIntensity > 0 ? verticalIntensityMPerKm / routeIntensity : 0;
+  const normalizedIntensity = intensityRatio / (1 + intensityRatio);
+  const weights = section.dominantRhythm === "climb" || section.dominantRhythm === "descent"
+    ? config.directionalWeights
+    : config.neutralWeights;
+  const rawScore = distanceShare * weights.distance + routeWeightedVerticalShare * weights.vertical + normalizedIntensity * weights.intensity;
+  const localSections = [previous, section, next].filter((item): item is RouteSection => Boolean(item));
+  const localDistanceKm = localSections.reduce((sum, item) => sum + item.distanceKm, 0);
+  const localVerticalM = localSections.reduce((sum, item) => sum + item.ascentM + item.descentM, 0);
+  const localIntensity = localDistanceKm > 0 ? localVerticalM / localDistanceKm : 0;
+  const localDistanceShare = localDistanceKm > 0 ? section.distanceKm / localDistanceKm : 0;
+  const localDirectionalTotalM = section.dominantRhythm === "climb"
+    ? localSections.reduce((sum, item) => sum + item.ascentM, 0)
+    : section.dominantRhythm === "descent"
+      ? localSections.reduce((sum, item) => sum + item.descentM, 0)
+      : localVerticalM;
+  const localVerticalShare = localDirectionalTotalM > 0 ? directionalVerticalM / localDirectionalTotalM : 0;
+  const localDirectionShare = localVerticalM > 0 ? localDirectionalTotalM / localVerticalM : 0;
+  const localIntensityRatio = localIntensity > 0 ? verticalIntensityMPerKm / localIntensity : 0;
+  const localScore = localDistanceShare * weights.distance + localVerticalShare * localDirectionShare * weights.vertical +
+    (localIntensityRatio / (1 + localIntensityRatio)) * weights.intensity;
+  const stability = Math.min(1, Math.max(0, section.dynamicsSummary.stability));
+  const blendedScore = rawScore * (1 - config.localContextWeight) + localScore * config.localContextWeight;
+  const significanceScore = blendedScore * (config.stabilityFloor + config.stabilityWeight * stability);
+  return {
+    sectionId: section.id,
+    startKm: section.startKm,
+    endKm: section.endKm,
+    rhythm: section.dominantRhythm,
+    distanceKm: section.distanceKm,
+    ascentM: section.ascentM,
+    descentM: section.descentM,
+    distanceShare: round3(distanceShare),
+    verticalShare: round3(verticalShare),
+    verticalIntensityMPerKm: round1(verticalIntensityMPerKm),
+    verticalIntensityRatio: round2(intensityRatio),
+    significanceScore: round3(significanceScore),
+  };
+}
+
+function isSectionSignificant(section: RouteSection, diagnostic: Omit<RunnerSectionDecision, "decision" | "mergeTarget" | "reason">, config: RunnerSectionSignificanceConfig) {
+  if (diagnostic.significanceScore >= config.minimumScore) return true;
+  const directionStrength = section.dynamicsSummary.directionStrength;
+  if ((section.dominantRhythm === "climb" || section.dominantRhythm === "descent") &&
+    diagnostic.verticalIntensityRatio >= config.intensityRatioKeepThreshold &&
+    directionStrength >= config.minimumDirectionalStrength &&
+    section.dynamicsSummary.stability >= config.intenseSectionMinimumStability) return true;
+  if ((section.dominantRhythm === "climb" || section.dominantRhythm === "descent") &&
+    diagnostic.distanceShare >= config.minimumDirectionalDistanceShare &&
+    diagnostic.verticalShare >= config.minimumDirectionalVerticalShare &&
+    directionStrength >= config.minimumDirectionalStrength &&
+    section.dynamicsSummary.stability >= config.intenseSectionMinimumStability) return true;
+  return (section.dominantRhythm === "flat" || section.dominantRhythm === "rolling") &&
+    diagnostic.distanceShare >= config.neutralMinimumDistanceShare &&
+    diagnostic.significanceScore >= config.neutralMinimumScore &&
+    section.dynamicsSummary.stability >= config.intenseSectionMinimumStability;
+}
+
+function significanceReason(section: RouteSection, diagnostic: Omit<RunnerSectionDecision, "decision" | "mergeTarget" | "reason">, config: RunnerSectionSignificanceConfig) {
+  if (diagnostic.significanceScore >= config.minimumScore) return `Relative score ${diagnostic.significanceScore.toFixed(3)} meets the ${config.minimumScore.toFixed(2)} threshold.`;
+  if ((section.dominantRhythm === "climb" || section.dominantRhythm === "descent") &&
+    diagnostic.verticalIntensityRatio >= config.intensityRatioKeepThreshold &&
+    section.dynamicsSummary.directionStrength >= config.minimumDirectionalStrength &&
+    section.dynamicsSummary.stability >= config.intenseSectionMinimumStability) return "High relative vertical intensity and directional stability preserve this phase.";
+  if ((section.dominantRhythm === "climb" || section.dominantRhythm === "descent") &&
+    diagnostic.distanceShare >= config.minimumDirectionalDistanceShare &&
+    diagnostic.verticalShare >= config.minimumDirectionalVerticalShare &&
+    section.dynamicsSummary.directionStrength >= config.minimumDirectionalStrength &&
+    section.dynamicsSummary.stability >= config.intenseSectionMinimumStability) return "Its distance and vertical contributions are both meaningful within this route.";
+  if (diagnostic.distanceShare >= config.neutralMinimumDistanceShare && diagnostic.significanceScore >= config.neutralMinimumScore) return "Its stable distance share and combined evidence score make the neutral phase substantial enough to stand alone.";
+  return "Retained as a runner-facing phase.";
+}
+
+function chooseMergeTarget(candidate: RouteSection, previous: RouteSection | undefined, next: RouteSection | undefined, config: RunnerSectionSignificanceConfig) {
+  if (!previous) return next ? { side: "next" as const, reason: mergeAffinityReason(candidate, next, previous, next) } : null;
+  if (!next) return { side: "previous" as const, reason: mergeAffinityReason(candidate, previous, previous, next) };
+  const previousAffinity = mergeAffinity(candidate, previous, previous, next, config);
+  const nextAffinity = mergeAffinity(candidate, next, previous, next, config);
+  return previousAffinity >= nextAffinity
+    ? { side: "previous" as const, reason: mergeAffinityReason(candidate, previous, previous, next) }
+    : { side: "next" as const, reason: mergeAffinityReason(candidate, next, previous, next) };
+}
+
+function mergeAffinity(candidate: RouteSection, target: RouteSection, previous: RouteSection | undefined, next: RouteSection | undefined, config: RunnerSectionSignificanceConfig) {
+  const weights = config.mergeAffinityWeights;
+  const sameRhythm = candidate.dominantRhythm === target.dominantRhythm ? weights.sameRhythm : 0;
+  const matchingFlanks = previous && next && previous.dominantRhythm === next.dominantRhythm && target.dominantRhythm === previous.dominantRhythm ? weights.matchingFlanks : 0;
+  const candidateDirection = candidate.ascentM - candidate.descentM;
+  const targetDirection = target.ascentM - target.descentM;
+  const directionContinuity = candidateDirection === 0 || targetDirection === 0 ? 0
+    : Math.sign(candidateDirection) === Math.sign(targetDirection) ? weights.sameDirection : weights.oppositeDirection;
+  const combinedDistance = candidate.distanceKm + target.distanceKm;
+  const relativeSize = combinedDistance > 0 ? target.distanceKm / combinedDistance * weights.relativeNeighborSize : 0;
+  return sameRhythm + matchingFlanks + directionContinuity + relativeSize;
+}
+
+function mergeAffinityReason(candidate: RouteSection, target: RouteSection, previous?: RouteSection, next?: RouteSection) {
+  if (previous && next && previous.dominantRhythm === next.dominantRhythm && target.dominantRhythm === previous.dominantRhythm) return `Both flanks share ${target.dominantRhythm}; the candidate is an interruption in that larger rhythm`;
+  if (candidate.dominantRhythm === target.dominantRhythm) return `The candidate and neighbor share ${target.dominantRhythm} rhythm`;
+  const candidateDirection = candidate.ascentM - candidate.descentM;
+  const targetDirection = target.ascentM - target.descentM;
+  return candidateDirection !== 0 && Math.sign(candidateDirection) === Math.sign(targetDirection)
+    ? `Elevation direction is more continuous with the ${target.dominantRhythm} neighbor`
+    : `Merging into the longer adjacent ${target.dominantRhythm} phase gives the more coherent runner-facing section`;
+}
+
+function canPreserveDominantRhythm(sections: readonly RouteSection[], rhythm: RouteDominantRhythm, config: RunnerSectionSignificanceConfig) {
+  const ascentM = sections.reduce((sum, section) => sum + section.ascentM, 0);
+  const descentM = sections.reduce((sum, section) => sum + section.descentM, 0);
+  const distanceKm = sections.reduce((sum, section) => sum + section.distanceKm, 0);
+  const vertical = ascentM + descentM;
+  if (rhythm === "climb") return ascentM > descentM && (ascentM - descentM) / Math.max(1, vertical) >= config.bridgeMinimumDirectionStrength;
+  if (rhythm === "descent") return descentM > ascentM && (descentM - ascentM) / Math.max(1, vertical) >= config.bridgeMinimumDirectionStrength;
+  if (rhythm === "flat") return distanceKm > 0 && vertical / distanceKm <= config.bridgeFlatMaximumIntensityMPerKm;
+  return true;
+}
+
+function mergeSections(sections: readonly RouteSection[], rhythm: RouteDominantRhythm, absorbed: RouteSection, significance: number, additionalAbsorbedEvents: readonly RouteEmbeddedEvent[] = []): RouteSection {
+  const sorted = [...sections].sort((left, right) => left.startKm - right.startKm);
+  const first = sorted[0];
+  const last = sorted.at(-1)!;
+  const profile = uniqueByDistance(sorted.flatMap((section) => section.elevationProfile));
+  const mapData = uniqueByDistance(sorted.flatMap((section) => section.mapData ?? []));
+  const sectionEvents = uniqueEvents([
+    ...sorted.flatMap((section) => section.embeddedEvents),
+    makeAbsorbedEvent(absorbed, significance),
+    ...additionalAbsorbedEvents,
+  ]);
+  const distanceKm = roundKm(last.endKm - first.startKm);
+  const ascentM = sorted.reduce((sum, section) => sum + section.ascentM, 0);
+  const descentM = sorted.reduce((sum, section) => sum + section.descentM, 0);
+  const vertical = ascentM + descentM;
+  const embeddedEvents = sectionEvents.map((event) => {
+    if (event.id.startsWith("absorbed-")) return event;
+    const eventVertical = event.ascentM + event.descentM;
+    return {
+      ...event,
+      significance: round3(relativeSignificance(
+        event.distanceKm,
+        Math.max(0, distanceKm - event.distanceKm),
+        eventVertical,
+        Math.max(0, vertical - eventVertical),
+      )),
+    };
+  }).sort((left, right) => right.significance - left.significance || right.ascentM + right.descentM - left.ascentM - left.descentM);
+  const weightedStability = sorted.reduce((sum, section) => sum + section.dynamicsSummary.stability * section.distanceKm, 0) / Math.max(0.1, sorted.reduce((sum, section) => sum + section.distanceKm, 0));
+  return {
+    ...first,
+    startKm: first.startKm,
+    endKm: last.endKm,
+    distanceKm,
+    dominantRhythm: rhythm,
+    elevationStartM: first.elevationStartM,
+    elevationEndM: last.elevationEndM,
+    elevationMinM: Math.min(...sorted.map((section) => section.elevationMinM)),
+    elevationMaxM: Math.max(...sorted.map((section) => section.elevationMaxM)),
+    ascentM,
+    descentM,
+    elevationProfile: profile,
+    embeddedEvents,
+    dynamicsSummary: {
+      verticalIntensityMPerKm: round1(vertical / Math.max(0.1, distanceKm)),
+      directionBalance: round2(vertical > 0 ? (ascentM - descentM) / vertical : 0),
+      directionStrength: round2(vertical > 0 ? Math.abs(ascentM - descentM) / vertical : 0),
+      stability: round2(weightedStability),
+    },
+    description: describeSection(rhythm, embeddedEvents),
+    mapData: mapData.length ? mapData : undefined,
+  };
+}
+
+function makeAbsorbedEvent(section: RouteSection, significance: number): RouteEmbeddedEvent {
+  return {
+    id: `absorbed-${section.id}`,
+    rhythm: section.dominantRhythm,
+    startKm: section.startKm,
+    endKm: section.endKm,
+    distanceKm: section.distanceKm,
+    ascentM: section.ascentM,
+    descentM: section.descentM,
+    significance: round3(significance),
+  };
+}
+
+function uniqueByDistance<T extends { distanceM: number }>(points: readonly T[]) {
+  return [...new Map(points.map((point) => [point.distanceM, point])).values()].sort((a, b) => a.distanceM - b.distanceM);
+}
+
+function uniqueEvents(events: readonly RouteEmbeddedEvent[]) {
+  return [...new Map(events.map((event) => [`${event.startKm}-${event.endKm}-${event.rhythm}`, event])).values()]
+    .sort((a, b) => b.significance - a.significance || a.startKm - b.startKm);
 }
 
 export function createInitialPhases(dynamics: RouteDynamicsResult, config: RouteDynamicsConfig = DEFAULT_ROUTE_DYNAMICS_CONFIG): Phase[] {
@@ -372,7 +792,7 @@ function createSection(
   const embeddedEvents = dynamics.events
     .filter((event) => event.startKm * 1000 >= startM && event.endKm * 1000 <= endM && event.rhythm !== phase.rhythm)
     .map(({ id, rhythm, startKm: eventStartKm, endKm: eventEndKm, ascentM: gain, descentM: loss }) => {
-      const eventDistanceKm = Math.max(0, eventEndKm - eventStartKm);
+      const eventDistanceKm = roundKm(Math.max(0, eventEndKm - eventStartKm));
       const eventVerticalM = gain + loss;
       const significance = relativeSignificance(
         eventDistanceKm,
@@ -381,7 +801,7 @@ function createSection(
         Math.max(0, sectionVerticalM - eventVerticalM),
       );
       return {
-        id, rhythm, startKm: eventStartKm, endKm: eventEndKm, ascentM: gain, descentM: loss,
+        id, rhythm, startKm: eventStartKm, endKm: eventEndKm, distanceKm: eventDistanceKm, ascentM: gain, descentM: loss,
         significance: round2(significance),
       };
     });
@@ -435,17 +855,23 @@ function describeSection(rhythm: RouteDominantRhythm, events: RouteEmbeddedEvent
     rolling: "Rolling terrain with repeated climbs and descents",
     flat: "Relatively flat section with limited vertical movement",
   };
-  const opposite = events.filter((event) => (rhythm === "climb" && event.rhythm === "descent") || (rhythm === "descent" && event.rhythm === "climb"));
-  if (!opposite.length) return base[rhythm];
-  const minor = opposite.filter((event) => event.significance < DEFAULT_ROUTE_DYNAMICS_CONFIG.minimumRelativeSignificance);
-  if (minor.length === opposite.length && minor.length === 1) {
-    const event = minor[0];
-    return `${base[rhythm]} with a short ${event.rhythm} interruption around ${event.startKm}–${event.endKm} km.`;
-  }
-  return `${base[rhythm]} with ${opposite.length} embedded ${opposite.length === 1 ? "counter-rhythm phase" : "counter-rhythm phases"}.`;
+  const notable = [...events]
+    .sort((left, right) => right.significance - left.significance || right.ascentM + right.descentM - left.ascentM - left.descentM)
+    .slice(0, 2);
+  if (!notable.length) return base[rhythm];
+  const details = notable.map((event) => {
+    const direction = event.rhythm === "climb" ? `+${event.ascentM} m climb`
+      : event.rhythm === "descent" ? `−${event.descentM} m descent`
+        : event.rhythm === "flat" ? "flat interruption" : "rolling interruption";
+    return `${direction} from km ${event.startKm}–${event.endKm}`;
+  });
+  const remainingCount = events.length - notable.length;
+  const additional = remainingCount > 0 ? `, plus ${remainingCount} shorter change${remainingCount === 1 ? "" : "s"}` : "";
+  return `${base[rhythm]} with ${details.join(" and ")}${additional}.`;
 }
 
 function average(values: number[]) { return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0; }
 function roundKm(value: number) { return Number(value.toFixed(2)); }
 function round1(value: number) { return Number(value.toFixed(1)); }
 function round2(value: number) { return Number(value.toFixed(2)); }
+function round3(value: number) { return Number(value.toFixed(3)); }
