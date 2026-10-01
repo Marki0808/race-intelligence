@@ -11,7 +11,7 @@ import type { MapillaryImageEvidence, MapillarySectionEvidence, MapillaryTerrain
 import TerrainImageViewer from "./TerrainImageViewer";
 import TerrainSectionMap from "./TerrainSectionMap";
 import { attachTerrainEvidenceToRouteSections } from "./routeEvidenceAdapter";
-import type { RouteSection } from "./routeSectionEngine";
+import { sortRouteEmbeddedEventsForDisplay, type RouteSection } from "./routeSectionEngine";
 
 export default function RouteAnalysisView({ analysis }: { analysis: RouteAnalysisData }) {
   const [selectedMoment, setSelectedMoment] = useState<string | null>(null);
@@ -160,7 +160,7 @@ function RouteSectionCard({
         <details className="mt-5 rounded-2xl border border-black/10 bg-white/75 p-4">
           <summary className="cursor-pointer text-sm font-semibold">Notable changes within this section ({section.embeddedEvents.length})</summary>
           <ul className="mt-3 space-y-2 text-sm text-black/55">
-            {section.embeddedEvents.map((event) => <li key={event.id}>{event.startKm}–{event.endKm} km · {event.distanceKm} km {event.rhythm} · +{event.ascentM} m / −{event.descentM} m</li>)}
+            {sortRouteEmbeddedEventsForDisplay(section.embeddedEvents).map((event) => <li key={event.id}>{event.startKm}–{event.endKm} km · {event.distanceKm} km {event.rhythm} · +{event.ascentM} m / −{event.descentM} m</li>)}
           </ul>
         </details>
       )}

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { analyzeRouteDynamics } from "./routeDynamics.ts";
 import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis.ts";
-import { applyRunnerFacingSectionSignificance, buildConsolidatedRouteSections, buildRouteSections, buildRouteSectionsWithSignificance, consolidateRoutePhases, mergeRoutePhases } from "./routeSectionEngine.ts";
+import { applyRunnerFacingSectionSignificance, buildConsolidatedRouteSections, buildRouteSections, buildRouteSectionsWithSignificance, consolidateRoutePhases, mergeRoutePhases, sortRouteEmbeddedEventsForDisplay } from "./routeSectionEngine.ts";
 import { createRouteKeyMoments } from "./routeKeyMoments.ts";
 import { attachTerrainEvidenceToRouteSections } from "./routeEvidenceAdapter.ts";
 
@@ -138,6 +138,21 @@ function sectionFixtures(specs) {
 function significanceFixture(specs) {
   return applyRunnerFacingSectionSignificance(sectionFixtures(specs));
 }
+
+test("displayed embedded events are ordered chronologically with end distance as the tie-breaker", () => {
+  const events = [
+    { id: "later", rhythm: "descent", startKm: 8, endKm: 9, distanceKm: 1, ascentM: 0, descentM: 10, significance: 0.9 },
+    { id: "same-start-later-end", rhythm: "climb", startKm: 3, endKm: 5, distanceKm: 2, ascentM: 20, descentM: 0, significance: 0.8 },
+    { id: "same-start-earlier-end", rhythm: "flat", startKm: 3, endKm: 4, distanceKm: 1, ascentM: 0, descentM: 0, significance: 0.1 },
+  ];
+
+  assert.deepEqual(sortRouteEmbeddedEventsForDisplay(events).map((event) => event.id), [
+    "same-start-earlier-end",
+    "same-start-later-end",
+    "later",
+  ]);
+  assert.deepEqual(events.map((event) => event.id), ["later", "same-start-later-end", "same-start-earlier-end"]);
+});
 
 test("pure climb is a stable climbing Route Section", () => {
   const { sections } = sectionsFor([[10, 500]]);

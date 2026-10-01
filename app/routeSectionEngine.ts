@@ -14,6 +14,11 @@ export type RouteEmbeddedEvent = Pick<
   "id" | "rhythm" | "startKm" | "endKm" | "ascentM" | "descentM" | "significance"
 > & { distanceKm: number };
 
+/** Returns a presentation copy ordered along the route without changing analytical event priority. */
+export function sortRouteEmbeddedEventsForDisplay(events: readonly RouteEmbeddedEvent[]): RouteEmbeddedEvent[] {
+  return [...events].sort((left, right) => left.startKm - right.startKm || left.endKm - right.endKm);
+}
+
 export type RunnerSectionSignificanceConfig = {
   minimumScore: number;
   directionalWeights: { distance: number; vertical: number; intensity: number };
