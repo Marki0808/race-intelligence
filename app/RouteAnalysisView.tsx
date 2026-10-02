@@ -7,18 +7,44 @@ import KeyMoment from "./KeyMoment";
 import type { GeoEnrichmentData } from "./geoEnrichment";
 import { thinRouteForMatching } from "./geoEnrichment";
 import type { RouteAnalysisData } from "./gpxAnalysis";
-import type { MapillaryImageEvidence, MapillarySectionEvidence, MapillaryTerrainProofData, MapillaryTerrainSectionRequest } from "./mapillaryTerrainProof";
+import type { MapillaryImageEvidence, MapillarySectionEvidence, MapillaryTerrainProofData } from "./mapillaryTerrainProof";
 import TerrainImageViewer from "./TerrainImageViewer";
 import TerrainSectionMap from "./TerrainSectionMap";
 import { attachTerrainEvidenceToRouteSections } from "./routeEvidenceAdapter";
 import { sortRouteEmbeddedEventsForDisplay, type RouteSection } from "./routeSectionEngine";
 import { getRouteImageryPresentation, getSurfaceEvidencePresentation } from "./routeSectionPresentation";
+import { buildMapillaryRequests } from "./routeMapillaryRequests";
+import { enrichSharedRoute, type SharedRouteCache } from "./routePersistenceClient";
+import type { RouteFingerprintResult } from "./routeFingerprint";
+import {
+  browserRoutePersistence,
+  cacheMapillaryEnrichment,
+  cacheOsmEnrichment,
+  getCachedOsmEnrichment,
+  hasReusableMapillaryEvidence,
+  MAPILLARY_ENRICHMENT_VERSION,
+  mapMapillaryEvidenceToSections,
+  OSM_ENRICHMENT_VERSION,
+} from "./routePersistence";
+import type { PersistedMapillaryEnrichmentRecord, PersistedOsmEnrichmentRecord } from "./routePersistence";
 
-export default function RouteAnalysisView({ analysis }: { analysis: RouteAnalysisData }) {
+export default function RouteAnalysisView({
+  analysis,
+  routeFingerprint,
+  persistenceScope = "local",
+  sharedCache = null,
+}: {
+  analysis: RouteAnalysisData;
+  routeFingerprint?: RouteFingerprintResult;
+  persistenceScope?: "local" | "shared";
+  sharedCache?: SharedRouteCache | null;
+}) {
   const [selectedMoment, setSelectedMoment] = useState<string | null>(null);
-  const [geoEvidence, setGeoEvidence] = useState<GeoEnrichmentData | null>(null);
+  const [geoEvidence, setGeoEvidence] = useState<GeoEnrichmentData | null>(() => sharedCache?.osm?.mergedData ?? null);
   const [geoLoading, setGeoLoading] = useState(false);
-  const [mapillaryEvidence, setMapillaryEvidence] = useState<MapillaryTerrainProofData | null>(null);
+  const [mapillaryEvidence, setMapillaryEvidence] = useState<MapillaryTerrainProofData | null>(() => sharedCache?.mapillary
+    ? mapMapillaryEvidenceToSections(sharedCache.mapillary, analysis.routeSections)
+    : null);
   const [selectedImage, setSelectedImage] = useState<MapillaryImageEvidence | null>(null);
 
   const displayedSections = useMemo(() => geoEvidence
@@ -29,32 +55,91 @@ export default function RouteAnalysisView({ analysis }: { analysis: RouteAnalysi
   async function loadEvidence() {
     if (geoLoading) return;
     setGeoLoading(true);
-    const requests = buildMapillaryRequests(analysis.routeSections, analysis.points);
-    const [osmResult, imageryResult] = await Promise.allSettled([
-      fetch("/api/geo-enrichment", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ points: thinRouteForMatching(analysis.points).map(({ latitude, longitude, distanceM }) => ({ latitude, longitude, distanceM })) }),
-      }),
-      fetch("/api/mapillary", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sections: requests }),
-      }),
-    ]);
     try {
-      if (osmResult.status === "fulfilled" && osmResult.value.ok) {
-        setGeoEvidence(await osmResult.value.json() as GeoEnrichmentData);
-      } else setGeoEvidence(unknownGeoEvidence());
-    } catch {
-      setGeoEvidence(unknownGeoEvidence());
-    }
-    try {
-      if (imageryResult.status === "fulfilled" && imageryResult.value.ok) {
-        setMapillaryEvidence(await imageryResult.value.json() as MapillaryTerrainProofData);
-      } else setMapillaryEvidence(unknownMapillaryEvidence(requests));
-    } catch {
-      setMapillaryEvidence(unknownMapillaryEvidence(requests));
+      let cachedOsm: PersistedOsmEnrichmentRecord | null = sharedCache?.osm ?? null;
+      let cachedMapillary: PersistedMapillaryEnrichmentRecord | null = sharedCache?.mapillary ?? null;
+      const shouldRefresh = geoEvidence !== null || mapillaryEvidence !== null;
+      if (persistenceScope === "shared" && routeFingerprint) {
+        if (!shouldRefresh && (cachedOsm?.classifiableRanges.length || (cachedMapillary && hasReusableMapillaryEvidence(cachedMapillary)))) return;
+        try {
+          const sharedResult = await enrichSharedRoute(routeFingerprint, {
+            osm: shouldRefresh || !cachedOsm?.classifiableRanges.length,
+            mapillary: shouldRefresh || !cachedMapillary || !hasReusableMapillaryEvidence(cachedMapillary),
+          });
+          if (sharedResult.osm) {
+            const record = isPersistedOsm(sharedResult.osm) ? sharedResult.osm : null;
+            setGeoEvidence(record?.mergedData ?? sharedResult.osm as GeoEnrichmentData);
+          }
+          if (sharedResult.mapillary) {
+            const record = isPersistedMapillary(sharedResult.mapillary) ? sharedResult.mapillary : null;
+            setMapillaryEvidence(record
+              ? mapMapillaryEvidenceToSections(record, analysis.routeSections)
+              : sharedResult.mapillary as MapillaryTerrainProofData);
+          }
+          return;
+        } catch {
+          // Shared server persistence is optional; fall back to the existing browser and direct evidence flow.
+        }
+      }
+
+      try {
+        if (routeFingerprint) {
+          const [osmCache, mapillaryCache] = await Promise.all([
+            getCachedOsmEnrichment(browserRoutePersistence, routeFingerprint.routeFingerprint, routeFingerprint.routeFingerprintVersion, analysis.metrics.distanceKm, OSM_ENRICHMENT_VERSION),
+            browserRoutePersistence.getMapillary(routeFingerprint.routeFingerprint, routeFingerprint.routeFingerprintVersion, MAPILLARY_ENRICHMENT_VERSION),
+          ]);
+          cachedOsm = osmCache?.record ?? null;
+          cachedMapillary = mapillaryCache;
+        }
+      } catch { /* Persistence is optional; continue with live requests. */ }
+
+      if (!shouldRefresh && cachedOsm?.classifiableRanges.length) setGeoEvidence(cachedOsm.mergedData);
+        if (!shouldRefresh && cachedMapillary && hasReusableMapillaryEvidence(cachedMapillary)) {
+        setMapillaryEvidence(mapMapillaryEvidenceToSections(cachedMapillary, analysis.routeSections));
+      }
+
+      const requests = buildMapillaryRequests(analysis.routeSections, analysis.points);
+      const requestOsm = !routeFingerprint || shouldRefresh || !cachedOsm?.classifiableRanges.length;
+      const requestMapillary = !routeFingerprint || shouldRefresh || !cachedMapillary || !hasReusableMapillaryEvidence(cachedMapillary);
+      const [osmResult, imageryResult] = await Promise.all([
+        requestOsm ? fetch("/api/geo-enrichment", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ points: thinRouteForMatching(analysis.points).map(({ latitude, longitude, distanceM }) => ({ latitude, longitude, distanceM })) }),
+        }).then(async (response) => response.ok ? await response.json() as GeoEnrichmentData : unknownGeoEvidence()).catch(() => unknownGeoEvidence()) : Promise.resolve(null),
+        requestMapillary ? fetch("/api/mapillary", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sections: requests }),
+        }).then(async (response) => response.ok ? await response.json() as MapillaryTerrainProofData : unknownMapillaryEvidence(requests)).catch(() => unknownMapillaryEvidence(requests)) : Promise.resolve(null),
+      ]);
+
+      if (osmResult) {
+        try {
+          if (!routeFingerprint) {
+            setGeoEvidence(osmResult);
+          } else {
+            const merged = await cacheOsmEnrichment(browserRoutePersistence, routeFingerprint.routeFingerprint, osmResult, analysis.metrics.distanceKm, { routeFingerprintVersion: routeFingerprint.routeFingerprintVersion });
+            setGeoEvidence(merged.mergedData);
+          }
+        } catch {
+          setGeoEvidence(cachedOsm?.mergedData ?? osmResult);
+        }
+      }
+      if (imageryResult) {
+        try {
+          if (!routeFingerprint) {
+            setMapillaryEvidence(imageryResult);
+          } else {
+            const merged = await cacheMapillaryEnrichment(browserRoutePersistence, routeFingerprint.routeFingerprint, imageryResult, { routeFingerprintVersion: routeFingerprint.routeFingerprintVersion });
+            setMapillaryEvidence(mapMapillaryEvidenceToSections(merged, analysis.routeSections));
+          }
+        } catch {
+          setMapillaryEvidence(cachedMapillary
+            ? mapMapillaryEvidenceToSections(cachedMapillary, analysis.routeSections)
+            : imageryResult);
+        }
+      }
     } finally {
       setGeoLoading(false);
     }
@@ -214,22 +299,6 @@ function MiniProfile({ section }: { section: RouteSection }) {
   return <svg viewBox={`0 0 ${width} ${height}`} className="mt-6 h-20 w-full rounded-xl bg-white/70 p-2" preserveAspectRatio="none" role="img" aria-label={`${section.dominantRhythm} elevation profile for ${section.startKm} to ${section.endKm} km`}><polyline points={line} fill="none" stroke="#71805d" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" /></svg>;
 }
 
-function buildMapillaryRequests(sections: RouteSection[], points: RouteAnalysisData["points"]): MapillaryTerrainSectionRequest[] {
-  return sections.map((section) => {
-    const startM = section.startKm * 1000;
-    const endM = section.endKm * 1000;
-    const matching = points.filter((point) => point.distanceM >= startM && point.distanceM <= endM);
-    const endpoints = [nearestPoint(points, startM), nearestPoint(points, endM)].filter((point): point is RouteAnalysisData["points"][number] => point !== null);
-    const combined = [...new Map([...matching, ...endpoints].map((point) => [point.distanceM, point])).values()].sort((a, b) => a.distanceM - b.distanceM);
-    const sampled = thinRouteForMatching(combined, 120).map(({ latitude, longitude, distanceM }) => ({ latitude, longitude, distanceM }));
-    return { id: section.id, startDistanceKm: section.startKm, endDistanceKm: section.endKm, points: sampled };
-  }).filter((section) => section.points.length >= 2);
-}
-
-function nearestPoint(points: RouteAnalysisData["points"], distanceM: number) {
-  return points.reduce<RouteAnalysisData["points"][number] | null>((nearest, point) => !nearest || Math.abs(point.distanceM - distanceM) < Math.abs(nearest.distanceM - distanceM) ? point : nearest, null);
-}
-
 function unknownGeoEvidence(): GeoEnrichmentData {
   return {
     source: { type: "osm", name: "OpenStreetMap", attribution: "© OpenStreetMap contributors" },
@@ -239,11 +308,19 @@ function unknownGeoEvidence(): GeoEnrichmentData {
   };
 }
 
-function unknownMapillaryEvidence(requests: MapillaryTerrainSectionRequest[]): MapillaryTerrainProofData {
+function unknownMapillaryEvidence(requests: ReturnType<typeof buildMapillaryRequests>): MapillaryTerrainProofData {
   return {
     source: { type: "mapillary", name: "Mapillary", attribution: "© Mapillary" },
     sections: requests.map(({ id }) => ({ id, availability: "unknown", images: [], note: "Terrain imagery could not be loaded for this section." })),
   };
+}
+
+function isPersistedOsm(value: PersistedOsmEnrichmentRecord | GeoEnrichmentData): value is PersistedOsmEnrichmentRecord {
+  return "mergedData" in value;
+}
+
+function isPersistedMapillary(value: PersistedMapillaryEnrichmentRecord | MapillaryTerrainProofData): value is PersistedMapillaryEnrichmentRecord {
+  return "data" in value && "schemaVersion" in value;
 }
 
 function Metric({ label, value }: { label: string; value: string }) {

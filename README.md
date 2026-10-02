@@ -24,7 +24,15 @@ This project uses [`next/font`](https://nextjs.org/docs/app/building-your-applic
 
 Mapillary imagery is optional, additional visual evidence for the terrain sections shown in Route Mode. To enable it locally, copy `.env.example` to `.env.local` and set `MAPILLARY_ACCESS_TOKEN` to a token created in the [Mapillary developer dashboard](https://www.mapillary.com/dashboard/developers). This variable is read only by the server-side `/api/mapillary` route; do not prefix it with `NEXT_PUBLIC_` or commit a real token.
 
-When the token is missing, imagery availability is reported as unknown and the GPX and OpenStreetMap terrain evidence continue to work. Mapillary metadata and images are used in memory for the request and are not stored by this application.
+When the token is missing, imagery availability is reported as unknown and the GPX and OpenStreetMap terrain evidence continue to work. Imagery evidence may be cached locally, and is shared server-side only for explicitly allowlisted public race routes.
+
+## Shared route persistence
+
+The server can use `POSTGRES_URL` for shared persistence of routes explicitly listed in the source-controlled race registry. The current shared eligibility list consists of official race GPX files referenced by race editions. Arbitrary uploaded routes remain local to the browser and are never promoted to shared storage based only on an uploaded fingerprint. The original uploaded GPX file is not stored.
+
+For local database integration, set `POSTGRES_URL` in `.env.local`. On Vercel, configure the server-side `POSTGRES_URL` variable through the connected Supabase integration. Do not expose it with a `NEXT_PUBLIC_` prefix or use it in client code. Shared database reads and writes happen only through the Node.js `/api/route-persistence` route; IndexedDB remains an optional local cache. If the database is unavailable, GPX analysis and existing local evidence flows continue.
+
+The initial additive schema is in `supabase/migrations/202610020001_route_persistence.sql`. It has not been applied automatically. Before applying it, verify that the selected Supabase project is the intended Race Intelligence database and review the migration in the Supabase SQL Editor. Future authenticated private-route persistence should add ownership and access controls; it must not broaden this public-route allowlist by default. RLS is enabled without browser policies because this application accesses the database server-side.
 
 ## Learn More
 
