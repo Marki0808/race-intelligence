@@ -16,26 +16,6 @@ type JsonRecord = Record<string, unknown>;
 
 let client: PostgresClient | null = null;
 
-export const EXPECTED_SHARED_ROUTE_TABLES = [
-  "routes",
-  "route_analyses",
-  "route_osm_enrichments",
-  "route_osm_snapshots",
-  "route_mapillary_enrichments",
-  "races",
-  "race_editions",
-  "race_edition_routes",
-] as const;
-
-export type SharedRouteDatabaseDiagnostic = {
-  ok: boolean;
-  databaseReachable: boolean;
-  routesReachable: boolean;
-  expectedTablesReachable: boolean;
-  expectedTableCount: number;
-  errorCategory?: "not_configured" | "authentication_failed" | "connection_failed" | "schema_mismatch" | "permission_denied" | "diagnostic_failed";
-};
-
 function getClient(): PostgresClient {
   const connectionString = process.env.POSTGRES_URL;
   if (!connectionString) throw new Error("Shared route database is not configured.");
@@ -46,87 +26,6 @@ function getClient(): PostgresClient {
 export function isSharedRouteDatabaseConfigured() {
   return Boolean(process.env.POSTGRES_URL);
 }
-
-/** TEMPORARY PRODUCTION DIAGNOSTIC: remove after verifying the deployed runtime connection. */
-export async function checkSharedRouteDatabaseConnectivity(): Promise<SharedRouteDatabaseDiagnostic> {
-  if (!isSharedRouteDatabaseConfigured()) {
-    return {
-      ok: false,
-      databaseReachable: false,
-      routesReachable: false,
-      expectedTablesReachable: false,
-      expectedTableCount: 0,
-      errorCategory: "not_configured",
-    };
-  }
-
-  let databaseReachable = false;
-  let routesReachable = false;
-  let expectedTableCount = 0;
-
-  try {
-    const expectedTablesReachable = await getClient().begin(async (transaction) => {
-      await transaction`set transaction read only`;
-      await transaction`select 1 as connectivity_check`;
-      databaseReachable = true;
-
-      const visibleTables = await transaction`
-        select table_name
-        from information_schema.tables
-        where table_schema = 'public'
-          and table_type = 'BASE TABLE'
-          and table_name = any(${[...EXPECTED_SHARED_ROUTE_TABLES]})`;
-      expectedTableCount = visibleTables.length;
-
-      await transaction`select 1 from public.routes limit 0`;
-      routesReachable = true;
-
-      if (expectedTableCount !== EXPECTED_SHARED_ROUTE_TABLES.length) return false;
-
-      await transaction`select 1 from public.route_analyses limit 0`;
-      await transaction`select 1 from public.route_osm_enrichments limit 0`;
-      await transaction`select 1 from public.route_osm_snapshots limit 0`;
-      await transaction`select 1 from public.route_mapillary_enrichments limit 0`;
-      await transaction`select 1 from public.races limit 0`;
-      await transaction`select 1 from public.race_editions limit 0`;
-      await transaction`select 1 from public.race_edition_routes limit 0`;
-      return true;
-    });
-
-    const ok = databaseReachable && routesReachable && expectedTablesReachable;
-    return {
-      ok,
-      databaseReachable,
-      routesReachable,
-      expectedTablesReachable,
-      expectedTableCount,
-      ...(!ok ? { errorCategory: "schema_mismatch" as const } : {}),
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      databaseReachable,
-      routesReachable,
-      expectedTablesReachable: false,
-      expectedTableCount,
-      errorCategory: classifyDatabaseDiagnosticError(error),
-    };
-  }
-}
-
-export function classifyDatabaseDiagnosticError(error: unknown): NonNullable<SharedRouteDatabaseDiagnostic["errorCategory"]> {
-  const code = error && typeof error === "object" && "code" in error && typeof error.code === "string"
-    ? error.code
-    : "";
-  if (code === "28P01" || code === "28000") return "authentication_failed";
-  if (["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH"].includes(code)) {
-    return "connection_failed";
-  }
-  if (code === "42P01" || code === "42703") return "schema_mismatch";
-  if (code === "42501") return "permission_denied";
-  return "diagnostic_failed";
-}
-
 export const sharedRouteStore: RoutePersistenceStore = {
   getRoute: async (fingerprint, fingerprintVersion) => {
     const [row] = await getClient()`
