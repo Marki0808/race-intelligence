@@ -1,5 +1,5 @@
 export type PersistenceRequest =
-  | { operation: "lookup"; persistenceScope: "shared"; routeFingerprint: string; routeFingerprintVersion: number }
+  | { operation: "lookup"; persistenceScope: "shared"; routeFingerprint: string; routeFingerprintVersion: number; analysisInputFingerprint: string }
   | { operation: "enrich"; persistenceScope: "shared"; routeFingerprint: string; routeFingerprintVersion: number; needs: { osm: boolean; mapillary: boolean } };
 
 export function validatePersistenceRequest(value: unknown): PersistenceRequest | null {
@@ -9,9 +9,10 @@ export function validatePersistenceRequest(value: unknown): PersistenceRequest |
     !/^route-v\d+-sha256-[a-f0-9]{64}$/.test(body.routeFingerprint) ||
     typeof body.routeFingerprintVersion !== "number" || !Number.isInteger(body.routeFingerprintVersion) ||
     body.routeFingerprintVersion < 1 || !body.routeFingerprint.startsWith(`route-v${body.routeFingerprintVersion}-`)) return null;
-  if (body.operation === "lookup" && hasExactKeys(body, ["operation", "persistenceScope", "routeFingerprint", "routeFingerprintVersion"])) return {
+  if (body.operation === "lookup" && hasExactKeys(body, ["operation", "persistenceScope", "routeFingerprint", "routeFingerprintVersion", "analysisInputFingerprint"]) &&
+    typeof body.analysisInputFingerprint === "string" && /^analysis-input-v\d+-sha256-[a-f0-9]{64}$/.test(body.analysisInputFingerprint)) return {
     operation: "lookup", persistenceScope: "shared", routeFingerprint: body.routeFingerprint,
-    routeFingerprintVersion: body.routeFingerprintVersion,
+    routeFingerprintVersion: body.routeFingerprintVersion, analysisInputFingerprint: body.analysisInputFingerprint,
   };
   if (body.operation === "enrich" && hasExactKeys(body, ["operation", "persistenceScope", "routeFingerprint", "routeFingerprintVersion", "needs"]) &&
     body.needs && typeof body.needs === "object" && !Array.isArray(body.needs)) {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis.ts";
 import { createRouteFingerprint } from "./routeFingerprint.ts";
+import { createAnalysisInputFingerprint } from "./analysisInputFingerprint.ts";
 import {
   cacheMapillaryEnrichment,
   cacheOsmEnrichment,
@@ -11,6 +12,7 @@ import {
   mapMapillaryEvidenceToSections,
   OSM_ENRICHMENT_VERSION,
   ROUTE_ANALYSIS_VERSION,
+  selectAnalysisForMatchingInput,
 } from "./routePersistence.ts";
 
 class MemoryStore {
@@ -20,8 +22,8 @@ class MemoryStore {
   mapillary = new Map();
   references = new Map();
   getRoute(key, fingerprintVersion) { const value = this.routes.get(key); return Promise.resolve(value?.routeFingerprintVersion === fingerprintVersion ? value : null); }
-  getAnalysis(key, fingerprintVersion, version) { const value = this.analyses.get(`${key}:${version}`); return Promise.resolve(value?.routeFingerprintVersion === fingerprintVersion ? value : null); }
-  async saveRouteAndAnalysis(route, analysis) { this.routes.set(route.routeFingerprint, route); this.analyses.set(`${analysis.routeFingerprint}:${analysis.analysisVersion}`, analysis); }
+  getAnalysis(key, fingerprintVersion, version, inputFingerprint) { const value = this.analyses.get(`${key}:${version}:${inputFingerprint}`); return Promise.resolve(value?.routeFingerprintVersion === fingerprintVersion && value.analysisInputFingerprint === inputFingerprint ? value : null); }
+  async saveRouteAndAnalysis(route, analysis) { this.routes.set(route.routeFingerprint, route); this.analyses.set(`${analysis.routeFingerprint}:${analysis.analysisVersion}:${analysis.analysisInputFingerprint}`, analysis); }
   getOsm(key, fingerprintVersion, version) { const value = this.osm.get(`${key}:${version}`); return Promise.resolve(value?.routeFingerprintVersion === fingerprintVersion ? value : null); }
   putOsm(record) { this.osm.set(`${record.routeFingerprint}:${record.schemaVersion}`, record); return Promise.resolve(); }
   getMapillary(key, fingerprintVersion, version) { const value = this.mapillary.get(`${key}:${version}`); return Promise.resolve(value?.routeFingerprintVersion === fingerprintVersion ? value : null); }
@@ -74,6 +76,20 @@ test("different GPX filenames and metadata names preserve the same route fingerp
   assert.equal((await createRouteFingerprint(firstUpload.points)).routeFingerprint, (await createRouteFingerprint(renamedUpload.points)).routeFingerprint);
 });
 
+test("analysis input fingerprint ignores GPX metadata and is stable for identical parsed point sequences", async () => {
+  const gpx = (name) => `<gpx><metadata><name>${name}</name></metadata><trk><trkseg><trkpt lat="45" lon="13"><ele>1</ele></trkpt><trkpt lat="45.001" lon="13"><ele>2</ele></trkpt></trkseg></trk></gpx>`;
+  const first = parseGpxText(gpx("First title"));
+  const renamed = parseGpxText(gpx("Different title"));
+  assert.equal(await createAnalysisInputFingerprint(first.points), await createAnalysisInputFingerprint(renamed.points));
+});
+
+test("analysis input identity preserves point order and sampling density", async () => {
+  const sparse = [{ latitude: 45, longitude: 13, elevationM: 10 }, { latitude: 45, longitude: 13.01, elevationM: 20 }];
+  const dense = Array.from({ length: 11 }, (_, index) => ({ latitude: 45, longitude: 13 + index * 0.001, elevationM: 10 + index }));
+  assert.notEqual(await createAnalysisInputFingerprint(sparse), await createAnalysisInputFingerprint(dense));
+  assert.notEqual(await createAnalysisInputFingerprint(sparse), await createAnalysisInputFingerprint([...sparse].reverse()));
+});
+
 test("route fingerprint ignores denser sampling along the same straight route", async () => {
   const sparse = [{ latitude: 45, longitude: 13 }, { latitude: 45, longitude: 13.01 }];
   const dense = Array.from({ length: 101 }, (_, index) => ({ latitude: 45, longitude: 13 + index * 0.0001 }));
@@ -104,13 +120,14 @@ test("route fingerprint rejects invalid or degenerate coordinates", async () => 
   await assert.rejects(() => createRouteFingerprint([{ latitude: 45, longitude: 13 }, { latitude: 45, longitude: 13 }]), RangeError);
 });
 
-test("analysis cache reuses versioned analysis while using the current upload name", async () => {
+test("same parsed analysis inputs reuse analysis across filenames and use the current upload name", async () => {
   const store = new MemoryStore();
   const fingerprint = await createRouteFingerprint(line());
+  const inputFingerprint = await createAnalysisInputFingerprint(sampleAnalysis().points);
   let calculations = 0;
   const compute = () => { calculations += 1; return sampleAnalysis("stored name"); };
-  const first = await getOrCreateRouteAnalysis(store, fingerprint, "first upload", compute, { now: 10 });
-  const second = await getOrCreateRouteAnalysis(store, fingerprint, "renamed upload", compute, { now: 20 });
+  const first = await getOrCreateRouteAnalysis(store, fingerprint, inputFingerprint, "first upload", compute, { now: 10 });
+  const second = await getOrCreateRouteAnalysis(store, fingerprint, inputFingerprint, "renamed upload", compute, { now: 20 });
   assert.equal(first.cacheHit, false);
   assert.equal(second.cacheHit, true);
   assert.equal(calculations, 1);
@@ -120,10 +137,11 @@ test("analysis cache reuses versioned analysis while using the current upload na
 test("analysis version change deterministically recomputes stale analysis", async () => {
   const store = new MemoryStore();
   const fingerprint = await createRouteFingerprint(line());
+  const inputFingerprint = await createAnalysisInputFingerprint(sampleAnalysis().points);
   let calculations = 0;
   const compute = () => { calculations += 1; return sampleAnalysis(); };
-  await getOrCreateRouteAnalysis(store, fingerprint, "A", compute, { analysisVersion: ROUTE_ANALYSIS_VERSION });
-  const upgraded = await getOrCreateRouteAnalysis(store, fingerprint, "A", compute, { analysisVersion: ROUTE_ANALYSIS_VERSION + 1 });
+  await getOrCreateRouteAnalysis(store, fingerprint, inputFingerprint, "A", compute, { analysisVersion: ROUTE_ANALYSIS_VERSION });
+  const upgraded = await getOrCreateRouteAnalysis(store, fingerprint, inputFingerprint, "A", compute, { analysisVersion: ROUTE_ANALYSIS_VERSION + 1 });
   assert.equal(upgraded.cacheHit, false);
   assert.equal(calculations, 2);
 });
@@ -131,9 +149,91 @@ test("analysis version change deterministically recomputes stale analysis", asyn
 test("local persistence failure does not prevent GPX analysis", async () => {
   const broken = new Proxy(new MemoryStore(), { get(target, key) { if (key === "getRoute" || key === "getAnalysis" || key === "saveRouteAndAnalysis") return () => Promise.reject(new Error("storage disabled")); return Reflect.get(target, key); } });
   const fingerprint = await createRouteFingerprint(line());
-  const result = await getOrCreateRouteAnalysis(broken, fingerprint, "A", () => sampleAnalysis());
+  const inputFingerprint = await createAnalysisInputFingerprint(sampleAnalysis().points);
+  const result = await getOrCreateRouteAnalysis(broken, fingerprint, inputFingerprint, "A", () => sampleAnalysis());
   assert.equal(result.cacheHit, false);
   assert.equal(result.analysis.name, "A");
+});
+
+test("same geometry with changed elevation has a distinct analysis identity and recomputes", async () => {
+  const points = line().map((point, index) => ({ ...point, elevationM: 100 + index * 10 }));
+  const changedElevation = points.map((point, index) => ({ ...point, elevationM: point.elevationM + (index === 5 ? 40 : 0) }));
+  const [physical, physicalChanged, inputA, inputB] = await Promise.all([
+    createRouteFingerprint(points), createRouteFingerprint(changedElevation),
+    createAnalysisInputFingerprint(points), createAnalysisInputFingerprint(changedElevation),
+  ]);
+  assert.equal(physical.routeFingerprint, physicalChanged.routeFingerprint);
+  assert.notEqual(inputA, inputB);
+
+  const store = new MemoryStore();
+  let calculations = 0;
+  const run = (inputFingerprint, sourcePoints, name) => getOrCreateRouteAnalysis(
+    store, physical, inputFingerprint, name, () => { calculations += 1; return analyzeGpxRoute({ points: sourcePoints }); },
+  );
+  const first = await run(inputA, points, "first file");
+  const repeat = await run(inputA, points, "renamed file");
+  const corrected = await run(inputB, changedElevation, "corrected elevations");
+  assert.equal(first.cacheHit, false);
+  assert.equal(repeat.cacheHit, true);
+  assert.equal(corrected.cacheHit, false);
+  assert.equal(calculations, 2);
+  assert.notEqual(corrected.analysis.metrics.elevationGainM, first.analysis.metrics.elevationGainM);
+  assert.equal(store.analyses.size, 2);
+});
+
+test("OSM and Mapillary persistence continue to use physical route identity only", async () => {
+  const points = line().map((point, index) => ({ ...point, elevationM: index * 5 }));
+  const changedElevation = points.map((point) => ({ ...point, elevationM: point.elevationM + 100 }));
+  const [physical, changedPhysical] = await Promise.all([
+    createRouteFingerprint(points), createRouteFingerprint(changedElevation),
+  ]);
+  assert.equal(physical.routeFingerprint, changedPhysical.routeFingerprint);
+
+  const store = new MemoryStore();
+  await cacheOsmEnrichment(store, physical.routeFingerprint, geoData(0, 1), 1, { routeFingerprintVersion: physical.routeFingerprintVersion });
+  const mapillary = { source: { type: "mapillary", name: "Mapillary", attribution: "© Mapillary" }, sections: [{ id: "s1", availability: "not-found", images: [] }] };
+  await cacheMapillaryEnrichment(store, physical.routeFingerprint, mapillary, { routeFingerprintVersion: physical.routeFingerprintVersion });
+  assert.ok(await store.getOsm(changedPhysical.routeFingerprint, changedPhysical.routeFingerprintVersion, OSM_ENRICHMENT_VERSION));
+  assert.ok(await store.getMapillary(changedPhysical.routeFingerprint, changedPhysical.routeFingerprintVersion, 1));
+});
+
+test("legacy analysis records without an input fingerprint fail closed and regenerate", async () => {
+  const fingerprint = await createRouteFingerprint(line());
+  const inputFingerprint = await createAnalysisInputFingerprint(sampleAnalysis().points);
+  const legacy = new MemoryStore();
+  const oldRecord = {
+    routeFingerprint: fingerprint.routeFingerprint,
+    routeFingerprintVersion: fingerprint.routeFingerprintVersion,
+    analysisVersion: ROUTE_ANALYSIS_VERSION,
+    generatedAt: 1,
+    analysis: sampleAnalysis(),
+  };
+  legacy.getAnalysis = async () => oldRecord;
+  let calculations = 0;
+  const result = await getOrCreateRouteAnalysis(legacy, fingerprint, inputFingerprint, "route", () => {
+    calculations += 1;
+    return sampleAnalysis();
+  });
+  assert.equal(result.cacheHit, false);
+  assert.equal(calculations, 1);
+  assert.equal(result.analysis.name, "route");
+});
+
+test("different analysis inputs coexist for one route and version while identical writes stay idempotent", async () => {
+  const points = line().map((point, index) => ({ ...point, elevationM: index * 10 }));
+  const changed = points.map((point, index) => ({ ...point, elevationM: point.elevationM + (index === 3 ? 20 : 0) }));
+  const fingerprint = await createRouteFingerprint(points);
+  const [firstInput, secondInput] = await Promise.all([createAnalysisInputFingerprint(points), createAnalysisInputFingerprint(changed)]);
+  const store = new MemoryStore();
+  let calculations = 0;
+  const compute = (sourcePoints) => { calculations += 1; return analyzeGpxRoute({ points: sourcePoints }); };
+  await getOrCreateRouteAnalysis(store, fingerprint, firstInput, "a", () => compute(points));
+  await getOrCreateRouteAnalysis(store, fingerprint, firstInput, "a", () => compute(points));
+  await getOrCreateRouteAnalysis(store, fingerprint, secondInput, "b", () => compute(changed));
+  assert.equal(calculations, 2);
+  assert.equal(store.analyses.size, 2);
+  assert.equal(selectAnalysisForMatchingInput("registry analysis", firstInput, firstInput), "registry analysis");
+  assert.equal(selectAnalysisForMatchingInput("registry analysis", firstInput, secondInput), null);
 });
 
 test("OSM cache unions non-overlapping successful route ranges", async () => {

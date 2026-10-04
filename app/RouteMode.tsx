@@ -11,6 +11,7 @@ import {
 } from "./gpxAnalysis";
 import type { RouteAnalysisData } from "./gpxAnalysis";
 import { createRouteFingerprint } from "./routeFingerprint";
+import { createAnalysisInputFingerprint } from "./analysisInputFingerprint";
 import { browserRoutePersistence, cacheRouteAnalysis, getOrCreateRouteAnalysis } from "./routePersistence";
 import { lookupSharedRoute, type SharedRouteCache } from "./routePersistenceClient";
 import type { RouteFingerprintResult } from "./routeFingerprint";
@@ -46,16 +47,20 @@ export default function RouteMode() {
       const parsed = parseGpxText(await file.text());
       const displayName = parsed.name ?? file.name.replace(/\.gpx$/i, "");
       try {
-        const fingerprint = await createRouteFingerprint(parsed.points);
-        const shared = await lookupSharedRoute(fingerprint);
+        const [fingerprint, analysisInputFingerprint] = await Promise.all([
+          createRouteFingerprint(parsed.points),
+          createAnalysisInputFingerprint(parsed.points),
+        ]);
+        const shared = await lookupSharedRoute(fingerprint, analysisInputFingerprint);
         let routeAnalysis: RouteAnalysisData;
         if (shared.cache?.analysis) {
           routeAnalysis = { ...shared.cache.analysis, name: displayName };
-          await cacheRouteAnalysis(browserRoutePersistence, fingerprint, routeAnalysis);
+          await cacheRouteAnalysis(browserRoutePersistence, fingerprint, routeAnalysis, analysisInputFingerprint);
         } else {
           const localResult = await getOrCreateRouteAnalysis(
             browserRoutePersistence,
             fingerprint,
+            analysisInputFingerprint,
             displayName,
             () => analyzeGpxRoute(parsed),
           );

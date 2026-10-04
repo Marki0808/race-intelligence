@@ -48,19 +48,21 @@ export const sharedRouteStore: RoutePersistenceStore = {
     } satisfies PersistedRouteRecord;
   },
 
-  getAnalysis: async (fingerprint, fingerprintVersion, analysisVersion) => {
+  getAnalysis: async (fingerprint, fingerprintVersion, analysisVersion, analysisInputFingerprint) => {
     const [row] = await getClient()`
-      select r.fingerprint, r.fingerprint_version, a.analysis_version, a.analysis_data,
+      select r.fingerprint, r.fingerprint_version, a.analysis_version, a.analysis_input_fingerprint, a.analysis_data,
              extract(epoch from a.generated_at) * 1000 as generated_at_ms
       from public.route_analyses a join public.routes r on r.id = a.route_id
       where r.fingerprint = ${fingerprint} and r.fingerprint_version = ${fingerprintVersion}
         and a.analysis_version = ${analysisVersion}
+        and a.analysis_input_fingerprint = ${analysisInputFingerprint}
       limit 1`;
     if (!row) return null;
     return {
       routeFingerprint: row.fingerprint,
       routeFingerprintVersion: Number(row.fingerprint_version),
       analysisVersion: Number(row.analysis_version),
+      analysisInputFingerprint: row.analysis_input_fingerprint,
       generatedAt: Number(row.generated_at_ms),
       analysis: parseJson(row.analysis_data),
     } satisfies PersistedAnalysisRecord;
@@ -82,9 +84,9 @@ export const sharedRouteStore: RoutePersistenceStore = {
         returning id`;
       if (!storedRoute) throw new Error("Shared route upsert returned no row.");
       await transaction`
-        insert into public.route_analyses (route_id, analysis_version, analysis_data, generated_at)
-        values (${storedRoute.id}, ${analysis.analysisVersion}, ${asJson(transaction, analysis.analysis)}, ${new Date(analysis.generatedAt)})
-        on conflict (route_id, analysis_version) do nothing`;
+        insert into public.route_analyses (route_id, analysis_version, analysis_input_fingerprint, analysis_data, generated_at)
+        values (${storedRoute.id}, ${analysis.analysisVersion}, ${analysis.analysisInputFingerprint}, ${asJson(transaction, analysis.analysis)}, ${new Date(analysis.generatedAt)})
+        on conflict do nothing`;
     });
   },
 

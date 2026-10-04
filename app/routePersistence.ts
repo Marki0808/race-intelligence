@@ -10,7 +10,7 @@ export const OSM_ENRICHMENT_VERSION = 1;
 export const MAPILLARY_ENRICHMENT_VERSION = 1;
 // Bump analysis independently from route identity; OSM and Mapillary formats have separate lifecycles.
 export const ROUTE_DATABASE_NAME = "race-intelligence-route-cache";
-export const ROUTE_DATABASE_VERSION = 1;
+export const ROUTE_DATABASE_VERSION = 2;
 
 export type RaceEditionRouteReference = {
   raceId: string;
@@ -38,9 +38,15 @@ export type PersistedAnalysisRecord = {
   routeFingerprint: string;
   routeFingerprintVersion: number;
   analysisVersion: number;
+  analysisInputFingerprint: string;
   generatedAt: number;
   analysis: CachedRouteAnalysis;
 };
+
+/** Selects a registry analysis only when the browser's parsed input matches the server-derived registry input. */
+export function selectAnalysisForMatchingInput<T>(analysis: T, authorizedInputFingerprint: string, requestedInputFingerprint: string): T | null {
+  return authorizedInputFingerprint === requestedInputFingerprint ? analysis : null;
+}
 
 export type OsmEnrichmentSnapshot = {
   snapshotId: string;
@@ -88,7 +94,7 @@ export type PersistedMapillaryEnrichmentRecord = {
 
 export interface RoutePersistenceStore {
   getRoute(routeFingerprint: string, routeFingerprintVersion: number): Promise<PersistedRouteRecord | null>;
-  getAnalysis(routeFingerprint: string, routeFingerprintVersion: number, analysisVersion: number): Promise<PersistedAnalysisRecord | null>;
+  getAnalysis(routeFingerprint: string, routeFingerprintVersion: number, analysisVersion: number, analysisInputFingerprint: string): Promise<PersistedAnalysisRecord | null>;
   saveRouteAndAnalysis(route: PersistedRouteRecord, analysis: PersistedAnalysisRecord): Promise<void>;
   getOsm(routeFingerprint: string, routeFingerprintVersion: number, schemaVersion: number): Promise<PersistedOsmEnrichmentRecord | null>;
   putOsm(record: PersistedOsmEnrichmentRecord): Promise<void>;
@@ -101,6 +107,7 @@ export interface RoutePersistenceStore {
 export async function getOrCreateRouteAnalysis(
   store: RoutePersistenceStore,
   fingerprint: RouteFingerprintResult,
+  analysisInputFingerprint: string,
   routeName: string | null | undefined,
   compute: () => RouteAnalysisData,
   options: { now?: number; analysisVersion?: number } = {},
@@ -113,13 +120,14 @@ export async function getOrCreateRouteAnalysis(
   try {
     [previousRoute, cached] = await Promise.all([
       store.getRoute(fingerprint.routeFingerprint, fingerprint.routeFingerprintVersion),
-      store.getAnalysis(fingerprint.routeFingerprint, fingerprint.routeFingerprintVersion, analysisVersion),
+      store.getAnalysis(fingerprint.routeFingerprint, fingerprint.routeFingerprintVersion, analysisVersion, analysisInputFingerprint),
     ]);
   } catch {
     // Local persistence is an optimization; analysis remains available if IndexedDB is unavailable.
   }
 
-  if (cached?.routeFingerprintVersion === fingerprint.routeFingerprintVersion) {
+  if (cached?.routeFingerprintVersion === fingerprint.routeFingerprintVersion &&
+    cached.analysisInputFingerprint === analysisInputFingerprint) {
     const analysis = { ...cached.analysis, name: displayName };
     const route = createRouteRecord(fingerprint, analysis.metrics.distanceKm, previousRoute, now);
     try { await store.saveRouteAndAnalysis(route, { ...cached, analysis: cached.analysis }); } catch { /* Continue with cached result. */ }
@@ -127,7 +135,7 @@ export async function getOrCreateRouteAnalysis(
   }
 
   const analysis = compute();
-  const { route, record } = createPersistedRouteAnalysis(fingerprint, analysis, previousRoute, now, analysisVersion);
+  const { route, record } = createPersistedRouteAnalysis(fingerprint, analysis, previousRoute, now, analysisInputFingerprint, analysisVersion);
   try { await store.saveRouteAndAnalysis(route, record); } catch { /* Continue with freshly computed result. */ }
   return { analysis: { ...record.analysis, name: displayName }, cacheHit: false };
 }
@@ -136,12 +144,13 @@ export async function cacheRouteAnalysis(
   store: RoutePersistenceStore,
   fingerprint: RouteFingerprintResult,
   analysis: RouteAnalysisData,
+  analysisInputFingerprint: string,
   options: { now?: number; analysisVersion?: number } = {},
 ) {
   const now = options.now ?? Date.now();
   let previousRoute: PersistedRouteRecord | null = null;
   try { previousRoute = await store.getRoute(fingerprint.routeFingerprint, fingerprint.routeFingerprintVersion); } catch { /* Cache writes remain optional. */ }
-  const persisted = createPersistedRouteAnalysis(fingerprint, analysis, previousRoute, now, options.analysisVersion ?? ROUTE_ANALYSIS_VERSION);
+  const persisted = createPersistedRouteAnalysis(fingerprint, analysis, previousRoute, now, analysisInputFingerprint, options.analysisVersion ?? ROUTE_ANALYSIS_VERSION);
   try { await store.saveRouteAndAnalysis(persisted.route, persisted.record); } catch { /* Keep the already computed result. */ }
 }
 
@@ -414,6 +423,7 @@ export function createPersistedRouteAnalysis(
   analysis: RouteAnalysisData,
   previousRoute: PersistedRouteRecord | null,
   now: number,
+  analysisInputFingerprint: string,
   analysisVersion = ROUTE_ANALYSIS_VERSION,
 ): { route: PersistedRouteRecord; record: PersistedAnalysisRecord } {
   const storedAnalysis = { ...analysis };
@@ -424,6 +434,7 @@ export function createPersistedRouteAnalysis(
       routeFingerprint: fingerprint.routeFingerprint,
       routeFingerprintVersion: fingerprint.routeFingerprintVersion,
       analysisVersion,
+      analysisInputFingerprint,
       generatedAt: now,
       analysis: storedAnalysis,
     },
@@ -540,7 +551,7 @@ function sumFailureCounts(counts: Array<GeoRetrievalFailureCounts | undefined>) 
 }
 
 const STORE_ROUTES = "routes";
-const STORE_ANALYSES = "analyses";
+const STORE_ANALYSIS_VARIANTS = "analysis-variants";
 const STORE_OSM = "osm-enrichment";
 const STORE_MAPILLARY = "mapillary-enrichment";
 const STORE_RACE_REFERENCES = "race-edition-route-references";
@@ -551,16 +562,16 @@ export const browserRoutePersistence: RoutePersistenceStore = {
     const record = await getRecord<PersistedRouteRecord>(STORE_ROUTES, fingerprint);
     return record?.routeFingerprintVersion === fingerprintVersion ? record : null;
   },
-  getAnalysis: async (fingerprint, fingerprintVersion, version) => {
-    const record = await getRecord<PersistedAnalysisRecord>(STORE_ANALYSES, [fingerprint, version]);
-    return record?.routeFingerprintVersion === fingerprintVersion ? record : null;
+  getAnalysis: async (fingerprint, fingerprintVersion, version, analysisInputFingerprint) => {
+    const record = await getRecord<PersistedAnalysisRecord>(STORE_ANALYSIS_VARIANTS, [fingerprint, fingerprintVersion, version, analysisInputFingerprint]);
+    return record?.routeFingerprintVersion === fingerprintVersion && record.analysisInputFingerprint === analysisInputFingerprint ? record : null;
   },
   saveRouteAndAnalysis: async (route, analysis) => {
     const database = await openDatabase();
     await new Promise<void>((resolve, reject) => {
-      const transaction = database.transaction([STORE_ROUTES, STORE_ANALYSES], "readwrite");
+      const transaction = database.transaction([STORE_ROUTES, STORE_ANALYSIS_VARIANTS], "readwrite");
       transaction.objectStore(STORE_ROUTES).put(route);
-      transaction.objectStore(STORE_ANALYSES).put(analysis);
+      transaction.objectStore(STORE_ANALYSIS_VARIANTS).put(analysis);
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error ?? new Error("Could not save cached route analysis."));
       transaction.onabort = () => reject(transaction.error ?? new Error("Route analysis cache transaction was aborted."));
@@ -608,7 +619,7 @@ function openDatabase(): Promise<IDBDatabase> {
     request.onupgradeneeded = () => {
       const database = request.result;
       if (!database.objectStoreNames.contains(STORE_ROUTES)) database.createObjectStore(STORE_ROUTES, { keyPath: "routeFingerprint" });
-      if (!database.objectStoreNames.contains(STORE_ANALYSES)) database.createObjectStore(STORE_ANALYSES, { keyPath: ["routeFingerprint", "analysisVersion"] });
+      if (!database.objectStoreNames.contains(STORE_ANALYSIS_VARIANTS)) database.createObjectStore(STORE_ANALYSIS_VARIANTS, { keyPath: ["routeFingerprint", "routeFingerprintVersion", "analysisVersion", "analysisInputFingerprint"] });
       if (!database.objectStoreNames.contains(STORE_OSM)) database.createObjectStore(STORE_OSM, { keyPath: ["routeFingerprint", "schemaVersion"] });
       if (!database.objectStoreNames.contains(STORE_MAPILLARY)) database.createObjectStore(STORE_MAPILLARY, { keyPath: ["routeFingerprint", "schemaVersion"] });
       if (!database.objectStoreNames.contains(STORE_RACE_REFERENCES)) database.createObjectStore(STORE_RACE_REFERENCES, { keyPath: ["raceId", "year"] });

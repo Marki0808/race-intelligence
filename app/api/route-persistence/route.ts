@@ -11,8 +11,11 @@ import {
   MAPILLARY_ENRICHMENT_VERSION,
   OSM_ENRICHMENT_VERSION,
   ROUTE_ANALYSIS_VERSION,
+  selectAnalysisForMatchingInput,
+  type PersistedAnalysisRecord,
   type PersistedMapillaryEnrichmentRecord,
   type PersistedOsmEnrichmentRecord,
+  type RoutePersistenceStore,
 } from "../../routePersistence.ts";
 import { getSharedRouteEligibility } from "../../sharedRouteEligibility.ts";
 import { isSharedRouteDatabaseConfigured, sharedRouteStore } from "../../server/sharedRouteStore.ts";
@@ -21,6 +24,11 @@ import { validatePersistenceRequest } from "../../routePersistenceValidation.ts"
 export const runtime = "nodejs";
 export const maxDuration = 30;
 const MAX_BODY_BYTES = 64_000;
+
+type SharedLookupDependencies = {
+  isDatabaseConfigured: () => boolean;
+  store: Pick<RoutePersistenceStore, "getAnalysis" | "getRoute" | "saveRouteAndAnalysis" | "putRaceEditionReference" | "getOsm" | "getMapillary">;
+};
 
 export async function POST(request: Request) {
   const body = await readRequestBody(request);
@@ -33,43 +41,61 @@ export async function POST(request: Request) {
     return Response.json({ persistenceScope: "local", sharedEligible: false, persistenceAvailable: false }, { headers: { "Cache-Control": "no-store" } });
   }
 
-  if (parsed.operation === "lookup") return lookupSharedRoute(eligible);
+  if (parsed.operation === "lookup") return lookupSharedRoute(eligible, parsed.analysisInputFingerprint);
   return enrichSharedRoute(eligible, parsed.needs);
 }
 
-export async function lookupSharedRoute(eligible: NonNullable<Awaited<ReturnType<typeof getSharedRouteEligibility>>>) {
-  if (!isSharedRouteDatabaseConfigured()) return sharedResponse(eligible, false);
+export async function lookupSharedRoute(
+  eligible: NonNullable<Awaited<ReturnType<typeof getSharedRouteEligibility>>>,
+  requestedAnalysisInputFingerprint: string,
+  dependencies: SharedLookupDependencies = {
+    isDatabaseConfigured: isSharedRouteDatabaseConfigured,
+    store: sharedRouteStore,
+  },
+) {
+  if (!dependencies.isDatabaseConfigured()) return sharedResponse(eligible, false);
+  const analysisInputMatches = eligible.analysisInputFingerprint === requestedAnalysisInputFingerprint;
   try {
-    const existing = await sharedRouteStore.getAnalysis(
-      eligible.routeFingerprint,
-      eligible.routeFingerprintVersion,
-      ROUTE_ANALYSIS_VERSION,
-    );
-    let analysisRecord = existing;
-    if (!analysisRecord) {
-      const route = await sharedRouteStore.getRoute(eligible.routeFingerprint, eligible.routeFingerprintVersion);
-      const now = Date.now();
-      const { route: routeRecord, record } = createPersistedRouteAnalysis(eligible, route, now);
-      await sharedRouteStore.saveRouteAndAnalysis(routeRecord, record);
-      analysisRecord = record;
+    let analysisRecord: PersistedAnalysisRecord | null = null;
+    if (analysisInputMatches) {
+      analysisRecord = await dependencies.store.getAnalysis(
+        eligible.routeFingerprint,
+        eligible.routeFingerprintVersion,
+        ROUTE_ANALYSIS_VERSION,
+        eligible.analysisInputFingerprint,
+      );
+      if (!analysisRecord) {
+        const route = await dependencies.store.getRoute(eligible.routeFingerprint, eligible.routeFingerprintVersion);
+        const now = Date.now();
+        const { route: routeRecord, record } = createPersistedRouteAnalysis(eligible, route, now);
+        await dependencies.store.saveRouteAndAnalysis(routeRecord, record);
+        analysisRecord = record;
+      }
+      await dependencies.store.putRaceEditionReference({
+        raceId: eligible.raceId,
+        raceName: eligible.raceName,
+        year: eligible.editionYear,
+        routeFingerprint: eligible.routeFingerprint,
+        routeFingerprintVersion: eligible.routeFingerprintVersion,
+        createdAt: Date.now(),
+      });
     }
-    await sharedRouteStore.putRaceEditionReference({
-      raceId: eligible.raceId,
-      raceName: eligible.raceName,
-      year: eligible.editionYear,
-      routeFingerprint: eligible.routeFingerprint,
-      routeFingerprintVersion: eligible.routeFingerprintVersion,
-      createdAt: Date.now(),
-    });
     const [osm, mapillary] = await Promise.all([
-      sharedRouteStore.getOsm(eligible.routeFingerprint, eligible.routeFingerprintVersion, OSM_ENRICHMENT_VERSION),
-      sharedRouteStore.getMapillary(eligible.routeFingerprint, eligible.routeFingerprintVersion, MAPILLARY_ENRICHMENT_VERSION),
+      dependencies.store.getOsm(eligible.routeFingerprint, eligible.routeFingerprintVersion, OSM_ENRICHMENT_VERSION),
+      dependencies.store.getMapillary(eligible.routeFingerprint, eligible.routeFingerprintVersion, MAPILLARY_ENRICHMENT_VERSION),
     ]);
     return Response.json({
       persistenceScope: "shared",
       sharedEligible: true,
       persistenceAvailable: true,
-      analysis: { ...analysisRecord.analysis, name: eligible.raceName },
+      // Compare with the server-derived registry fingerprint before any analysis lookup or write.
+      analysis: analysisInputMatches && analysisRecord
+        ? selectAnalysisForMatchingInput(
+          { ...analysisRecord.analysis, name: eligible.raceName },
+          eligible.analysisInputFingerprint,
+          requestedAnalysisInputFingerprint,
+        )
+        : null,
       osm,
       mapillary,
     }, { headers: { "Cache-Control": "no-store" } });
@@ -154,7 +180,12 @@ async function readMapillaryResult(
 }
 
 async function ensureSharedRouteAnalysis(eligible: NonNullable<Awaited<ReturnType<typeof getSharedRouteEligibility>>>) {
-  const current = await sharedRouteStore.getAnalysis(eligible.routeFingerprint, eligible.routeFingerprintVersion, ROUTE_ANALYSIS_VERSION);
+  const current = await sharedRouteStore.getAnalysis(
+    eligible.routeFingerprint,
+    eligible.routeFingerprintVersion,
+    ROUTE_ANALYSIS_VERSION,
+    eligible.analysisInputFingerprint,
+  );
   if (current) return;
   const route = await sharedRouteStore.getRoute(eligible.routeFingerprint, eligible.routeFingerprintVersion);
   const now = Date.now();
@@ -172,7 +203,14 @@ function createPersistedRouteAnalysis(
   now: number,
 ) {
   const previous = previousRoute?.routeFingerprintVersion === eligible.routeFingerprintVersion ? previousRoute : null;
-  const stored = createPersistedRouteAnalysisRecord(eligible.fingerprint, eligible.analysis, previous, now, ROUTE_ANALYSIS_VERSION);
+  const stored = createPersistedRouteAnalysisRecord(
+    eligible.fingerprint,
+    eligible.analysis,
+    previous,
+    now,
+    eligible.analysisInputFingerprint,
+    ROUTE_ANALYSIS_VERSION,
+  );
   return stored;
 }
 

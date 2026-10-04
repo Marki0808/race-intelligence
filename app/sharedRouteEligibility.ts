@@ -3,10 +3,12 @@ import { resolve, sep } from "node:path";
 import { raceRegistry } from "./raceRegistry.ts";
 import { analyzeGpxRoute, parseGpxText, type RouteAnalysisData } from "./gpxAnalysis.ts";
 import { createRouteFingerprint, type RouteFingerprintResult } from "./routeFingerprint.ts";
+import { createAnalysisInputFingerprint } from "./analysisInputFingerprint.ts";
 
 export type SharedRouteEligibility = {
   routeFingerprint: string;
   routeFingerprintVersion: number;
+  analysisInputFingerprint: string;
   raceId: string;
   raceName: string;
   editionYear: number;
@@ -31,10 +33,14 @@ async function loadEligibleRoutes(): Promise<SharedRouteEligibility[]> {
     if (!filePath.startsWith(`${publicRoot}${sep}`)) return null;
     try {
       const parsed = parseGpxText(await readFile(filePath, "utf8"));
-      const fingerprint = await createRouteFingerprint(parsed.points);
+      const [fingerprint, analysisInputFingerprint] = await Promise.all([
+        createRouteFingerprint(parsed.points),
+        createAnalysisInputFingerprint(parsed.points),
+      ]);
       return {
         routeFingerprint: fingerprint.routeFingerprint,
         routeFingerprintVersion: fingerprint.routeFingerprintVersion,
+        analysisInputFingerprint,
         raceId: record.race.id,
         raceName: record.race.name,
         editionYear: edition.year,
