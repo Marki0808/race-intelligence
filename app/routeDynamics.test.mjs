@@ -535,6 +535,54 @@ test("separated OSM ranges attach by clipped distance and normalize surfaces amo
   });
 });
 
+test("tiny positive mapped coverage stays exact and presents as less than one percent", () => {
+  const [attached] = attachTerrainEvidenceToRouteSections(
+    [routeSectionRange(0, 100)],
+    makeGeoData([makeGeoSegment("tiny-gravel", 0, 0.4, "gravel")]),
+  );
+  assert.equal(attached.terrainEvidenceCoveragePercent, 0);
+  assert.equal(attached.terrainEvidenceExactCoveragePercent, 0.4);
+  assert.equal(getSurfaceEvidencePresentation(attached, true).status, "mapped");
+  assert.equal(getSurfaceEvidencePresentation(attached, true).coverageLabel, "Mapped evidence · <1% of section");
+});
+
+test("surface presentation treats exact zero as missing, even with stale categories", () => {
+  const section = routeSectionRange(0, 10);
+  const noCategories = {
+    ...section,
+    terrainEvidenceCoveragePercent: 0,
+    terrainEvidenceExactCoveragePercent: 0,
+    terrainEvidence: [],
+  };
+  const staleCategories = {
+    ...noCategories,
+    terrainEvidence: [{ terrain: "paved", evidenceSharePercent: 100, provenance: "osm" }],
+  };
+
+  assert.deepEqual(getSurfaceEvidencePresentation(noCategories, true), {
+    status: "missing", message: "No reliable mapped surface evidence for this section.",
+  });
+  assert.deepEqual(getSurfaceEvidencePresentation(staleCategories, true), {
+    status: "missing", message: "No reliable mapped surface evidence for this section.",
+  });
+});
+
+test("normal surface evidence coverage keeps its mapped presentation", () => {
+  const [attached] = attachTerrainEvidenceToRouteSections(
+    [routeSectionRange(0, 10)],
+    makeGeoData([makeGeoSegment("normal-gravel", 0, 2, "gravel")]),
+  );
+
+  assert.equal(attached.terrainEvidenceCoveragePercent, 20);
+  assert.deepEqual(getSurfaceEvidencePresentation(attached, true), {
+    status: "mapped",
+    coveragePercent: 20,
+    coverageLabel: "Mapped evidence · 20% of section",
+    distributionLabel: "Surface distribution among mapped evidence",
+    categories: [{ label: "Gravel", sharePercent: 100 }],
+  });
+});
+
 test("OSM ranges crossing a Route Section boundary are clipped independently to each side", () => {
   const left = routeSectionRange(0, 10, "left");
   const right = routeSectionRange(10, 30, "right");

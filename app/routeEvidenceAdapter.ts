@@ -66,11 +66,13 @@ export function attachTerrainEvidenceToRouteSections(
         provenance: "osm",
       }));
 
+    const terrainEvidenceExactCoveragePercent = sectionLengthKm > 0
+      ? classifiableKm / sectionLengthKm * 100
+      : 0;
     return {
       ...section,
-      terrainEvidenceCoveragePercent: sectionLengthKm > 0
-        ? Math.round(classifiableKm / sectionLengthKm * 100)
-        : 0,
+      terrainEvidenceCoveragePercent: Math.round(terrainEvidenceExactCoveragePercent),
+      terrainEvidenceExactCoveragePercent,
       terrainEvidence,
     };
   });

@@ -114,6 +114,7 @@ export type RouteSection = {
   };
   description: string;
   terrainEvidenceCoveragePercent?: number;
+  terrainEvidenceExactCoveragePercent?: number;
   terrainEvidence?: RouteSectionTerrainEvidence[];
   mapillaryEvidence?: RouteSectionMapillaryEvidence;
   mapData?: RouteSectionMapPoint[];

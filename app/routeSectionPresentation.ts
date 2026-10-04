@@ -20,13 +20,17 @@ export function getSurfaceEvidencePresentation(section: RouteSection, requested:
   if (!requested) return { status: "not-requested", message: "Not checked yet." };
   const coveragePercent = section.terrainEvidenceCoveragePercent ?? 0;
   const evidence = section.terrainEvidence ?? [];
-  if (coveragePercent === 0 || evidence.length === 0) {
+  const exactCoveragePercent = section.terrainEvidenceExactCoveragePercent ?? coveragePercent;
+  if (exactCoveragePercent <= 0 || evidence.length === 0) {
     return { status: "missing", message: "No reliable mapped surface evidence for this section." };
   }
+  const formattedCoverage = exactCoveragePercent < 1
+    ? "<1%"
+    : `${Math.round(coveragePercent)}%`;
   return {
     status: "mapped",
     coveragePercent,
-    coverageLabel: `Mapped evidence · ${coveragePercent}% of section`,
+    coverageLabel: `Mapped evidence · ${formattedCoverage} of section`,
     distributionLabel: "Surface distribution among mapped evidence",
     categories: evidence.map(({ terrain, evidenceSharePercent }) => ({
       label: terrainLabel(terrain),
