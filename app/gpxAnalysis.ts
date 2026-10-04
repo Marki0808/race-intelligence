@@ -31,14 +31,24 @@ export type GpxTrackPointInput = {
   elevationM: number;
 };
 
+export type GpxRoutePosition = { distanceM: number; segmentIndex: number };
+export type ParsedGpx = {
+  name: string | null;
+  segments: GpxTrackPointInput[][];
+  /** Derived convenience view; every point retains its source segment. */
+  points: Array<GpxTrackPointInput & { segmentIndex: number }>;
+};
+
 export type GpxRoutePointData = GpxTrackPointInput & {
   distanceM: number;
+  segmentIndex: number;
 };
 
 export type GpxRouteMetricsData = GpxCourseAnalysisData;
 
 export type GpxRouteSegmentData = {
   id: string;
+  segmentIndex?: number;
   startKm: number;
   endKm: number;
   distanceKm: number;
@@ -48,6 +58,7 @@ export type GpxRouteSegmentData = {
 
 export type RouteAnalysisData = {
   name: string;
+  segments: AnalyzedRouteSegment[];
   points: GpxRoutePointData[];
   metrics: GpxRouteMetricsData;
   majorClimbs: GpxRouteSegmentData[];
@@ -58,6 +69,24 @@ export type RouteAnalysisData = {
   keyMoments: KeyMomentData[];
   courseCharacter: CourseCharacterData;
 };
+
+export type AnalyzedRouteSegment = {
+  segmentIndex: number;
+  startDistanceM: number;
+  endDistanceM: number;
+  points: GpxRoutePointData[];
+};
+
+export function groupAnalyzedPointsBySegment<T extends { segmentIndex?: number }>(points: readonly T[]): T[][] {
+  const grouped = new Map<number, T[]>();
+  for (const point of points) {
+    const segmentIndex = point.segmentIndex ?? 0;
+    const segment = grouped.get(segmentIndex) ?? [];
+    segment.push(point);
+    grouped.set(segmentIndex, segment);
+  }
+  return [...grouped.values()];
+}
 
 export function getGpxAnalysisErrorMessage(code: GpxAnalysisErrorCode): string {
   switch (code) {
@@ -76,10 +105,7 @@ export function getGpxAnalysisErrorMessage(code: GpxAnalysisErrorCode): string {
   }
 }
 
-export function parseGpxText(text: string): {
-  name: string | null;
-  points: GpxTrackPointInput[];
-} {
+export function parseGpxText(text: string): ParsedGpx {
   const xml = text.replace(/^\uFEFF/, "").trim();
   if (!xml || !hasValidXmlStructure(xml) || !/^<(?:[\w.-]+:)?gpx(?:\s|>)/i.test(stripXmlProlog(xml))) {
     throw new GpxAnalysisError("invalid-gpx");
@@ -92,41 +118,31 @@ export function parseGpxText(text: string): {
   }
 
   const pointTag = trackCount > 0 ? "trkpt" : "rtept";
-  const trackPointPattern = new RegExp(
-    `<(?:[\\w.-]+:)?${pointTag}\\b([^>]*)>([\\s\\S]*?)<\\/(?:[\\w.-]+:)?${pointTag}\\s*>`,
-    "gi",
-  );
-  const trackPoints = [...xml.matchAll(trackPointPattern)];
-  if (trackPoints.length === 0) {
+  const segments = trackCount > 0
+    ? parseTrackSegments(xml)
+    : [parsePointElements(xml, pointTag)];
+  const points = segments.flatMap((segment, segmentIndex) => segment.map((point) => ({ ...point, segmentIndex })));
+  if (points.length === 0) {
     throw new GpxAnalysisError("no-track-points");
   }
-
-  const points = trackPoints.map((match) => {
-    const attributes = parseXmlAttributes(match[1]);
-    const latitude = Number(attributes.get("lat"));
-    const longitude = Number(attributes.get("lon"));
-    const elevationMatch = match[2].match(/<(?:[\w.-]+:)?ele\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?ele\s*>/i);
-    const elevationM = elevationMatch ? Number(decodeXmlText(elevationMatch[1])) : Number.NaN;
-
-    return { latitude, longitude, elevationM };
-  });
 
   if (points.some((point) => !Number.isFinite(point.elevationM))) {
     throw new GpxAnalysisError("insufficient-elevation");
   }
 
-  return { name: readRouteName(xml), points };
+  return { name: readRouteName(xml), segments, points };
 }
 
 export function analyzeGpxRoute(
-  input: { name?: string | null; points: GpxTrackPointInput[] },
+  input: { name?: string | null; points?: readonly (GpxTrackPointInput & { segmentIndex?: number })[]; segments?: readonly (readonly GpxTrackPointInput[])[] },
   fallbackName = "Uploaded route",
 ): RouteAnalysisData {
-  if (input.points.length < 2) {
+  const sourceSegments = input.segments ?? groupPointsBySegment(input.points ?? []);
+  if (!sourceSegments.some((segment) => segment.length >= 2)) {
     throw new GpxAnalysisError("no-track-points");
   }
 
-  for (const point of input.points) {
+  for (const point of sourceSegments.flat()) {
     if (
       !Number.isFinite(point.latitude) ||
       !Number.isFinite(point.longitude) ||
@@ -141,13 +157,17 @@ export function analyzeGpxRoute(
   }
 
   const points: GpxRoutePointData[] = [];
+  const segments: AnalyzedRouteSegment[] = [];
   let distanceM = 0;
   let elevationGain = 0;
   let elevationLoss = 0;
 
-  input.points.forEach((point, index) => {
+  sourceSegments.forEach((segment, segmentIndex) => {
+    const segmentPoints: GpxRoutePointData[] = [];
+    const startDistanceM = distanceM;
+    segment.forEach((point, index) => {
     if (index > 0) {
-      const previous = input.points[index - 1];
+      const previous = segment[index - 1];
       distanceM += haversineDistance(
         previous.latitude,
         previous.longitude,
@@ -158,7 +178,11 @@ export function analyzeGpxRoute(
       if (elevationChange > 0) elevationGain += elevationChange;
       else elevationLoss += Math.abs(elevationChange);
     }
-    points.push({ ...point, distanceM });
+    const analyzedPoint = { ...point, distanceM, segmentIndex };
+    points.push(analyzedPoint);
+    segmentPoints.push(analyzedPoint);
+    });
+    segments.push({ segmentIndex, startDistanceM, endDistanceM: distanceM, points: segmentPoints });
   });
 
   if (distanceM <= 0) {
@@ -180,15 +204,16 @@ export function analyzeGpxRoute(
     lowestPointM: lowestPoint.elevationM,
   };
 
-  const majorClimbs = findMajorSegments(points, "climb");
-  const majorDescents = findMajorSegments(points, "descent");
-  const sections = createRouteSections(points);
+  const majorClimbs = segments.flatMap(({ segmentIndex, points: segmentPoints }) => summarizeSegmentWindows(segmentPoints, segmentIndex, "climb"));
+  const majorDescents = segments.flatMap(({ segmentIndex, points: segmentPoints }) => summarizeSegmentWindows(segmentPoints, segmentIndex, "descent"));
+  const sections = segments.flatMap(({ segmentIndex, points: segmentPoints }) => segmentPoints.length > 1 ? summarizeRouteSections(segmentPoints, segmentIndex) : []);
   const routeDynamics = analyzeRouteDynamics(points);
   const routeSections = buildRouteSections(routeDynamics, points);
   const keyMoments = createRouteKeyMoments(points, metrics, routeDynamics);
 
   return {
     name: input.name?.trim() || fallbackName,
+    segments,
     points,
     metrics,
     majorClimbs,
@@ -199,6 +224,34 @@ export function analyzeGpxRoute(
     keyMoments,
     courseCharacter: createCourseCharacter(metrics, majorClimbs, majorDescents),
   };
+}
+
+function localizeSegment(points: readonly GpxRoutePointData[]) {
+  const offsetM = points[0]?.distanceM ?? 0;
+  return { offsetM, points: points.map((point) => ({ ...point, distanceM: point.distanceM - offsetM })) };
+}
+
+function summarizeSegmentWindows(points: readonly GpxRoutePointData[], segmentIndex: number, direction: "climb" | "descent") {
+  if (points.length < 2) return [];
+  const { offsetM, points: local } = localizeSegment(points);
+  return findMajorSegments(local, direction).map((segment) => ({
+    ...segment,
+    id: `segment-${segmentIndex}-${segment.id}`,
+    segmentIndex,
+    startKm: Number((segment.startKm + offsetM / 1000).toFixed(2)),
+    endKm: Number((segment.endKm + offsetM / 1000).toFixed(2)),
+  }));
+}
+
+function summarizeRouteSections(points: readonly GpxRoutePointData[], segmentIndex: number) {
+  const { offsetM, points: local } = localizeSegment(points);
+  return createRouteSections(local).map((section) => ({
+    ...section,
+    id: `segment-${segmentIndex}-${section.id}`,
+    segmentIndex,
+    startKm: Number((section.startKm + offsetM / 1000).toFixed(2)),
+    endKm: Number((section.endKm + offsetM / 1000).toFixed(2)),
+  }));
 }
 
 function findMajorSegments(
@@ -332,6 +385,33 @@ function createCourseCharacter(
     courseRhythm: `The GPX elevation profile shows ${climbRhythm} and ${descentRhythm}.`,
     attentionPoints,
   };
+}
+
+function groupPointsBySegment(points: readonly (GpxTrackPointInput & { segmentIndex?: number })[]) {
+  const groups: Array<Array<GpxTrackPointInput & { segmentIndex?: number }>> = [];
+  for (const point of points) {
+    const index = point.segmentIndex ?? 0;
+    while (groups.length <= index) groups.push([]);
+    groups[index].push(point);
+  }
+  return groups;
+}
+
+function parseTrackSegments(xml: string): GpxTrackPointInput[][] {
+  const segmentPattern = /<(?:[\w.-]+:)?trkseg\b[^>]*\/\s*>|<(?:[\w.-]+:)?trkseg\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?trkseg\s*>/gi;
+  return [...xml.matchAll(segmentPattern)].map((match) => match[1] ? parsePointElements(match[1], "trkpt") : []);
+}
+
+function parsePointElements(xml: string, tag: "trkpt" | "rtept"): GpxTrackPointInput[] {
+  const pattern = new RegExp(`<((?:[\\w.-]+:)?)${tag}\\b([^>]*)>([\\s\\S]*?)<\\/\\1${tag}\\s*>`, "gi");
+  return [...xml.matchAll(pattern)].map((match) => {
+    const attributes = parseXmlAttributes(match[2]);
+    const latitude = Number(attributes.get("lat"));
+    const longitude = Number(attributes.get("lon"));
+    const elevationMatch = match[3].match(/<(?:[\w.-]+:)?ele\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?ele\s*>/i);
+    const elevationM = elevationMatch ? Number(decodeXmlText(elevationMatch[1])) : Number.NaN;
+    return { latitude, longitude, elevationM };
+  });
 }
 
 function stripXmlProlog(xml: string): string {

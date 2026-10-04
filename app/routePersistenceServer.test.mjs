@@ -9,8 +9,8 @@ import { getOrCreateRouteAnalysis } from "./routePersistence.ts";
 import { getSharedRouteEligibility } from "./sharedRouteEligibility.ts";
 import { validatePersistenceRequest } from "./routePersistenceValidation.ts";
 
-const validFingerprint = `route-v1-sha256-${"a".repeat(64)}`;
-const validAnalysisInputFingerprint = `analysis-input-v1-sha256-${"b".repeat(64)}`;
+const validFingerprint = `route-v2-sha256-${"a".repeat(64)}`;
+const validAnalysisInputFingerprint = `analysis-input-v2-sha256-${"b".repeat(64)}`;
 let registeredIstriaPromise;
 
 function getRegisteredIstria() {
@@ -49,23 +49,23 @@ function createLookupDependencies() {
 
 test("server persistence API accepts only supported, version-matched request shapes", () => {
   assert.deepEqual(validatePersistenceRequest({
-    operation: "lookup", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 1,
+    operation: "lookup", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 2,
     analysisInputFingerprint: validAnalysisInputFingerprint,
-  }), { operation: "lookup", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 1, analysisInputFingerprint: validAnalysisInputFingerprint });
+  }), { operation: "lookup", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 2, analysisInputFingerprint: validAnalysisInputFingerprint });
   assert.deepEqual(validatePersistenceRequest({
     operation: "enrich", persistenceScope: "shared", routeFingerprint: validFingerprint,
-    routeFingerprintVersion: 1, needs: { osm: true, mapillary: false },
+    routeFingerprintVersion: 2, needs: { osm: true, mapillary: false },
   })?.operation, "enrich");
   for (const input of [
     null,
     [],
-    { operation: "lookup", persistenceScope: "local", routeFingerprint: validFingerprint, routeFingerprintVersion: 1 },
-    { operation: "query", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 1 },
+    { operation: "lookup", persistenceScope: "local", routeFingerprint: validFingerprint, routeFingerprintVersion: 2 },
+    { operation: "query", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 2 },
     { operation: "lookup", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 2 },
-    { operation: "lookup", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 1 },
-    { operation: "lookup", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 1, analysisInputFingerprint: "not-a-hash" },
-    { operation: "enrich", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 1, needs: { osm: false, mapillary: false } },
-    { operation: "lookup", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 1, sql: "select *" },
+    { operation: "lookup", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 2 },
+    { operation: "lookup", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 2, analysisInputFingerprint: "not-a-hash" },
+    { operation: "enrich", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 2, needs: { osm: false, mapillary: false } },
+    { operation: "lookup", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 2, sql: "select *" },
   ]) assert.equal(validatePersistenceRequest(input), null);
 });
 

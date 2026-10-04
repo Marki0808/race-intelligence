@@ -11,7 +11,7 @@ import {
 
 export type RouteEmbeddedEvent = Pick<
   RouteDynamicEvent,
-  "id" | "rhythm" | "startKm" | "endKm" | "ascentM" | "descentM" | "significance"
+  "id" | "rhythm" | "startKm" | "endKm" | "ascentM" | "descentM" | "significance" | "segmentIndex" | "startPosition" | "endPosition"
 > & { distanceKm: number };
 
 /** Returns a presentation copy ordered along the route without changing analytical event priority. */
@@ -73,6 +73,8 @@ export type RunnerSectionDecision = {
   sectionId: string;
   startKm: number;
   endKm: number;
+  startPosition: { distanceM: number; segmentIndex: number };
+  endPosition: { distanceM: number; segmentIndex: number };
   rhythm: RouteDominantRhythm;
   distanceKm: number;
   ascentM: number;
@@ -96,6 +98,9 @@ export type RouteSection = {
   id: string;
   startKm: number;
   endKm: number;
+  segmentIndex: number;
+  startPosition: { distanceM: number; segmentIndex: number };
+  endPosition: { distanceM: number; segmentIndex: number };
   distanceKm: number;
   dominantRhythm: RouteDominantRhythm;
   elevationStartM: number;
@@ -129,9 +134,9 @@ export type RouteSectionMapillaryEvidence = {
   availability: "available" | "not-found" | "unknown";
   imageCount: number;
 };
-export type RouteSectionMapPoint = { latitude: number; longitude: number; elevationM: number; distanceM: number };
+export type RouteSectionMapPoint = { latitude: number; longitude: number; elevationM: number; distanceM: number; segmentIndex: number };
 
-type Phase = { rhythm: RouteRhythm; startIndex: number; endIndex: number };
+type Phase = { rhythm: RouteRhythm; startIndex: number; endIndex: number; segmentIndex?: number };
 // A stable phase contributing one fifth of the local elevation movement can change the runner's experience.
 const MINIMUM_RELATIVE_VERTICAL_CONTRIBUTION = 0.2;
 
@@ -172,6 +177,17 @@ export function applyRunnerFacingSectionSignificance(
   input: readonly RouteSection[],
   config: RunnerSectionSignificanceConfig = DEFAULT_RUNNER_SECTION_SIGNIFICANCE_CONFIG,
 ): RunnerSectionSignificanceResult {
+  const grouped = new Map<number, RouteSection[]>();
+  for (const section of input) {
+    const index = section.segmentIndex ?? 0;
+    const group = grouped.get(index) ?? [];
+    group.push(section);
+    grouped.set(index, group);
+  }
+  if (grouped.size > 1) {
+    const results = [...grouped.values()].map((sections) => applyRunnerFacingSectionSignificance(sections, config));
+    return { sections: results.flatMap((result) => result.sections), decisions: results.flatMap((result) => result.decisions) };
+  }
   const totalDistanceKm = input.reduce((sum, section) => sum + section.distanceKm, 0);
   const totalAscentM = input.reduce((sum, section) => sum + section.ascentM, 0);
   const totalDescentM = input.reduce((sum, section) => sum + section.descentM, 0);
@@ -331,6 +347,8 @@ function calculateRunnerSectionDecision(
     sectionId: section.id,
     startKm: section.startKm,
     endKm: section.endKm,
+    startPosition: section.startPosition,
+    endPosition: section.endPosition,
     rhythm: section.dominantRhythm,
     distanceKm: section.distanceKm,
     ascentM: section.ascentM,
@@ -453,6 +471,8 @@ function mergeSections(sections: readonly RouteSection[], rhythm: RouteDominantR
     ...first,
     startKm: first.startKm,
     endKm: last.endKm,
+    startPosition: first.startPosition,
+    endPosition: last.endPosition,
     distanceKm,
     dominantRhythm: rhythm,
     elevationStartM: first.elevationStartM,
@@ -477,9 +497,12 @@ function mergeSections(sections: readonly RouteSection[], rhythm: RouteDominantR
 function makeAbsorbedEvent(section: RouteSection, significance: number): RouteEmbeddedEvent {
   return {
     id: `absorbed-${section.id}`,
+    segmentIndex: section.segmentIndex,
     rhythm: section.dominantRhythm,
     startKm: section.startKm,
     endKm: section.endKm,
+    startPosition: section.startPosition,
+    endPosition: section.endPosition,
     distanceKm: section.distanceKm,
     ascentM: section.ascentM,
     descentM: section.descentM,
@@ -492,7 +515,7 @@ function uniqueByDistance<T extends { distanceM: number }>(points: readonly T[])
 }
 
 function uniqueEvents(events: readonly RouteEmbeddedEvent[]) {
-  return [...new Map(events.map((event) => [`${event.startKm}-${event.endKm}-${event.rhythm}`, event])).values()]
+  return [...new Map(events.map((event) => [`${event.segmentIndex}-${event.startKm}-${event.endKm}-${event.rhythm}`, event])).values()]
     .sort((a, b) => b.significance - a.significance || a.startKm - b.startKm);
 }
 
@@ -500,15 +523,16 @@ export function createInitialPhases(dynamics: RouteDynamicsResult, config: Route
   const phases: Phase[] = [];
   dynamics.samples.forEach((sample, index) => {
     const rhythm = sample.rhythm;
+    const segmentIndex = sample.segmentIndex ?? 0;
     const previous = phases.at(-1);
-    if (previous?.rhythm === rhythm) previous.endIndex = index;
-    else phases.push({ rhythm, startIndex: index, endIndex: index });
+    if (previous?.rhythm === rhythm && (previous.segmentIndex ?? 0) === segmentIndex) previous.endIndex = index;
+    else phases.push({ rhythm, startIndex: index, endIndex: index, segmentIndex });
   });
   return phases.map((phase, index) => {
     if (phase.rhythm !== "transition") return phase;
-    const before = phases[index - 1];
-    const after = phases[index + 1];
-    if (before?.rhythm === after?.rhythm) return { ...phase, rhythm: before.rhythm };
+    const before = (phases[index - 1]?.segmentIndex ?? 0) === (phase.segmentIndex ?? 0) ? phases[index - 1] : undefined;
+    const after = (phases[index + 1]?.segmentIndex ?? 0) === (phase.segmentIndex ?? 0) ? phases[index + 1] : undefined;
+    if (before && after && before.rhythm === after.rhythm) return { ...phase, rhythm: before.rhythm };
     if (phaseLengthKm(phase, dynamics) < config.minimumConfirmedPhaseKm) {
       const selected = (before && after)
         ? phaseLengthKm(before, dynamics) >= phaseLengthKm(after, dynamics) ? before : after
@@ -529,12 +553,12 @@ export function mergeRoutePhases(
   const phases: Phase[] = [];
   for (const phase of input) {
     const previous = phases.at(-1);
-    if (previous?.rhythm === phase.rhythm) previous.endIndex = phase.endIndex;
+    if (previous?.rhythm === phase.rhythm && (previous.segmentIndex ?? 0) === (phase.segmentIndex ?? 0)) previous.endIndex = phase.endIndex;
     else phases.push({ ...phase });
   }
   const resolvedRhythms = phases.map((phase, index) => {
-    const previous = phases[index - 1];
-    const next = phases[index + 1];
+    const previous = (phases[index - 1]?.segmentIndex ?? 0) === (phase.segmentIndex ?? 0) ? phases[index - 1] : undefined;
+    const next = (phases[index + 1]?.segmentIndex ?? 0) === (phase.segmentIndex ?? 0) ? phases[index + 1] : undefined;
     if (phase.rhythm === "transition") return chooseNeighbor(phase, previous, next, dynamics)?.rhythm ?? "flat";
     const significance = phaseSignificance(phase, previous, next, dynamics);
     if (phaseLengthKm(phase, dynamics) < config.minimumSectionPersistenceKm) {
@@ -558,7 +582,7 @@ export function mergeRoutePhases(
   phases.forEach((phase, index) => {
     const rhythm = reconciledRhythms[index];
     const previous = merged.at(-1);
-    if (previous?.rhythm === rhythm) previous.endIndex = phase.endIndex;
+    if (previous?.rhythm === rhythm && (previous.segmentIndex ?? 0) === (phase.segmentIndex ?? 0)) previous.endIndex = phase.endIndex;
     else merged.push({ ...phase, rhythm });
   });
   let pruned = true;
@@ -573,7 +597,7 @@ export function mergeRoutePhases(
       const compacted: Phase[] = [];
       for (const item of merged) {
         const previous = compacted.at(-1);
-        if (previous?.rhythm === item.rhythm) previous.endIndex = item.endIndex;
+        if (previous?.rhythm === item.rhythm && (previous.segmentIndex ?? 0) === (item.segmentIndex ?? 0)) previous.endIndex = item.endIndex;
         else compacted.push({ ...item });
       }
       merged = compacted;
@@ -598,6 +622,7 @@ export function consolidateRoutePhases(
       const candidate = phases[index];
       const previous = phases[index - 1];
       const next = phases[index + 1];
+      if ((previous.segmentIndex ?? 0) !== (candidate.segmentIndex ?? 0) || (next.segmentIndex ?? 0) !== (candidate.segmentIndex ?? 0)) continue;
       const significance = phaseSignificance(candidate, previous, next, dynamics);
       if (isRunnerMeaningfulPhase(candidate, previous, next, significance, dynamics, config)) continue;
 
@@ -633,7 +658,7 @@ function coalescePhases(input: Phase[]) {
   const phases: Phase[] = [];
   for (const phase of input) {
     const previous = phases.at(-1);
-    if (previous?.rhythm === phase.rhythm) previous.endIndex = phase.endIndex;
+    if (previous?.rhythm === phase.rhythm && (previous.segmentIndex ?? 0) === (phase.segmentIndex ?? 0)) previous.endIndex = phase.endIndex;
     else phases.push({ ...phase });
   }
   return phases;
@@ -673,6 +698,7 @@ function isRunnerMeaningfulPhase(
 
 function hasRepeatedDirectionChanges(phase: Phase, dynamics: RouteDynamicsResult, config: RouteDynamicsConfig) {
   const points = dynamics.resampledPoints.filter((point) =>
+    (point.segmentIndex ?? 0) === (phase.segmentIndex ?? 0) &&
     point.distanceM >= dynamics.samples[phase.startIndex].distanceM &&
     point.distanceM <= dynamics.samples[phase.endIndex].distanceM,
   );
@@ -688,7 +714,7 @@ function hasRepeatedDirectionChanges(phase: Phase, dynamics: RouteDynamicsResult
 }
 
 function combinedWindowKeepsRhythm(startPhase: Phase, endPhase: Phase, rhythm: RouteRhythm, dynamics: RouteDynamicsResult, config: RouteDynamicsConfig) {
-  const combined: Phase = { rhythm, startIndex: startPhase.startIndex, endIndex: endPhase.endIndex };
+  const combined: Phase = { rhythm, startIndex: startPhase.startIndex, endIndex: endPhase.endIndex, segmentIndex: startPhase.segmentIndex };
   const { distanceKm, ascentM, descentM } = phaseSummary(combined, dynamics);
   const verticalM = ascentM + descentM;
   const intensityMPerKm = distanceKm > 0 ? verticalM / distanceKm : 0;
@@ -739,6 +765,8 @@ function isConfirmedDirectionalPhase(phase: Phase, dynamics: RouteDynamicsResult
 }
 
 function chooseNeighbor(phase: Phase, previous: Phase | undefined, next: Phase | undefined, dynamics: RouteDynamicsResult) {
+  if ((previous?.segmentIndex ?? 0) !== (phase.segmentIndex ?? 0)) previous = undefined;
+  if ((next?.segmentIndex ?? 0) !== (phase.segmentIndex ?? 0)) next = undefined;
   if (previous && next && previous.rhythm === next.rhythm) return previous;
   if (!previous) return next;
   if (!next) return previous;
@@ -775,13 +803,16 @@ function createSection(
   dynamics: RouteDynamicsResult,
   routePoints: readonly GpxRoutePointData[],
 ): RouteSection {
-  const startM = phase.startIndex === 0
-    ? 0
+  const segmentIndex = phase.segmentIndex ?? 0;
+  const firstSegmentIndex = dynamics.samples.findIndex((sample) => (sample.segmentIndex ?? 0) === segmentIndex);
+  const lastSegmentIndex = dynamics.samples.findLastIndex((sample) => (sample.segmentIndex ?? 0) === segmentIndex);
+  const startM = phase.startIndex === firstSegmentIndex
+    ? dynamics.samples[phase.startIndex].distanceM
     : (dynamics.samples[phase.startIndex - 1].distanceM + dynamics.samples[phase.startIndex].distanceM) / 2;
-  const endM = phase.endIndex === dynamics.samples.length - 1
-    ? dynamics.totalDistanceKm * 1000
+  const endM = phase.endIndex === lastSegmentIndex
+    ? dynamics.samples[phase.endIndex].distanceM
     : (dynamics.samples[phase.endIndex].distanceM + dynamics.samples[phase.endIndex + 1].distanceM) / 2;
-  const route = dynamics.resampledPoints.filter((point) => point.distanceM >= startM && point.distanceM <= endM);
+  const route = dynamics.resampledPoints.filter((point) => (point.segmentIndex ?? 0) === segmentIndex && point.distanceM >= startM && point.distanceM <= endM);
   const elevations = route.map((point) => point.smoothedElevationM);
   let ascentM = 0;
   let descentM = 0;
@@ -797,8 +828,8 @@ function createSection(
   const stability = average(samples.map((sample) => sample.stability));
   const sectionVerticalM = ascentM + descentM;
   const embeddedEvents = dynamics.events
-    .filter((event) => event.startKm * 1000 >= startM && event.endKm * 1000 <= endM && event.rhythm !== phase.rhythm)
-    .map(({ id, rhythm, startKm: eventStartKm, endKm: eventEndKm, ascentM: gain, descentM: loss }) => {
+    .filter((event) => (event.segmentIndex ?? 0) === segmentIndex && event.startKm * 1000 >= startM && event.endKm * 1000 <= endM && event.rhythm !== phase.rhythm)
+    .map(({ id, rhythm, startKm: eventStartKm, endKm: eventEndKm, ascentM: gain, descentM: loss, startPosition, endPosition }) => {
       const eventDistanceKm = roundKm(Math.max(0, eventEndKm - eventStartKm));
       const eventVerticalM = gain + loss;
       const significance = relativeSignificance(
@@ -808,7 +839,7 @@ function createSection(
         Math.max(0, sectionVerticalM - eventVerticalM),
       );
       return {
-        id, rhythm, startKm: eventStartKm, endKm: eventEndKm, distanceKm: eventDistanceKm, ascentM: gain, descentM: loss,
+        id, rhythm, segmentIndex, startKm: eventStartKm, endKm: eventEndKm, startPosition, endPosition, distanceKm: eventDistanceKm, ascentM: gain, descentM: loss,
         significance: round2(significance),
       };
     });
@@ -816,6 +847,9 @@ function createSection(
   const endKm = roundKm(endM / 1000);
   return {
     id: `route-section-${index + 1}`,
+    segmentIndex,
+    startPosition: { distanceM: startM, segmentIndex },
+    endPosition: { distanceM: endM, segmentIndex },
     startKm,
     endKm,
     distanceKm: roundKm(distanceKm),
@@ -835,8 +869,8 @@ function createSection(
       stability: round2(stability),
     },
     description: describeSection(phase.rhythm as RouteDominantRhythm, embeddedEvents),
-    mapData: routePoints.filter((point) => point.distanceM >= startM && point.distanceM <= endM)
-      .map(({ latitude, longitude, elevationM, distanceM }) => ({ latitude, longitude, elevationM, distanceM })),
+    mapData: routePoints.filter((point) => (point.segmentIndex ?? 0) === segmentIndex && point.distanceM >= startM && point.distanceM <= endM)
+      .map(({ latitude, longitude, elevationM, distanceM, segmentIndex: pointSegment }) => ({ latitude, longitude, elevationM, distanceM, segmentIndex: pointSegment })),
   };
 }
 
@@ -844,7 +878,7 @@ function phaseSummary(phase: Phase, dynamics: RouteDynamicsResult) {
   const distanceKm = phaseLengthKm(phase, dynamics);
   const startM = dynamics.samples[phase.startIndex].distanceM;
   const endM = dynamics.samples[phase.endIndex].distanceM;
-  const points = dynamics.resampledPoints.filter((point) => point.distanceM >= startM && point.distanceM <= endM);
+  const points = dynamics.resampledPoints.filter((point) => (point.segmentIndex ?? 0) === (phase.segmentIndex ?? 0) && point.distanceM >= startM && point.distanceM <= endM);
   let ascentM = 0;
   let descentM = 0;
   for (let index = 1; index < points.length; index += 1) {

@@ -4,6 +4,7 @@ import type { TerrainCategory } from "./terrainAggregation.ts";
 import type { RouteSection, RouteSectionTerrainEvidence } from "./routeSectionEngine.ts";
 
 type ClassifiableEvidenceBand = {
+  segmentIndex: number;
   startKm: number;
   endKm: number;
   coverage: number;
@@ -21,10 +22,11 @@ export function attachTerrainEvidenceToRouteSections(
   const evidenceBands = createClassifiableEvidenceBands(aggregation);
   return sections.map((section) => {
     const sectionLengthKm = Math.max(0, section.endKm - section.startKm);
+    const relevantBands = evidenceBands.filter((band) => band.segmentIndex === (section.segmentIndex ?? 0));
     const boundaries = [...new Set([
       section.startKm,
       section.endKm,
-      ...evidenceBands.flatMap((band) => [
+      ...relevantBands.flatMap((band) => [
         Math.max(section.startKm, band.startKm),
         Math.min(section.endKm, band.endKm),
       ]).filter((distanceKm) => distanceKm > section.startKm && distanceKm < section.endKm),
@@ -37,7 +39,7 @@ export function attachTerrainEvidenceToRouteSections(
       const endKm = boundaries[index + 1];
       const overlapKm = endKm - startKm;
       if (overlapKm <= 0) continue;
-      const activeBands = evidenceBands.filter((band) => band.startKm < endKm && band.endKm > startKm);
+      const activeBands = relevantBands.filter((band) => band.startKm < endKm && band.endKm > startKm);
       if (!activeBands.length) continue;
 
       // Distinct upstream ranges can overlap. Use the best mapped-distance coverage for each
@@ -100,6 +102,7 @@ function createClassifiableEvidenceBands(aggregation: ReturnType<typeof aggregat
     if (coverage <= 0 || matchConfidence <= 0) continue;
     for (const [category, evidenceShare] of categories) {
       bands.push({
+        segmentIndex: segment.segmentIndex ?? 0,
         startKm: segment.startDistanceKm,
         endKm: segment.endDistanceKm,
         coverage,

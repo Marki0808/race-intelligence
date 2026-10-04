@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import type { Map as LeafletMap } from "leaflet";
 import type { RouteSectionMapPoint } from "./routeSectionEngine";
 import { hasRenderableSectionMap } from "./routeSectionPresentation";
+import { groupAnalyzedPointsBySegment } from "./gpxAnalysis";
 
 export default function TerrainSectionMap({
   points,
@@ -29,13 +30,18 @@ export default function TerrainSectionMap({
         attribution: "&copy; OpenStreetMap contributors",
         maxZoom: 19,
       }).addTo(map);
-      const coordinates = points.map((point) => [point.latitude, point.longitude] as [number, number]);
-      L.polyline(coordinates, { color: "#ffffff", weight: 8, opacity: 0.95 }).addTo(map);
-      const route = L.polyline(coordinates, { color: "#71805d", weight: 5, opacity: 1 }).addTo(map);
-      map.fitBounds(route.getBounds(), { padding: [18, 18], maxZoom: 15 });
-      L.circleMarker(coordinates[0], { radius: 6, color: "#ffffff", weight: 2, fillColor: "#a7c957", fillOpacity: 1 })
+      const paths = groupAnalyzedPointsBySegment(points).map((segment) => segment.map((point) => [point.latitude, point.longitude] as [number, number]));
+      paths.filter((coordinates) => coordinates.length > 1).forEach((coordinates) => {
+        L.polyline(coordinates, { color: "#ffffff", weight: 8, opacity: 0.95 }).addTo(map!);
+        L.polyline(coordinates, { color: "#71805d", weight: 5, opacity: 1 }).addTo(map!);
+      });
+      const bounds = L.latLngBounds(points.map((point) => [point.latitude, point.longitude]));
+      if (bounds.isValid()) map.fitBounds(bounds, { padding: [18, 18], maxZoom: 15 });
+      const first = [points[0].latitude, points[0].longitude] as [number, number];
+      const last = [points.at(-1)!.latitude, points.at(-1)!.longitude] as [number, number];
+      L.circleMarker(first, { radius: 6, color: "#ffffff", weight: 2, fillColor: "#a7c957", fillOpacity: 1 })
         .addTo(map).bindTooltip("Section start");
-      L.circleMarker(coordinates.at(-1)!, { radius: 6, color: "#ffffff", weight: 2, fillColor: "#c07a5a", fillOpacity: 1 })
+      L.circleMarker(last, { radius: 6, color: "#ffffff", weight: 2, fillColor: "#c07a5a", fillOpacity: 1 })
         .addTo(map).bindTooltip("Section end");
     }
     const observer = new IntersectionObserver((entries) => {

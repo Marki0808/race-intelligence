@@ -47,11 +47,12 @@ export async function POST(request: Request) {
     if (
       typeof point.latitude !== "number" || !Number.isFinite(point.latitude) || Math.abs(point.latitude) > 90 ||
       typeof point.longitude !== "number" || !Number.isFinite(point.longitude) || Math.abs(point.longitude) > 180 ||
-      typeof point.distanceM !== "number" || !Number.isFinite(point.distanceM) || point.distanceM < 0
+      typeof point.distanceM !== "number" || !Number.isFinite(point.distanceM) || point.distanceM < 0 ||
+      (point.segmentIndex !== undefined && (typeof point.segmentIndex !== "number" || !Number.isInteger(point.segmentIndex) || point.segmentIndex < 0))
     ) {
       return Response.json({ error: "Invalid route geometry." }, { status: 400 });
     }
-    points.push({ latitude: point.latitude, longitude: point.longitude, distanceM: point.distanceM });
+    points.push({ latitude: point.latitude, longitude: point.longitude, distanceM: point.distanceM, segmentIndex: typeof point.segmentIndex === "number" ? point.segmentIndex : 0 });
   }
 
   return Response.json(await enrichRouteWithOsm(points), {

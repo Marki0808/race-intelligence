@@ -45,6 +45,7 @@ export const DEFAULT_ROUTE_DYNAMICS_CONFIG: RouteDynamicsConfig = {
 
 export type ResampledRoutePoint = {
   distanceM: number;
+  segmentIndex: number;
   elevationM: number;
   smoothedElevationM: number;
 };
@@ -68,6 +69,7 @@ export type RouteTrendMetrics = {
 
 export type RouteDynamicSample = {
   distanceM: number;
+  segmentIndex: number;
   elevationM: number;
   smoothedElevationM: number;
   short: RouteTrendMetrics;
@@ -79,8 +81,11 @@ export type RouteDynamicSample = {
 
 export type RouteDynamicEvent = {
   id: string;
+  segmentIndex: number;
   startKm: number;
   endKm: number;
+  startPosition: { distanceM: number; segmentIndex: number };
+  endPosition: { distanceM: number; segmentIndex: number };
   rhythm: RouteRhythm;
   ascentM: number;
   descentM: number;
@@ -108,6 +113,33 @@ export function analyzeRouteDynamics(
   if (points.length < 2 || config.resampleIntervalM <= 0) {
     return { totalDistanceKm: 0, resampledPoints: [], samples: [], events: [] };
   }
+  const groups = new Map<number, GpxRoutePointData[]>();
+  for (const point of points) {
+    const group = groups.get(point.segmentIndex ?? 0) ?? [];
+    group.push(point);
+    groups.set(point.segmentIndex ?? 0, group);
+  }
+  const combined: RouteDynamicsResult = { totalDistanceKm: points.at(-1)!.distanceM / 1000, resampledPoints: [], samples: [], events: [] };
+  for (const [segmentIndex, segmentPoints] of groups) {
+    if (segmentPoints.length < 2) continue;
+    const offsetM = segmentPoints[0].distanceM;
+    const localPoints = segmentPoints.map((point) => ({ ...point, distanceM: point.distanceM - offsetM }));
+    const segmentResult = analyzeSingleSegment(localPoints, config);
+    combined.resampledPoints.push(...segmentResult.resampledPoints.map((point) => ({ ...point, distanceM: point.distanceM + offsetM, segmentIndex })));
+    combined.samples.push(...segmentResult.samples.map((sample) => ({ ...sample, distanceM: sample.distanceM + offsetM, segmentIndex })));
+    combined.events.push(...segmentResult.events.map((event) => {
+      const startKm = event.startKm + offsetM / 1000;
+      const endKm = event.endKm + offsetM / 1000;
+      return { ...event, segmentIndex, startKm, endKm, startPosition: { distanceM: startKm * 1000, segmentIndex }, endPosition: { distanceM: endKm * 1000, segmentIndex }, id: `segment-${segmentIndex}-${event.id}` };
+    }));
+  }
+  return combined;
+}
+
+function analyzeSingleSegment(
+  points: readonly GpxRoutePointData[],
+  config: RouteDynamicsConfig,
+): RouteDynamicsResult {
   const totalDistanceM = points.at(-1)!.distanceM;
   if (totalDistanceM <= 0) return { totalDistanceKm: 0, resampledPoints: [], samples: [], events: [] };
 
@@ -116,6 +148,7 @@ export function analyzeRouteDynamics(
   const smoothed = movingAverage(median, config.movingAverageRadiusM, config.resampleIntervalM);
   const resampledPoints = raw.map((point, index) => ({
     distanceM: point.distanceM,
+    segmentIndex: points[0].segmentIndex ?? 0,
     elevationM: point.elevationM,
     smoothedElevationM: smoothed[index],
   }));
@@ -130,7 +163,7 @@ export function analyzeRouteDynamics(
       ? medium
       : short.rhythm === rhythm ? short : medium.rhythm === rhythm ? medium : long;
     const stability = Math.min(1, agreement * 0.65 + dominantStrength(dominantMetrics) * 0.35);
-    return { ...point, short, medium, long, rhythm, stability };
+    return { ...point, segmentIndex: points[0].segmentIndex ?? 0, short, medium, long, rhythm, stability };
   });
   const events = createMicroEvents(samples, resampledPoints, config);
   return { totalDistanceKm: totalDistanceM / 1000, resampledPoints, samples, events };
@@ -304,8 +337,11 @@ function createMicroEvents(
     const confidence = samples.slice(run.start, run.end + 1).reduce((sum, sample) => sum + sample.stability, 0) / (run.end - run.start + 1);
     return [{
       id: `dynamic-event-${run.start + 1}`,
+      segmentIndex: points[0].segmentIndex ?? 0,
       startKm: Number((start.distanceM / 1000).toFixed(2)),
       endKm: Number((end.distanceM / 1000).toFixed(2)),
+      startPosition: { distanceM: start.distanceM, segmentIndex: points[0].segmentIndex ?? 0 },
+      endPosition: { distanceM: end.distanceM, segmentIndex: points[0].segmentIndex ?? 0 },
       rhythm,
       ascentM: Math.round(ascentM),
       descentM: Math.round(descentM),

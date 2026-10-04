@@ -6,7 +6,11 @@ import {
   analyzeGpxRoute,
   GpxAnalysisError,
   parseGpxText,
+  groupAnalyzedPointsBySegment,
 } from "./gpxAnalysis.ts";
+import { createRouteFingerprint } from "./routeFingerprint.ts";
+import { createAnalysisInputFingerprint } from "./analysisInputFingerprint.ts";
+import { ROUTE_ANALYSIS_VERSION } from "./routePersistence.ts";
 
 test("route analysis calculates distance, gain, loss, high and low points", () => {
   const result = analyzeGpxRoute({
@@ -31,6 +35,69 @@ test("route analysis calculates distance, gain, loss, high and low points", () =
   assert.ok(result.keyMoments.every((moment) => moment.source === "GPX-derived"));
   assert.match(result.courseCharacter.terrain, /Unknown/);
   assert.match(result.courseCharacter.technicality, /Unknown/);
+});
+
+test("track parser retains empty, singleton, and multi-point track segments", () => {
+  const parsed = parseGpxText(`<gpx><trk><trkseg><trkpt lat="45" lon="13"><ele>1</ele></trkpt><trkpt lat="45.001" lon="13"><ele>2</ele></trkpt></trkseg><trkseg/><trkseg><trkpt lat="46" lon="14"><ele>9</ele></trkpt></trkseg></trk></gpx>`);
+  assert.deepEqual(parsed.segments.map((segment) => segment.length), [2, 0, 1]);
+  assert.deepEqual(parsed.points.map((point) => point.segmentIndex), [0, 0, 2]);
+});
+
+test("empty and singleton-only track components are preserved but fail analysis safely", () => {
+  const parsed = parseGpxText(`<gpx><trk><trkseg/><trkseg><trkpt lat="45" lon="13"><ele>100</ele></trkpt></trkseg><trkseg/></trk></gpx>`);
+  assert.deepEqual(parsed.segments.map((segment) => segment.length), [0, 1, 0]);
+  assert.throws(
+    () => analyzeGpxRoute(parsed),
+    (error) => error instanceof GpxAnalysisError && error.code === "no-track-points",
+  );
+});
+
+test("disconnected track segments add no connector distance or elevation change", () => {
+  const parsed = parseGpxText(`<gpx><trk><trkseg><trkpt lat="45" lon="13"><ele>100</ele></trkpt><trkpt lat="45.009" lon="13"><ele>150</ele></trkpt></trkseg><trkseg><trkpt lat="46" lon="14"><ele>9000</ele></trkpt><trkpt lat="46.009" lon="14"><ele>8940</ele></trkpt></trkseg></trk></gpx>`);
+  const analysis = analyzeGpxRoute(parsed);
+  assert.equal(analysis.segments.length, 2);
+  assert.equal(analysis.metrics.distanceKm, 2);
+  assert.equal(analysis.metrics.elevationGainM, 50);
+  assert.equal(analysis.metrics.elevationLossM, 60);
+  assert.equal(analysis.points[1].distanceM, analysis.points[2].distanceM);
+  assert.equal(analysis.points[1].segmentIndex, 0);
+  assert.equal(analysis.points[2].segmentIndex, 1);
+  assert.equal(analysis.metrics.highestPointM, 9000);
+  assert.ok(analysis.routeDynamics.resampledPoints.every((point) => Number.isInteger(point.segmentIndex)));
+  assert.ok(analysis.routeDynamics.events.every((event) => event.startKm >= analysis.segments[event.segmentIndex].startDistanceM / 1000 && event.endKm <= analysis.segments[event.segmentIndex].endDistanceM / 1000));
+  assert.ok(analysis.routeSections.every((section) => section.startPosition.segmentIndex === section.endPosition.segmentIndex));
+  assert.deepEqual(groupAnalyzedPointsBySegment(analysis.points).map((segment) => segment.length), [2, 2]);
+  assert.ok(analysis.keyMoments.some((moment) => moment.title === "Highest point" && moment.segmentIndex === 1));
+});
+
+test("identical and nearby segment endpoints are still distinct path components", () => {
+  const analysis = analyzeGpxRoute({ segments: [
+    [{ latitude: 45, longitude: 13, elevationM: 10 }, { latitude: 45.001, longitude: 13, elevationM: 20 }],
+    [{ latitude: 45.001, longitude: 13, elevationM: 900 }, { latitude: 45.002, longitude: 13, elevationM: 890 }],
+  ] });
+  assert.equal(analysis.points[1].distanceM, analysis.points[2].distanceM);
+  assert.equal(analysis.points[1].segmentIndex, 0);
+  assert.equal(analysis.points[2].segmentIndex, 1);
+  assert.equal(analysis.metrics.elevationGainM, 10);
+  assert.equal(analysis.metrics.elevationLossM, 10);
+});
+
+test("Route Dynamics and Route Sections analyze each sustained track segment independently", () => {
+  const makeSegment = (baseElevationM, elevationDeltaM) => Array.from({ length: 81 }, (_, index) => ({
+    latitude: 0,
+    longitude: index * 100 / 111_320,
+    elevationM: baseElevationM + elevationDeltaM * index / 80,
+  }));
+  const analysis = analyzeGpxRoute({ segments: [makeSegment(100, 500), makeSegment(900, -450)] });
+
+  assert.ok(analysis.routeDynamics.samples.some((sample) => sample.segmentIndex === 0));
+  assert.ok(analysis.routeDynamics.samples.some((sample) => sample.segmentIndex === 1));
+  assert.ok(analysis.routeSections.some((section) => section.segmentIndex === 0));
+  assert.ok(analysis.routeSections.some((section) => section.segmentIndex === 1));
+  assert.ok(analysis.routeSections.every((section) => section.startPosition.segmentIndex === section.endPosition.segmentIndex));
+  assert.ok(analysis.metrics.distanceKm > 15.9 && analysis.metrics.distanceKm < 16.1);
+  assert.equal(analysis.metrics.elevationGainM, 500);
+  assert.equal(analysis.metrics.elevationLossM, 450);
 });
 
 test("route name falls back neutrally when the GPX has no name", () => {
@@ -88,6 +155,17 @@ test("GPX route points and metadata names are supported", () => {
   assert.equal(analyzeGpxRoute(parsed).name, "Ridge & valley");
 });
 
+test("multiple GPX routes without a track remain rejected", () => {
+  const multipleRoutes = `<gpx>
+    <rte><rtept lat="45" lon="13"><ele>100</ele></rtept><rtept lat="45.001" lon="13"><ele>120</ele></rtept></rte>
+    <rte><rtept lat="46" lon="14"><ele>300</ele></rtept><rtept lat="46.001" lon="14"><ele>320</ele></rtept></rte>
+  </gpx>`;
+  assert.throws(
+    () => parseGpxText(multipleRoutes),
+    (error) => error instanceof GpxAnalysisError && error.code === "multiple-tracks",
+  );
+});
+
 test("invalid points and routes are rejected instead of receiving invented fallback values", () => {
   assert.throws(
     () => analyzeGpxRoute({ points: [] }),
@@ -120,7 +198,16 @@ test("the shared engine reproduces the Istria race GPX metrics as a regression c
     new URL("../public/ISTRIA_110K_2027.gpx", import.meta.url),
     "utf8",
   );
-  const analysis = analyzeGpxRoute(parseGpxText(gpxText));
+  const parsed = parseGpxText(gpxText);
+  const analysis = analyzeGpxRoute(parsed);
   assert.deepEqual(analysis.metrics, istria110kRaceRecord.courseAnalysis);
   assert.equal(analysis.points.length, 5778);
+  assert.equal(analysis.segments.length, 1);
+  assert.equal(analysis.segments[0].points.length, 5778);
+  const fingerprint = await createRouteFingerprint(parsed.segments.map((segment) => segment.map(({ latitude, longitude }) => ({ latitude, longitude }))));
+  const analysisInput = await createAnalysisInputFingerprint(parsed.segments);
+  assert.equal(fingerprint.routeFingerprintVersion, 2);
+  assert.match(fingerprint.routeFingerprint, /^route-v2-sha256-[a-f0-9]{64}$/);
+  assert.match(analysisInput, /^analysis-input-v2-sha256-[a-f0-9]{64}$/);
+  assert.equal(ROUTE_ANALYSIS_VERSION, 2);
 });

@@ -10,11 +10,11 @@ export function createRouteKeyMoments(
   dynamics: RouteDynamicsResult,
 ): KeyMomentData[] {
   if (points.length < 2) return [];
-  const facts: Array<{ title: string; startKm: number; endKm: number; text: string; gain?: number; loss?: number }> = [];
+  const facts: Array<{ title: string; startKm: number; endKm: number; segmentIndex: number; text: string; gain?: number; loss?: number }> = [];
   const high = extremePoint(points, "high");
   const low = extremePoint(points, "low");
-  facts.push({ title: "Highest point", startKm: high.distanceM / 1000, endKm: high.distanceM / 1000, text: `The GPX records its highest elevation here: ${Math.round(metrics.highestPointM)} m.` });
-  facts.push({ title: "Lowest point", startKm: low.distanceM / 1000, endKm: low.distanceM / 1000, text: `The GPX records its lowest elevation here: ${Math.round(metrics.lowestPointM)} m.` });
+  facts.push({ title: "Highest point", startKm: high.distanceM / 1000, endKm: high.distanceM / 1000, segmentIndex: high.segmentIndex, text: `The GPX records its highest elevation here: ${Math.round(metrics.highestPointM)} m.` });
+  facts.push({ title: "Lowest point", startKm: low.distanceM / 1000, endKm: low.distanceM / 1000, segmentIndex: low.segmentIndex, text: `The GPX records its lowest elevation here: ${Math.round(metrics.lowestPointM)} m.` });
 
   const climbs = dynamics.events.filter((event) => event.rhythm === "climb");
   const descents = dynamics.events.filter((event) => event.rhythm === "descent");
@@ -34,6 +34,9 @@ export function createRouteKeyMoments(
       distance: pointFact ? `~${startKm} km` : `${startKm}–${endKm} km`,
       focusStartKm: pointFact ? Math.max(0, startKm - 0.5) : startKm,
       focusEndKm: pointFact ? Math.min(metrics.distanceKm, endKm + 0.5) : endKm,
+      segmentIndex: fact.segmentIndex,
+      focusStartPosition: { distanceM: (pointFact ? Math.max(0, startKm - 0.5) : startKm) * 1000, segmentIndex: fact.segmentIndex },
+      focusEndPosition: { distanceM: (pointFact ? Math.min(metrics.distanceKm, endKm + 0.5) : endKm) * 1000, segmentIndex: fact.segmentIndex },
       ...(fact.gain !== undefined ? { gain: `+${Math.round(fact.gain).toLocaleString("en-US")} m` } : {}),
       ...(fact.loss !== undefined ? { loss: `−${Math.round(fact.loss).toLocaleString("en-US")} m` } : {}),
       text: fact.text,
@@ -43,7 +46,7 @@ export function createRouteKeyMoments(
 }
 
 function addExtremes(
-  facts: Array<{ title: string; startKm: number; endKm: number; text: string; gain?: number; loss?: number }>,
+  facts: Array<{ title: string; startKm: number; endKm: number; segmentIndex: number; text: string; gain?: number; loss?: number }>,
   events: RouteDynamicEvent[],
   direction: "climb" | "descent",
 ) {
@@ -63,6 +66,7 @@ function eventFact(title: string, event: RouteDynamicEvent, text: string) {
     title,
     startKm: event.startKm,
     endKm: event.endKm,
+    segmentIndex: event.segmentIndex ?? 0,
     text,
     ...(event.rhythm === "climb" ? { gain: event.ascentM } : {}),
     ...(event.rhythm === "descent" ? { loss: event.descentM } : {}),

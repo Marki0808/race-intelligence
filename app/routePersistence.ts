@@ -5,7 +5,7 @@ import type { RouteSection } from "./routeSectionEngine.ts";
 import type { RouteFingerprintResult } from "./routeFingerprint.ts";
 import { ROUTE_FINGERPRINT_VERSION } from "./routeFingerprint.ts";
 
-export const ROUTE_ANALYSIS_VERSION = 1;
+export const ROUTE_ANALYSIS_VERSION = 2;
 export const OSM_ENRICHMENT_VERSION = 1;
 export const MAPILLARY_ENRICHMENT_VERSION = 1;
 // Bump analysis independently from route identity; OSM and Mapillary formats have separate lifecycles.
@@ -24,7 +24,7 @@ export type RaceEditionRouteReference = {
 export type PersistedRouteRecord = {
   routeFingerprint: string;
   routeFingerprintVersion: number;
-  normalizedGeometry: RouteFingerprintResult["normalizedGeometry"];
+  normalizedGeometry: RouteFingerprintResult["normalizedGeometrySegments"];
   normalizedDistanceKm: number;
   totalDistanceKm: number;
   representativePointCount: number;
@@ -59,6 +59,7 @@ export type OsmEnrichmentSnapshot = {
 };
 
 export type OsmEvidenceConflict = {
+  segmentIndex: number;
   startDistanceKm: number;
   endDistanceKm: number;
   selectedSnapshotId: string;
@@ -237,7 +238,7 @@ export function mapMapillaryEvidenceToSections(
   return {
     source: record.data.source,
     sections: sections.map((section): MapillarySectionEvidence => {
-      const sectionImages = images.filter((image) => image.distanceAlongRouteKm >= section.startKm && image.distanceAlongRouteKm <= section.endKm);
+      const sectionImages = images.filter((image) => (image.segmentIndex ?? 0) === (section.segmentIndex ?? 0) && image.distanceAlongRouteKm >= section.startKm && image.distanceAlongRouteKm <= section.endKm);
       return {
         id: section.id,
         availability: sectionImages.length ? "available" : "unknown",
@@ -319,32 +320,34 @@ function mergeSnapshotGeoData(
     const ranges = snapshot.retrievedRanges.map((range) => intersectRanges(rangeOfSegment(segment), range)).filter(isRange);
     return ranges.map((range) => ({ snapshot, segment, range }));
   }));
-  const boundaries = mergeDistanceRanges(retrievedRanges).flatMap((range) => [range.startDistanceKm, range.endDistanceKm]);
-  for (const piece of pieces) boundaries.push(piece.range.startDistanceKm, piece.range.endDistanceKm);
-  const orderedBoundaries = [...new Set(boundaries)].sort((left, right) => left - right);
-  const selected: Array<{ snapshot: OsmEnrichmentSnapshot; segment: GeoSegmentEvidence; startKm: number; endKm: number }> = [];
-
-  for (let index = 0; index < orderedBoundaries.length - 1; index += 1) {
-    const startKm = orderedBoundaries[index];
-    const endKm = orderedBoundaries[index + 1];
-    if (endKm <= startKm || !rangeContains(retrievedRanges, startKm, endKm)) continue;
-    const candidates = pieces.filter((piece) => piece.range.startDistanceKm < endKm && piece.range.endDistanceKm > startKm);
-    if (!candidates.length) continue;
-    candidates.sort(compareOsmEvidencePieces);
-    const winner = candidates[0];
-    const previous = selected.at(-1);
-    if (previous && previous.snapshot.snapshotId === winner.snapshot.snapshotId && previous.segment.id === winner.segment.id && Math.abs(previous.endKm - startKm) < 0.000001) {
-      previous.endKm = endKm;
-    } else selected.push({ snapshot: winner.snapshot, segment: winner.segment, startKm, endKm });
+  const selected: Array<{ snapshot: OsmEnrichmentSnapshot; segment: GeoSegmentEvidence; startKm: number; endKm: number; segmentIndex: number }> = [];
+  for (const routeRange of mergeDistanceRanges(retrievedRanges)) {
+    const segmentIndex = routeRange.segmentIndex ?? 0;
+    const relevantPieces = pieces.filter((piece) => (piece.segment.segmentIndex ?? 0) === segmentIndex);
+    const boundaries = [routeRange.startDistanceKm, routeRange.endDistanceKm, ...relevantPieces.flatMap((piece) => [piece.range.startDistanceKm, piece.range.endDistanceKm])]
+      .sort((left, right) => left - right).filter((value, index, values) => index === 0 || value !== values[index - 1]);
+    for (let index = 0; index < boundaries.length - 1; index += 1) {
+      const startKm = boundaries[index];
+      const endKm = boundaries[index + 1];
+      if (endKm <= startKm || startKm < routeRange.startDistanceKm || endKm > routeRange.endDistanceKm) continue;
+      const candidates = relevantPieces.filter((piece) => piece.range.startDistanceKm < endKm && piece.range.endDistanceKm > startKm);
+      if (!candidates.length) continue;
+      candidates.sort(compareOsmEvidencePieces);
+      const winner = candidates[0];
+      const previous = selected.at(-1);
+      if (previous && previous.segmentIndex === segmentIndex && previous.snapshot.snapshotId === winner.snapshot.snapshotId && previous.segment.id === winner.segment.id && Math.abs(previous.endKm - startKm) < 0.000001) previous.endKm = endKm;
+      else selected.push({ snapshot: winner.snapshot, segment: winner.segment, startKm, endKm, segmentIndex });
+    }
   }
 
-  const segments = selected.map(({ snapshot, segment, startKm, endKm }, index): GeoSegmentEvidence => ({
+  const segments = selected.map(({ snapshot, segment, startKm, endKm, segmentIndex }, index): GeoSegmentEvidence => ({
     ...segment,
+    segmentIndex,
     id: `cache-${snapshot.snapshotId}-${segment.id}-${index}`,
     startDistanceKm: startKm,
     endDistanceKm: endKm,
     lengthKm: endKm - startKm,
-    osmWays: segment.osmWays.map((way) => ({ ...way, startDistanceKm: startKm, endDistanceKm: endKm })),
+    osmWays: segment.osmWays.map((way) => ({ ...way, segmentIndex, startDistanceKm: startKm, endDistanceKm: endKm })),
   }));
   const matchedKm = segments.reduce((sum, segment) => sum + segment.lengthKm * clamp01(segment.evidenceCoverage), 0);
   const matchedRoutePercent = routeLengthKm > 0 ? Math.round(matchedKm / routeLengthKm * 100) : 0;
@@ -391,10 +394,11 @@ function compareOsmEvidencePieces(
 function findOsmEvidenceConflicts(snapshots: OsmEnrichmentSnapshot[], retrievedRanges: GeoDistanceRange[]): OsmEvidenceConflict[] {
   const conflicts: OsmEvidenceConflict[] = [];
   for (const range of retrievedRanges) {
+    const segmentIndex = range.segmentIndex ?? 0;
     const boundaries = [...new Set([
       range.startDistanceKm,
       range.endDistanceKm,
-      ...snapshots.flatMap((snapshot) => snapshot.data.segments.flatMap((segment) => [
+      ...snapshots.flatMap((snapshot) => snapshot.data.segments.filter((segment) => (segment.segmentIndex ?? 0) === segmentIndex).flatMap((segment) => [
         Math.max(range.startDistanceKm, segment.startDistanceKm),
         Math.min(range.endDistanceKm, segment.endDistanceKm),
       ]).filter((distance) => distance > range.startDistanceKm && distance < range.endDistanceKm)),
@@ -403,7 +407,7 @@ function findOsmEvidenceConflicts(snapshots: OsmEnrichmentSnapshot[], retrievedR
       const startDistanceKm = boundaries[index];
       const endDistanceKm = boundaries[index + 1];
       const active = snapshots.flatMap((snapshot) => snapshot.data.segments
-        .filter((segment) => segment.startDistanceKm < endDistanceKm && segment.endDistanceKm > startDistanceKm && segment.surface.availability === "available")
+        .filter((segment) => (segment.segmentIndex ?? 0) === segmentIndex && segment.startDistanceKm < endDistanceKm && segment.endDistanceKm > startDistanceKm && segment.surface.availability === "available")
         .map((segment) => ({ snapshot, segment })));
       const alternatives = [...new Map(active.map(({ snapshot, segment }) => [
         snapshot.snapshotId,
@@ -412,7 +416,7 @@ function findOsmEvidenceConflicts(snapshots: OsmEnrichmentSnapshot[], retrievedR
       const surfaceValues = new Set(alternatives.map((alternative) => alternative.surface));
       if (surfaceValues.size < 2) continue;
       const candidates = active.sort(compareOsmEvidencePieces);
-      conflicts.push({ startDistanceKm, endDistanceKm, selectedSnapshotId: candidates[0].snapshot.snapshotId, alternatives });
+      conflicts.push({ segmentIndex, startDistanceKm, endDistanceKm, selectedSnapshotId: candidates[0].snapshot.snapshotId, alternatives });
     }
   }
   return conflicts;
@@ -450,10 +454,10 @@ function createRouteRecord(
   return {
     routeFingerprint: fingerprint.routeFingerprint,
     routeFingerprintVersion: fingerprint.routeFingerprintVersion,
-    normalizedGeometry: fingerprint.normalizedGeometry,
+    normalizedGeometry: fingerprint.normalizedGeometrySegments,
     normalizedDistanceKm: fingerprint.normalizedDistanceKm,
     totalDistanceKm,
-    representativePointCount: fingerprint.normalizedGeometry.length,
+    representativePointCount: fingerprint.normalizedGeometrySegments.reduce((count, segment) => count + segment.length, 0),
     createdAt: previous?.createdAt ?? now,
     updatedAt: now,
   };
@@ -464,6 +468,7 @@ function snapshotContentKey(snapshot: OsmEnrichmentSnapshot) {
     retrievedRanges: snapshot.retrievedRanges,
     unavailableRanges: snapshot.unavailableRanges,
     segments: snapshot.data.segments.map((segment) => ({
+      segmentIndex: segment.segmentIndex ?? 0,
       startDistanceKm: segment.startDistanceKm,
       endDistanceKm: segment.endDistanceKm,
       surface: segment.surface,
@@ -483,13 +488,14 @@ function snapshotContentKey(snapshot: OsmEnrichmentSnapshot) {
 }
 
 function rangeOfSegment(segment: GeoSegmentEvidence): GeoDistanceRange {
-  return { startDistanceKm: segment.startDistanceKm, endDistanceKm: segment.endDistanceKm };
+  return { startDistanceKm: segment.startDistanceKm, endDistanceKm: segment.endDistanceKm, segmentIndex: segment.segmentIndex ?? 0 };
 }
 
 function intersectRanges(left: GeoDistanceRange, right: GeoDistanceRange): GeoDistanceRange | null {
+  if ((left.segmentIndex ?? 0) !== (right.segmentIndex ?? 0)) return null;
   const startDistanceKm = Math.max(left.startDistanceKm, right.startDistanceKm);
   const endDistanceKm = Math.min(left.endDistanceKm, right.endDistanceKm);
-  return endDistanceKm > startDistanceKm ? { startDistanceKm, endDistanceKm } : null;
+  return endDistanceKm > startDistanceKm ? { startDistanceKm, endDistanceKm, segmentIndex: left.segmentIndex ?? 0 } : null;
 }
 
 function isRange(value: GeoDistanceRange | null): value is GeoDistanceRange { return value !== null; }
@@ -498,7 +504,7 @@ function clipRanges(ranges: GeoDistanceRange[], routeLengthKm: number) {
   return mergeDistanceRanges(ranges.flatMap((range) => {
     const startDistanceKm = Math.max(0, range.startDistanceKm);
     const endDistanceKm = Math.min(routeLengthKm, range.endDistanceKm);
-    return endDistanceKm > startDistanceKm ? [{ startDistanceKm, endDistanceKm }] : [];
+    return endDistanceKm > startDistanceKm ? [{ startDistanceKm, endDistanceKm, segmentIndex: range.segmentIndex ?? 0 }] : [];
   }));
 }
 
@@ -508,7 +514,7 @@ function mergeDistanceRanges(ranges: GeoDistanceRange[]): GeoDistanceRange[] {
   const merged: GeoDistanceRange[] = [];
   for (const range of sorted) {
     const previous = merged.at(-1);
-    if (previous && range.startDistanceKm <= previous.endDistanceKm + 0.001) previous.endDistanceKm = Math.max(previous.endDistanceKm, range.endDistanceKm);
+    if (previous && (previous.segmentIndex ?? 0) === (range.segmentIndex ?? 0) && range.startDistanceKm <= previous.endDistanceKm + 0.001) previous.endDistanceKm = Math.max(previous.endDistanceKm, range.endDistanceKm);
     else merged.push(range);
   }
   return merged;
@@ -518,18 +524,14 @@ function subtractDistanceRanges(ranges: GeoDistanceRange[], covered: GeoDistance
   let remaining = mergeDistanceRanges(ranges);
   for (const coverage of mergeDistanceRanges(covered)) {
     remaining = remaining.flatMap((range) => {
-      if (coverage.endDistanceKm <= range.startDistanceKm || coverage.startDistanceKm >= range.endDistanceKm) return [range];
+      if ((coverage.segmentIndex ?? 0) !== (range.segmentIndex ?? 0) || coverage.endDistanceKm <= range.startDistanceKm || coverage.startDistanceKm >= range.endDistanceKm) return [range];
       return [
-        ...(coverage.startDistanceKm > range.startDistanceKm ? [{ startDistanceKm: range.startDistanceKm, endDistanceKm: coverage.startDistanceKm }] : []),
-        ...(coverage.endDistanceKm < range.endDistanceKm ? [{ startDistanceKm: coverage.endDistanceKm, endDistanceKm: range.endDistanceKm }] : []),
+        ...(coverage.startDistanceKm > range.startDistanceKm ? [{ startDistanceKm: range.startDistanceKm, endDistanceKm: coverage.startDistanceKm, segmentIndex: range.segmentIndex ?? 0 }] : []),
+        ...(coverage.endDistanceKm < range.endDistanceKm ? [{ startDistanceKm: coverage.endDistanceKm, endDistanceKm: range.endDistanceKm, segmentIndex: range.segmentIndex ?? 0 }] : []),
       ];
     });
   }
   return mergeDistanceRanges(remaining);
-}
-
-function rangeContains(ranges: GeoDistanceRange[], start: number, end: number) {
-  return ranges.some((range) => range.startDistanceKm <= start && range.endDistanceKm >= end);
 }
 
 function rangeLength(ranges: GeoDistanceRange[]) { return mergeDistanceRanges(ranges).reduce((sum, range) => sum + range.endDistanceKm - range.startDistanceKm, 0); }

@@ -65,7 +65,84 @@ test("route fingerprint is stable for exact physical geometry and independent of
   const first = await createRouteFingerprint(line());
   const renamed = await createRouteFingerprint(line());
   assert.equal(first.routeFingerprint, renamed.routeFingerprint);
-  assert.match(first.routeFingerprint, /^route-v1-sha256-[a-f0-9]{64}$/);
+  assert.match(first.routeFingerprint, /^route-v2-sha256-[a-f0-9]{64}$/);
+});
+
+test("physical route fingerprint v2 preserves path boundaries, excludes elevation, and stores segmented geometry", async () => {
+  const points = [
+    { latitude: 45, longitude: 13, elevationM: 10 },
+    { latitude: 45, longitude: 13.01, elevationM: 20 },
+    { latitude: 45, longitude: 13.02, elevationM: 30 },
+    { latitude: 45, longitude: 13.03, elevationM: 40 },
+  ];
+  const connected = await createRouteFingerprint([points.map(({ latitude, longitude }) => ({ latitude, longitude }))]);
+  const split = await createRouteFingerprint([
+    points.slice(0, 2).map(({ latitude, longitude }) => ({ latitude, longitude })),
+    points.slice(2).map(({ latitude, longitude }) => ({ latitude, longitude })),
+  ]);
+  const changedElevation = await createRouteFingerprint([points.map(({ latitude, longitude }) => ({ latitude, longitude }))]);
+  assert.equal(connected.routeFingerprintVersion, 2);
+  assert.notEqual(connected.routeFingerprint, split.routeFingerprint);
+  assert.equal(connected.routeFingerprint, changedElevation.routeFingerprint);
+  assert.equal(split.normalizedGeometrySegments.length, 2);
+});
+
+test("legacy v1 route and enrichment identities cannot satisfy current v2 lookups", async () => {
+  const current = await createRouteFingerprint(line());
+  const legacyFingerprint = `route-v1-sha256-${"c".repeat(64)}`;
+  const legacyRoute = {
+    routeFingerprint: legacyFingerprint,
+    routeFingerprintVersion: 1,
+    normalizedGeometry: [],
+    normalizedDistanceKm: 1,
+    totalDistanceKm: 1,
+    representativePointCount: 2,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const store = new MemoryStore();
+  store.routes.set(legacyFingerprint, legacyRoute);
+  assert.equal(await store.getRoute(legacyFingerprint, 1), legacyRoute);
+  assert.equal(await store.getRoute(current.routeFingerprint, current.routeFingerprintVersion), null);
+
+  const analysis = sampleAnalysis();
+  const inputFingerprint = await createAnalysisInputFingerprint(analysis.points);
+  store.analyses.set(`${legacyFingerprint}:${ROUTE_ANALYSIS_VERSION}:${inputFingerprint}`, {
+    routeFingerprint: legacyFingerprint,
+    routeFingerprintVersion: 1,
+    analysisVersion: ROUTE_ANALYSIS_VERSION,
+    analysisInputFingerprint: inputFingerprint,
+    generatedAt: 1,
+    analysis,
+  });
+  let calculations = 0;
+  const result = await getOrCreateRouteAnalysis(store, current, inputFingerprint, "current", () => {
+    calculations += 1;
+    return sampleAnalysis();
+  });
+  assert.equal(result.cacheHit, false);
+  assert.equal(calculations, 1);
+
+  await cacheOsmEnrichment(store, legacyFingerprint, geoData(0, 1), 1, { routeFingerprintVersion: 1 });
+  const mapillaryData = { source: { type: "mapillary", name: "Mapillary", attribution: "© Mapillary" }, sections: [{ id: "s1", availability: "not-found", images: [] }] };
+  await cacheMapillaryEnrichment(store, legacyFingerprint, mapillaryData, { routeFingerprintVersion: 1 });
+  assert.equal(await getCachedOsmEnrichment(store, current.routeFingerprint, current.routeFingerprintVersion, 1, OSM_ENRICHMENT_VERSION), null);
+  assert.equal(await store.getMapillary(current.routeFingerprint, current.routeFingerprintVersion, 1), null);
+});
+
+test("analysis input fingerprint v2 distinguishes segment structure and normalizes negative zero", async () => {
+  const sequence = [
+    { latitude: 45, longitude: 13, elevationM: -0 },
+    { latitude: 45, longitude: 13.01, elevationM: 20 },
+    { latitude: 45, longitude: 13.02, elevationM: 30 },
+    { latitude: 45, longitude: 13.03, elevationM: 40 },
+  ];
+  const connected = await createAnalysisInputFingerprint([sequence]);
+  const split = await createAnalysisInputFingerprint([sequence.slice(0, 2), sequence.slice(2)]);
+  const normalizedZero = await createAnalysisInputFingerprint([[{ ...sequence[0], elevationM: 0 }, ...sequence.slice(1)]]);
+  assert.match(connected, /^analysis-input-v2-sha256-/);
+  assert.notEqual(connected, split);
+  assert.equal(connected, normalizedZero);
 });
 
 test("different GPX filenames and metadata names preserve the same route fingerprint", async () => {
@@ -240,14 +317,14 @@ test("OSM cache unions non-overlapping successful route ranges", async () => {
   const store = new MemoryStore();
   const first = await cacheOsmEnrichment(store, "route-a", geoData(0, 2), 10, { now: 1 });
   const second = await cacheOsmEnrichment(store, "route-a", geoData(5, 7, "dirt"), 10, { now: 2 });
-  assert.deepEqual(second.retrievedRanges, [{ startDistanceKm: 0, endDistanceKm: 2 }, { startDistanceKm: 5, endDistanceKm: 7 }]);
+  assert.deepEqual(second.retrievedRanges, [{ startDistanceKm: 0, endDistanceKm: 2, segmentIndex: 0 }, { startDistanceKm: 5, endDistanceKm: 7, segmentIndex: 0 }]);
   assert.ok(second.classifiableCoveragePercent > first.classifiableCoveragePercent);
 });
 
 test("classifiable OSM evidence can be looked up and reused independently", async () => {
   const store = new MemoryStore();
   await cacheOsmEnrichment(store, "route-a", geoData(0, 3), 10);
-  const cached = await getCachedOsmEnrichment(store, "route-a", 1, 10, OSM_ENRICHMENT_VERSION);
+  const cached = await getCachedOsmEnrichment(store, "route-a", 2, 10, OSM_ENRICHMENT_VERSION);
   assert.equal(cached.hasClassifiableEvidence, true);
   assert.equal(cached.record.mergedData.segments[0].surface.value, "gravel");
 });
@@ -274,8 +351,8 @@ test("failed OSM subrange remains unavailable while supported evidence is retain
   const store = new MemoryStore();
   const data = geoData(0, 2, "gravel", { retrievalRanges: [{ startDistanceKm: 0, endDistanceKm: 2 }], unavailableRanges: [{ startDistanceKm: 2, endDistanceKm: 8 }] });
   const record = await cacheOsmEnrichment(store, "route-a", data, 10, { now: 1 });
-  assert.deepEqual(record.retrievedRanges, [{ startDistanceKm: 0, endDistanceKm: 2 }]);
-  assert.deepEqual(record.unavailableRanges, [{ startDistanceKm: 2, endDistanceKm: 8 }]);
+  assert.deepEqual(record.retrievedRanges, [{ startDistanceKm: 0, endDistanceKm: 2, segmentIndex: 0 }]);
+  assert.deepEqual(record.unavailableRanges, [{ startDistanceKm: 2, endDistanceKm: 8, segmentIndex: 0 }]);
   assert.equal(record.mergedData.segments.length, 1);
   assert.equal(record.classifiableCoveragePercent, 20);
 });
@@ -292,8 +369,8 @@ test("conflicting OSM surface snapshots are retained and winner is deterministic
 test("OSM schema version is an independent cache key", async () => {
   const store = new MemoryStore();
   await cacheOsmEnrichment(store, "route-a", geoData(0, 2), 10);
-  assert.ok(await store.getOsm("route-a", 1, OSM_ENRICHMENT_VERSION));
-  assert.equal(await store.getOsm("route-a", 1, OSM_ENRICHMENT_VERSION + 1), null);
+  assert.ok(await store.getOsm("route-a", 2, OSM_ENRICHMENT_VERSION));
+  assert.equal(await store.getOsm("route-a", 2, OSM_ENRICHMENT_VERSION + 1), null);
 });
 
 test("Mapillary evidence cache remains independent from OSM records", async () => {
@@ -301,8 +378,8 @@ test("Mapillary evidence cache remains independent from OSM records", async () =
   const data = { source: { type: "mapillary", name: "Mapillary", attribution: "© Mapillary" }, sections: [{ id: "s1", availability: "not-found", images: [] }] };
   const record = await cacheMapillaryEnrichment(store, "route-a", data, { now: 5 });
   assert.equal(hasReusableMapillaryEvidence(record), true);
-  assert.equal(await store.getOsm("route-a", 1, OSM_ENRICHMENT_VERSION), null);
-  assert.equal((await store.getMapillary("route-a", 1, record.schemaVersion)).data.sections[0].availability, "not-found");
+  assert.equal(await store.getOsm("route-a", 2, OSM_ENRICHMENT_VERSION), null);
+  assert.equal((await store.getMapillary("route-a", 2, record.schemaVersion)).data.sections[0].availability, "not-found");
 });
 
 test("OSM writes do not modify an existing independent Mapillary cache", async () => {
@@ -310,7 +387,7 @@ test("OSM writes do not modify an existing independent Mapillary cache", async (
   const data = { source: { type: "mapillary", name: "Mapillary", attribution: "© Mapillary" }, sections: [{ id: "s1", availability: "not-found", images: [] }] };
   await cacheMapillaryEnrichment(store, "route-a", data);
   await cacheOsmEnrichment(store, "route-a", geoData(0, 2), 10);
-  assert.equal((await store.getMapillary("route-a", 1, 1)).data.sections[0].availability, "not-found");
+  assert.equal((await store.getMapillary("route-a", 2, 1)).data.sections[0].availability, "not-found");
 });
 
 test("Mapillary unknown response cannot erase previously cached available images", async () => {
@@ -336,8 +413,8 @@ test("Mapillary imagery remains reusable across Route Analysis versions", async 
 test("race edition associations remain a separate optional relationship store", async () => {
   const store = new MemoryStore();
   const routeFingerprint = (await createRouteFingerprint(line())).routeFingerprint;
-  const firstEdition = { raceId: "some-race", raceName: "Some Race", year: 2029, routeFingerprint, routeFingerprintVersion: 1, createdAt: 1 };
-  const nextEdition = { raceId: "some-race", raceName: "Some Race", year: 2030, routeFingerprint, routeFingerprintVersion: 1, createdAt: 2 };
+  const firstEdition = { raceId: "some-race", raceName: "Some Race", year: 2029, routeFingerprint, routeFingerprintVersion: 2, createdAt: 1 };
+  const nextEdition = { raceId: "some-race", raceName: "Some Race", year: 2030, routeFingerprint, routeFingerprintVersion: 2, createdAt: 2 };
   await store.putRaceEditionReference(firstEdition);
   await store.putRaceEditionReference(nextEdition);
   assert.deepEqual(await store.getRaceEditionReference("some-race", 2029), firstEdition);

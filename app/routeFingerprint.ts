@@ -1,15 +1,16 @@
-export const ROUTE_FINGERPRINT_VERSION = 1;
+export const ROUTE_FINGERPRINT_VERSION = 2;
 export const ROUTE_FINGERPRINT_RESAMPLE_METERS = 100;
 export const ROUTE_FINGERPRINT_SIMPLIFY_TOLERANCE_METERS = 12;
 export const ROUTE_FINGERPRINT_COORDINATE_QUANTUM = 0.0001;
 
-export type RouteGeometryPoint = { latitude: number; longitude: number };
+export type RouteGeometryPoint = { latitude: number; longitude: number; segmentIndex?: number };
 export type CanonicalRoutePoint = RouteGeometryPoint;
 
 export type RouteFingerprintResult = {
   routeFingerprintVersion: number;
   routeFingerprint: string;
-  normalizedGeometry: CanonicalRoutePoint[];
+  normalizedGeometry: Array<CanonicalRoutePoint & { segmentIndex: number }>;
+  normalizedGeometrySegments: CanonicalRoutePoint[][];
   normalizedDistanceKm: number;
 };
 
@@ -18,29 +19,29 @@ export type RouteFingerprintResult = {
  * Direction is significant: reversing traversal intentionally creates a different identity.
  */
 export async function createRouteFingerprint(
-  input: readonly RouteGeometryPoint[],
+  input: readonly RouteGeometryPoint[] | readonly (readonly RouteGeometryPoint[])[],
 ): Promise<RouteFingerprintResult> {
-  const points = validateAndRemoveConsecutiveDuplicates(input);
-  if (points.length < 2) throw new RangeError("A route fingerprint requires at least two distinct points.");
-
-  const simplified = simplifyRoute(points, ROUTE_FINGERPRINT_SIMPLIFY_TOLERANCE_METERS);
-  const distance = routeLengthMeters(simplified);
-  if (distance <= 0) throw new RangeError("A route fingerprint requires a route with positive distance.");
-
-  const normalizedGeometry = resampleAndQuantize(simplified, distance);
-  const coordinateUnits = normalizedGeometry.map((point) => [
+  const paths = normalizeInputPaths(input);
+  if (!paths.some((path) => path.length > 1)) throw new RangeError("A route fingerprint requires at least one traversed path.");
+  const simplifiedPaths = paths.map((path) => simplifyRoute(path, ROUTE_FINGERPRINT_SIMPLIFY_TOLERANCE_METERS));
+  const pathLengths = simplifiedPaths.map(routeLengthMeters);
+  const normalizedGeometrySegments = simplifiedPaths.map((path, index) => path.length ? resampleAndQuantize(path, pathLengths[index]) : []);
+  const normalizedGeometry = normalizedGeometrySegments.flatMap((segment, segmentIndex) => segment.map((point) => ({ ...point, segmentIndex })));
+  const coordinateUnits = normalizedGeometrySegments.map((segment) => segment.map((point) => [
     Math.round(point.latitude / ROUTE_FINGERPRINT_COORDINATE_QUANTUM),
     Math.round(point.longitude / ROUTE_FINGERPRINT_COORDINATE_QUANTUM),
-  ]);
-  const supportingDistanceMeters = Math.round(distance / ROUTE_FINGERPRINT_RESAMPLE_METERS) * ROUTE_FINGERPRINT_RESAMPLE_METERS;
+  ]));
+  const totalDistanceMeters = pathLengths.reduce((total, distance) => total + distance, 0);
+  const supportingDistanceMeters = Math.round(totalDistanceMeters / ROUTE_FINGERPRINT_RESAMPLE_METERS) * ROUTE_FINGERPRINT_RESAMPLE_METERS;
   const canonical = [
     `route-fingerprint-v${ROUTE_FINGERPRINT_VERSION}`,
     `simplify-m=${ROUTE_FINGERPRINT_SIMPLIFY_TOLERANCE_METERS}`,
     `resample-m=${ROUTE_FINGERPRINT_RESAMPLE_METERS}`,
     `coordinate-quantum=${ROUTE_FINGERPRINT_COORDINATE_QUANTUM}`,
     `direction=ordered`,
+    `segment-count=${paths.length}`,
     `distance-m=${supportingDistanceMeters}`,
-    coordinateUnits.map(([latitude, longitude]) => `${latitude},${longitude}`).join(";"),
+    ...coordinateUnits.map((segment, index) => `path-${index}-distance-m=${Math.round(pathLengths[index] / ROUTE_FINGERPRINT_RESAMPLE_METERS) * ROUTE_FINGERPRINT_RESAMPLE_METERS}\n${segment.map(([latitude, longitude]) => `${latitude},${longitude}`).join(";")}`),
   ].join("\n");
 
   const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
@@ -49,8 +50,28 @@ export async function createRouteFingerprint(
     routeFingerprintVersion: ROUTE_FINGERPRINT_VERSION,
     routeFingerprint: `route-v${ROUTE_FINGERPRINT_VERSION}-sha256-${hex}`,
     normalizedGeometry,
-    normalizedDistanceKm: Number((distance / 1000).toFixed(3)),
+    normalizedGeometrySegments,
+    normalizedDistanceKm: Number((totalDistanceMeters / 1000).toFixed(3)),
   };
+}
+
+function normalizeInputPaths(input: readonly RouteGeometryPoint[] | readonly (readonly RouteGeometryPoint[])[]): RouteGeometryPoint[][] {
+  if (input.length === 0) return [];
+  const first = input[0];
+  const paths = Array.isArray(first)
+    ? input as readonly (readonly RouteGeometryPoint[])[]
+    : groupGeometryBySegment(input as readonly RouteGeometryPoint[]);
+  return paths.map((path) => validateAndRemoveConsecutiveDuplicates(path));
+}
+
+function groupGeometryBySegment(points: readonly RouteGeometryPoint[]) {
+  const segments: RouteGeometryPoint[][] = [];
+  for (const point of points) {
+    const index = point.segmentIndex ?? 0;
+    while (segments.length <= index) segments.push([]);
+    segments[index].push(point);
+  }
+  return segments;
 }
 
 function validateAndRemoveConsecutiveDuplicates(input: readonly RouteGeometryPoint[]): RouteGeometryPoint[] {
@@ -122,6 +143,7 @@ function routeLengthMeters(points: RouteGeometryPoint[]) {
 }
 
 function resampleAndQuantize(points: RouteGeometryPoint[], totalDistanceMeters: number): CanonicalRoutePoint[] {
+  if (points.length === 1 || totalDistanceMeters <= 0) return points.map(quantizePoint);
   const distances = [0];
   for (let index = 1; index < points.length; index += 1) {
     distances.push(distances[index - 1] + haversineMeters(points[index - 1], points[index]));
@@ -142,11 +164,15 @@ function resampleAndQuantize(points: RouteGeometryPoint[], totalDistanceMeters: 
   }
   samples.push(points.at(-1)!);
 
+  return samples.map(quantizePoint);
+}
+
+function quantizePoint(point: RouteGeometryPoint): CanonicalRoutePoint {
   const quantum = ROUTE_FINGERPRINT_COORDINATE_QUANTUM;
-  return samples.map((point) => ({
+  return {
     latitude: Math.round(point.latitude / quantum) * quantum,
     longitude: Math.round(point.longitude / quantum) * quantum,
-  }));
+  };
 }
 
 function haversineMeters(start: RouteGeometryPoint, end: RouteGeometryPoint) {

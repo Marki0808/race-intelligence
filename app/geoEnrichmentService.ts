@@ -34,6 +34,7 @@ export type OverpassCorridorQuery = {
   boxes: RouteCorridorWindow["box"][];
   startDistanceKm: number;
   endDistanceKm: number;
+  segmentIndex: number;
 };
 
 export type RetrievalFailureCategory = keyof GeoRetrievalFailureCounts;
@@ -58,14 +59,18 @@ export function createOverpassCorridorQueries(points: GeoRoutePoint[]): Overpass
   ) return null;
 
   const queries: OverpassCorridorQuery[] = [];
-  for (let start = 0; start < windows.length; start += MAX_CORRIDOR_BOXES_PER_QUERY) {
-    const group = windows.slice(start, start + MAX_CORRIDOR_BOXES_PER_QUERY);
-    queries.push({
-      windows: group,
-      boxes: group.map((window) => window.box),
-      startDistanceKm: group[0].startDistanceKm,
-      endDistanceKm: group.at(-1)!.endDistanceKm,
-    });
+  const bySegment = new Map<number, RouteCorridorWindow[]>();
+  for (const window of windows) {
+    const segment = bySegment.get(window.segmentIndex) ?? [];
+    segment.push(window);
+    bySegment.set(window.segmentIndex, segment);
+  }
+  for (const [segmentIndex, segmentWindows] of bySegment) {
+    for (let start = 0; start < segmentWindows.length; start += MAX_CORRIDOR_BOXES_PER_QUERY) {
+      const group = segmentWindows.slice(start, start + MAX_CORRIDOR_BOXES_PER_QUERY);
+      queries.push({ windows: group, boxes: group.map((window) => window.box), startDistanceKm: group[0].startDistanceKm,
+        endDistanceKm: group.at(-1)!.endDistanceKm, segmentIndex });
+    }
   }
   return queries.length <= MAX_CORRIDOR_QUERIES_PER_ROUTE ? queries : null;
 }
@@ -150,10 +155,11 @@ export function subdivideOverpassCorridorQuery(
     childGroups = [query.windows.slice(0, splitAt), query.windows.slice(splitAt)].filter((windows) => windows.length > 0);
   } else {
     const parent = query.windows[0];
+    const segmentIndex = query.segmentIndex ?? parent.segmentIndex ?? 0;
     const midpointKm = (parent.startDistanceKm + parent.endDistanceKm) / 2;
     const children = [
-      createWindow(route, parent.startDistanceKm, midpointKm),
-      createWindow(route, midpointKm, parent.endDistanceKm),
+      createWindow(route, parent.startDistanceKm, midpointKm, segmentIndex),
+      createWindow(route, midpointKm, parent.endDistanceKm, segmentIndex),
     ].filter((window): window is RouteCorridorWindow => window !== null);
     childGroups = children.map((window) => [window]);
   }
@@ -162,14 +168,15 @@ export function subdivideOverpassCorridorQuery(
     boxes: windows.map((window) => window.box),
     startDistanceKm: windows[0].startDistanceKm,
     endDistanceKm: windows.at(-1)!.endDistanceKm,
+    segmentIndex: windows[0].segmentIndex ?? query.segmentIndex ?? 0,
   }));
 }
 
-function createWindow(route: GeoRoutePoint[], startDistanceKm: number, endDistanceKm: number): RouteCorridorWindow | null {
-  const portion = route.filter((point) => point.distanceM / 1000 >= startDistanceKm && point.distanceM / 1000 <= endDistanceKm);
+function createWindow(route: GeoRoutePoint[], startDistanceKm: number, endDistanceKm: number, segmentIndex: number): RouteCorridorWindow | null {
+  const portion = route.filter((point) => (point.segmentIndex ?? 0) === segmentIndex && point.distanceM / 1000 >= startDistanceKm && point.distanceM / 1000 <= endDistanceKm);
   if (portion.length < 2) return null;
   const box = getRouteBoundingBox(portion, ADAPTIVE_WINDOW_PADDING_DEGREES);
-  return box ? { box, startDistanceKm, endDistanceKm } : null;
+  return box ? { box, startDistanceKm, endDistanceKm, segmentIndex } : null;
 }
 
 
@@ -207,19 +214,21 @@ export async function enrichRouteWithOsm(points: GeoRoutePoint[]) {
     (query) => getCachedWays(query.boxes, requestCounts),
     (query) => subdivideOverpassCorridorQuery(query, route),
     classifyRetryableOverpassError,
-    (query) => ({ startDistanceKm: query.startDistanceKm, endDistanceKm: query.endDistanceKm }),
+    (query) => ({ startDistanceKm: query.startDistanceKm, endDistanceKm: query.endDistanceKm, segmentIndex: query.segmentIndex }),
     { maxAttempts: MAX_OVERPASS_ATTEMPTS_PER_ROUTE, maxDepth: MAX_ADAPTIVE_SUBDIVISION_DEPTH },
   );
   const successfulGroups = retrieval.successes.map(({ value }) => value.ways);
   const retrievedRanges = mergeDistanceRanges(retrieval.successes.map(({ query }) => ({
     startDistanceKm: query.startDistanceKm,
     endDistanceKm: query.endDistanceKm,
+    segmentIndex: query.segmentIndex,
   })));
   const failedRanges = retrieval.failures.map(({ query }) => ({
     startDistanceKm: query.startDistanceKm,
     endDistanceKm: query.endDistanceKm,
+    segmentIndex: query.segmentIndex,
   }));
-  const totalDistanceKm = (route.at(-1)?.distanceM ?? 0) / 1000;
+  const totalDistanceKm = route.length ? (Math.max(...route.map((point) => point.distanceM)) / 1000) : 0;
   const unavailableRanges = subtractDistanceRanges(mergeDistanceRanges(failedRanges), retrievedRanges);
   const coveredKm = retrievedRanges.reduce((total, range) => total + range.endDistanceKm - range.startDistanceKm, 0);
   const failureCounts = retrieval.failureCounts;
@@ -289,7 +298,7 @@ function mergeDistanceRanges(ranges: GeoDistanceRange[]): GeoDistanceRange[] {
   const merged: GeoDistanceRange[] = [];
   for (const range of sorted) {
     const previous = merged.at(-1);
-    if (previous && range.startDistanceKm <= previous.endDistanceKm + 0.001) {
+    if (previous && previous.segmentIndex === range.segmentIndex && range.startDistanceKm <= previous.endDistanceKm + 0.001) {
       previous.endDistanceKm = Math.max(previous.endDistanceKm, range.endDistanceKm);
     } else merged.push({ ...range });
   }
@@ -302,7 +311,7 @@ function subtractDistanceRanges(ranges: GeoDistanceRange[], covered: GeoDistance
     let pieces = [{ ...range }];
     for (const coverage of covered) {
       pieces = pieces.flatMap((piece) => {
-        if (coverage.endDistanceKm <= piece.startDistanceKm || coverage.startDistanceKm >= piece.endDistanceKm) return [piece];
+        if (coverage.segmentIndex !== range.segmentIndex || coverage.endDistanceKm <= piece.startDistanceKm || coverage.startDistanceKm >= piece.endDistanceKm) return [piece];
         const left = coverage.startDistanceKm > piece.startDistanceKm
           ? [{ startDistanceKm: piece.startDistanceKm, endDistanceKm: coverage.startDistanceKm }]
           : [];
@@ -312,7 +321,7 @@ function subtractDistanceRanges(ranges: GeoDistanceRange[], covered: GeoDistance
         return [...left, ...right];
       });
     }
-    remaining.push(...pieces);
+    remaining.push(...pieces.map((piece) => ({ ...piece, segmentIndex: range.segmentIndex })));
   }
   return mergeDistanceRanges(remaining);
 }

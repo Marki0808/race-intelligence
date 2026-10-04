@@ -34,8 +34,8 @@ async function loadEligibleRoutes(): Promise<SharedRouteEligibility[]> {
     try {
       const parsed = parseGpxText(await readFile(filePath, "utf8"));
       const [fingerprint, analysisInputFingerprint] = await Promise.all([
-        createRouteFingerprint(parsed.points),
-        createAnalysisInputFingerprint(parsed.points),
+        createRouteFingerprint(parsed.segments.map((segment) => segment.map(({ latitude, longitude }) => ({ latitude, longitude })))),
+        createAnalysisInputFingerprint(parsed.segments),
       ]);
       return {
         routeFingerprint: fingerprint.routeFingerprint,

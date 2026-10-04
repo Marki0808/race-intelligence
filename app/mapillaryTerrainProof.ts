@@ -4,12 +4,14 @@ export type MapillaryRoutePoint = {
   latitude: number;
   longitude: number;
   distanceM: number;
+  segmentIndex?: number;
 };
 
 export type MapillaryTerrainSectionRequest = {
   id: string;
   startDistanceKm: number;
   endDistanceKm: number;
+  segmentIndex?: number;
   points: MapillaryRoutePoint[];
 };
 
@@ -18,6 +20,7 @@ export type MapillaryImageEvidence = {
   latitude: number;
   longitude: number;
   distanceAlongRouteKm: number;
+  segmentIndex?: number;
   capturedAt: number | null;
   sequenceId: string | null;
   thumbnailUrl: string | null;
@@ -92,7 +95,7 @@ export function matchMapillaryImages(
   const matched = images.flatMap((image): MapillaryImageEvidence[] => {
     const nearest = nearestRouteDistance(image, points);
     return nearest.distanceM <= toleranceM
-      ? [{ ...image, distanceAlongRouteKm: nearest.distanceMAlongRoute / 1000 }]
+      ? [{ ...image, distanceAlongRouteKm: nearest.distanceMAlongRoute / 1000, segmentIndex: nearest.segmentIndex }]
       : [];
   });
   return chooseRepresentativeImages(matched);
@@ -137,8 +140,10 @@ export function validateMapillarySections(value: unknown): MapillaryTerrainSecti
       typeof section.id !== "string" || section.id.length === 0 || section.id.length > 100 ||
       typeof section.startDistanceKm !== "number" || !Number.isFinite(section.startDistanceKm) || section.startDistanceKm < 0 ||
       typeof section.endDistanceKm !== "number" || !Number.isFinite(section.endDistanceKm) || section.endDistanceKm <= section.startDistanceKm ||
-      !Array.isArray(section.points) || section.points.length < 2 || section.points.length > MAX_POINTS_PER_SECTION
+      !Array.isArray(section.points) || section.points.length < 2 || section.points.length > MAX_POINTS_PER_SECTION ||
+      (section.segmentIndex !== undefined && (typeof section.segmentIndex !== "number" || !Number.isInteger(section.segmentIndex) || section.segmentIndex < 0))
     ) return null;
+    const segmentIndex = typeof section.segmentIndex === "number" ? section.segmentIndex : 0;
     const points: MapillaryRoutePoint[] = [];
     for (const pointValue of section.points) {
       if (!pointValue || typeof pointValue !== "object") return null;
@@ -146,13 +151,16 @@ export function validateMapillarySections(value: unknown): MapillaryTerrainSecti
       if (
         typeof point.latitude !== "number" || !Number.isFinite(point.latitude) || Math.abs(point.latitude) > 90 ||
         typeof point.longitude !== "number" || !Number.isFinite(point.longitude) || Math.abs(point.longitude) > 180 ||
-        typeof point.distanceM !== "number" || !Number.isFinite(point.distanceM) || point.distanceM < 0
+        typeof point.distanceM !== "number" || !Number.isFinite(point.distanceM) || point.distanceM < 0 ||
+        (point.segmentIndex !== undefined && (typeof point.segmentIndex !== "number" || !Number.isInteger(point.segmentIndex) || point.segmentIndex < 0))
       ) return null;
-      points.push({ latitude: point.latitude, longitude: point.longitude, distanceM: point.distanceM });
+      const pointSegmentIndex = typeof point.segmentIndex === "number" ? point.segmentIndex : segmentIndex;
+      if (pointSegmentIndex !== segmentIndex) return null;
+      points.push({ latitude: point.latitude, longitude: point.longitude, distanceM: point.distanceM, segmentIndex: pointSegmentIndex });
     }
     if (points.some((point, index) => index > 0 && point.distanceM < points[index - 1].distanceM)) return null;
     totalPoints += points.length;
-    sections.push({ id: section.id, startDistanceKm: section.startDistanceKm, endDistanceKm: section.endDistanceKm, points });
+    sections.push({ id: section.id, startDistanceKm: section.startDistanceKm, endDistanceKm: section.endDistanceKm, segmentIndex, points });
   }
   if (totalPoints > MAX_TOTAL_POINTS || new Set(sections.map((section) => section.id)).size !== sections.length) return null;
   return sections;
@@ -239,10 +247,11 @@ function createSearchWindows(sections: MapillaryTerrainSectionRequest[]) {
 }
 
 function nearestRouteDistance(image: Pick<ParsedMapillaryImage, "latitude" | "longitude">, points: MapillaryRoutePoint[]) {
-  let closest = { distanceM: Infinity, distanceMAlongRoute: points[0].distanceM };
+  let closest = { distanceM: Infinity, distanceMAlongRoute: points[0].distanceM, segmentIndex: points[0].segmentIndex ?? 0 };
   for (let index = 1; index < points.length; index += 1) {
     const start = points[index - 1];
     const end = points[index];
+    if ((start.segmentIndex ?? 0) !== (end.segmentIndex ?? 0)) continue;
     const longitudeScale = 111_320 * Math.cos(image.latitude * Math.PI / 180);
     const px = (image.longitude - start.longitude) * longitudeScale;
     const py = (image.latitude - start.latitude) * 111_320;
@@ -252,7 +261,7 @@ function nearestRouteDistance(image: Pick<ParsedMapillaryImage, "latitude" | "lo
     const t = denominator === 0 ? 0 : Math.max(0, Math.min(1, (px * dx + py * dy) / denominator));
     const distanceM = Math.hypot(px - t * dx, py - t * dy);
     if (distanceM < closest.distanceM) {
-      closest = { distanceM, distanceMAlongRoute: start.distanceM + t * (end.distanceM - start.distanceM) };
+      closest = { distanceM, distanceMAlongRoute: start.distanceM + t * (end.distanceM - start.distanceM), segmentIndex: start.segmentIndex ?? 0 };
     }
   }
   return closest;

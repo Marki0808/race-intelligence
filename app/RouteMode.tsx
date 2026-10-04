@@ -48,8 +48,8 @@ export default function RouteMode() {
       const displayName = parsed.name ?? file.name.replace(/\.gpx$/i, "");
       try {
         const [fingerprint, analysisInputFingerprint] = await Promise.all([
-          createRouteFingerprint(parsed.points),
-          createAnalysisInputFingerprint(parsed.points),
+          createRouteFingerprint(parsed.segments.map((segment) => segment.map(({ latitude, longitude }) => ({ latitude, longitude })))),
+          createAnalysisInputFingerprint(parsed.segments),
         ]);
         const shared = await lookupSharedRoute(fingerprint, analysisInputFingerprint);
         let routeAnalysis: RouteAnalysisData;

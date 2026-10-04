@@ -7,6 +7,8 @@ import {
   validateMapillarySections,
 } from "./mapillaryTerrainProof.ts";
 import { POST as postMapillary } from "./api/mapillary/route.ts";
+import { buildMapillaryRequests } from "./routeMapillaryRequests.ts";
+import { analyzeGpxRoute } from "./gpxAnalysis.ts";
 
 const section = {
   id: "section-a",
@@ -18,6 +20,103 @@ const section = {
     { latitude: 45, longitude: 14.002, distanceM: 200 },
   ],
 };
+
+test("Mapillary requests retain section path identity at equal-kilometer segment boundaries", () => {
+  const analysis = analyzeGpxRoute({ segments: [
+    [{ latitude: 45, longitude: 13, elevationM: 100 }, { latitude: 45, longitude: 13.01, elevationM: 120 }],
+    [{ latitude: 46, longitude: 14, elevationM: 900 }, { latitude: 46, longitude: 14.01, elevationM: 880 }],
+  ] });
+  const sections = analysis.segments.map((segment, index) => ({
+    id: `path-${index}`,
+    segmentIndex: index,
+    startKm: segment.startDistanceM / 1000,
+    endKm: segment.endDistanceM / 1000,
+  }));
+  const requests = buildMapillaryRequests(sections, analysis.points);
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests.map((request) => request.segmentIndex), [0, 1]);
+  assert.ok(requests.every((request) => request.points.every((point) => point.segmentIndex === request.segmentIndex)));
+});
+
+test("Mapillary API retains nonzero segment identity through validation and image matching", async (context) => {
+  const previousToken = process.env.MAPILLARY_ACCESS_TOKEN;
+  const originalFetch = globalThis.fetch;
+  process.env.MAPILLARY_ACCESS_TOKEN = "deterministic-test-token";
+  const requests = [];
+  globalThis.fetch = async (input) => {
+    requests.push(String(input));
+    return Response.json({ data: [image("segment-one-image", 14, { geometry: { type: "Point", coordinates: [14, 46] } })] });
+  };
+  context.after(() => {
+    globalThis.fetch = originalFetch;
+    if (previousToken === undefined) delete process.env.MAPILLARY_ACCESS_TOKEN;
+    else process.env.MAPILLARY_ACCESS_TOKEN = previousToken;
+  });
+
+  const response = await postMapillary(new Request("http://localhost/api/mapillary", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sections: [{
+      id: "segment-one-section",
+      segmentIndex: 1,
+      startDistanceKm: 10,
+      endDistanceKm: 10.2,
+      points: [
+        { latitude: 46, longitude: 13.999, distanceM: 10_000, segmentIndex: 1 },
+        { latitude: 46, longitude: 14.001, distanceM: 10_200, segmentIndex: 1 },
+      ],
+    }] }),
+  }));
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(requests.length, 2);
+  assert.equal(body.sections[0].availability, "available");
+  assert.equal(body.sections[0].images[0].id, "segment-one-image");
+  assert.equal(body.sections[0].images[0].segmentIndex, 1);
+});
+
+test("Mapillary rejects mixed-segment request points before provider work", async (context) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; return Response.json({ data: [] }); };
+  context.after(() => { globalThis.fetch = originalFetch; });
+  const response = await postMapillary(new Request("http://localhost/api/mapillary", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sections: [{
+      id: "mixed-section",
+      segmentIndex: 1,
+      startDistanceKm: 10,
+      endDistanceKm: 10.2,
+      points: [
+        { latitude: 46, longitude: 13.999, distanceM: 10_000, segmentIndex: 1 },
+        { latitude: 45, longitude: 14, distanceM: 10_000, segmentIndex: 0 },
+      ],
+    }] }),
+  }));
+  assert.equal(response.status, 400);
+  assert.equal(calls, 0);
+});
+
+test("legacy omitted point indexes normalize to their nonzero containing segment", () => {
+  const validated = validateMapillarySections({ sections: [{
+    id: "legacy-segment-one",
+    segmentIndex: 1,
+    startDistanceKm: 10,
+    endDistanceKm: 10.2,
+    points: [
+      { latitude: 46, longitude: 13.999, distanceM: 10_000 },
+      { latitude: 46, longitude: 14.001, distanceM: 10_200 },
+    ],
+  }] });
+  assert.equal(validated[0].segmentIndex, 1);
+  assert.deepEqual(validated[0].points.map((point) => point.segmentIndex), [1, 1]);
+});
+
+test("Mapillary rejects invalid section and point segment indexes", () => {
+  assert.equal(validateMapillarySections({ sections: [{ ...section, segmentIndex: -1 }] }), null);
+  assert.equal(validateMapillarySections({ sections: [{ ...section, points: section.points.map((point, index) => ({ ...point, segmentIndex: index === 0 ? 0.5 : 0 })) }] }), null);
+});
 
 function image(id, longitude, extras = {}) {
   return {
@@ -47,6 +146,17 @@ test("matches points to their route position and rejects unrelated nearby imager
   assert.equal(matches.length, 1);
   assert.equal(matches[0].id, "near");
   assert.ok(Math.abs(matches[0].distanceAlongRouteKm - 0.1) < 0.001);
+});
+
+test("Mapillary matching never interpolates across a disconnected track-segment gap", () => {
+  const points = [
+    { latitude: 45, longitude: 12.999, distanceM: 0, segmentIndex: 0 },
+    { latitude: 45, longitude: 13, distanceM: 80, segmentIndex: 0 },
+    { latitude: 45, longitude: 13.002, distanceM: 80, segmentIndex: 1 },
+    { latitude: 45, longitude: 13.003, distanceM: 160, segmentIndex: 1 },
+  ];
+  const parsed = parseMapillaryImages({ data: [image("gap-image", 13.001)] });
+  assert.deepEqual(matchMapillaryImages(parsed, points), []);
 });
 
 test("representative selection reduces near duplicates and stays deterministic", () => {

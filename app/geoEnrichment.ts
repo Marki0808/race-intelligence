@@ -16,6 +16,7 @@ export type EvidenceValue = {
 export type OSMWayEvidence = {
   source: "OpenStreetMap";
   sourceId: string;
+  segmentIndex: number;
   tags: Record<string, string>;
   geometry: Array<{ latitude: number; longitude: number }>;
   startDistanceKm: number;
@@ -24,6 +25,7 @@ export type OSMWayEvidence = {
 };
 export type GeoSegmentEvidence = {
   id: string;
+  segmentIndex?: number;
   startDistanceKm: number;
   endDistanceKm: number;
   lengthKm: number;
@@ -51,7 +53,7 @@ export type GeoEnrichmentData = {
   retrieval?: GeoRetrievalSummary;
   attribution: string;
 };
-export type GeoDistanceRange = { startDistanceKm: number; endDistanceKm: number };
+export type GeoDistanceRange = { startDistanceKm: number; endDistanceKm: number; segmentIndex?: number };
 export type GeoRetrievalFailureCounts = {
   http429: number;
   http504: number;
@@ -77,11 +79,12 @@ export type OSMWayFeature = {
   tags?: Record<string, string>;
   geometry?: Array<{ lat: number; lon: number }>;
 };
-export type GeoRoutePoint = Pick<GpxRoutePointData, "latitude" | "longitude" | "distanceM">;
+export type GeoRoutePoint = Pick<GpxRoutePointData, "latitude" | "longitude" | "distanceM" | "segmentIndex">;
 export type RouteCorridorWindow = {
   box: NonNullable<ReturnType<typeof getRouteBoundingBox>>;
   startDistanceKm: number;
   endDistanceKm: number;
+  segmentIndex: number;
 };
 
 const relevantTags = ["surface", "highway", "tracktype", "smoothness", "sac_scale", "trail_visibility", "incline", "width", "informal", "trailblazed", "assisted_trail"] as const;
@@ -135,7 +138,7 @@ export function createGeoEnrichment(
     const previous = chunks.at(-1)?.at(-1);
     const previousSignature = previous?.way ? relevantTags.map((key) => previous.way?.tags?.[key] ?? "").join("|") : "unmatched";
     const currentSignature = match.way ? relevantTags.map((key) => match.way?.tags?.[key] ?? "").join("|") : "unmatched";
-    if (!previous || previousSignature !== currentSignature) chunks.push([match]);
+    if (!previous || previous.point.segmentIndex !== match.point.segmentIndex || previousSignature !== currentSignature) chunks.push([match]);
     else chunks.at(-1)!.push(match);
   }
 
@@ -160,6 +163,7 @@ export function createGeoEnrichment(
     const endDistanceKm = roundKm(last.distanceM);
     return {
       id: `geo-segment-${index + 1}`,
+      segmentIndex: first.segmentIndex ?? 0,
       startDistanceKm,
       endDistanceKm,
       lengthKm: roundKm(last.distanceM - first.distanceM),
@@ -168,6 +172,7 @@ export function createGeoEnrichment(
       osmWays: matchedWays.map((way) => ({
         source: "OpenStreetMap",
         sourceId: `way/${way.id}`,
+        segmentIndex: first.segmentIndex ?? 0,
         tags: way.tags ?? {},
         geometry: (way.geometry ?? []).map((point) => ({ latitude: point.lat, longitude: point.lon })),
         startDistanceKm,
@@ -204,8 +209,21 @@ export function createGeoEnrichment(
 
 export function thinRouteForMatching(points: GeoRoutePoint[], maxPoints = 1800): GeoRoutePoint[] {
   if (points.length <= maxPoints) return points;
-  const step = (points.length - 1) / (maxPoints - 1);
-  return Array.from({ length: maxPoints }, (_, index) => points[Math.round(index * step)]);
+  const groups = new Map<number, GeoRoutePoint[]>();
+  for (const point of points) {
+    const index = point.segmentIndex ?? 0;
+    const group = groups.get(index) ?? [];
+    group.push(point);
+    groups.set(index, group);
+  }
+  const remaining = Math.max(0, maxPoints - groups.size * 2);
+  const totalInterior = [...groups.values()].reduce((sum, group) => sum + Math.max(0, group.length - 2), 0);
+  return [...groups.values()].flatMap((group) => {
+    if (group.length <= 2) return group;
+    const allowance = Math.min(group.length - 2, totalInterior ? Math.floor(remaining * (group.length - 2) / totalInterior) : 0);
+    const count = Math.max(2, Math.min(group.length, allowance + 2));
+    return Array.from({ length: count }, (_, index) => group[Math.round(index * (group.length - 1) / (count - 1))]);
+  });
 }
 
 export function getRouteBoundingBox(points: GeoRoutePoint[], paddingDegrees = 0.006) {
@@ -235,19 +253,27 @@ export function getRouteCorridorWindows(
   overlapKm = 1,
   paddingDegrees = 0.003,
 ): RouteCorridorWindow[] {
-  const totalKm = (points.at(-1)?.distanceM ?? 0) / 1000;
-  if (points.length < 2 || totalKm <= 0 || windowKm <= overlapKm) return [];
+  if (points.length < 2 || windowKm <= overlapKm) return [];
   const stepKm = windowKm - overlapKm;
   const windows: RouteCorridorWindow[] = [];
-  for (let startKm = 0; startKm < totalKm; startKm += stepKm) {
-    const endKm = Math.min(totalKm, startKm + windowKm);
-    const portion = points.filter((point) => {
-      const distanceKm = point.distanceM / 1000;
-      return distanceKm >= startKm && distanceKm <= endKm;
-    });
-    if (portion.length < 2) continue;
-    const box = getRouteBoundingBox(portion, paddingDegrees);
-    if (box) windows.push({ box, startDistanceKm: startKm, endDistanceKm: endKm });
+  const bySegment = new Map<number, GeoRoutePoint[]>();
+  for (const point of points) {
+    const index = point.segmentIndex ?? 0;
+    const segment = bySegment.get(index) ?? [];
+    segment.push(point);
+    bySegment.set(index, segment);
+  }
+  for (const [segmentIndex, segment] of bySegment) {
+    if (segment.length < 2) continue;
+    const segmentStartKm = segment[0].distanceM / 1000;
+    const segmentEndKm = segment.at(-1)!.distanceM / 1000;
+    for (let startKm = segmentStartKm; startKm < segmentEndKm; startKm += stepKm) {
+      const endKm = Math.min(segmentEndKm, startKm + windowKm);
+      const portion = segment.filter((point) => point.distanceM / 1000 >= startKm && point.distanceM / 1000 <= endKm);
+      if (portion.length < 2) continue;
+      const box = getRouteBoundingBox(portion, paddingDegrees);
+      if (box) windows.push({ box, startDistanceKm: startKm, endDistanceKm: endKm, segmentIndex });
+    }
   }
   return windows;
 }

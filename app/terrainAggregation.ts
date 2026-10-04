@@ -24,6 +24,7 @@ export type TerrainSupportingEvidence = {
 
 export type TerrainSectionData = {
   id: string;
+  segmentIndex?: number;
   startDistanceKm: number;
   endDistanceKm: number;
   lengthKm: number;
@@ -37,6 +38,7 @@ export type TerrainSectionData = {
 };
 
 export type TerrainChangePoint = {
+  segmentIndex?: number;
   distanceKm: number;
   before: TerrainCategory;
   after: TerrainCategory;
@@ -268,6 +270,7 @@ function createTerrainSection(
       : "moderate";
   return {
     id: `terrain-section-${index + 1}`,
+    segmentIndex: units[0]?.segment.segmentIndex ?? 0,
     startDistanceKm: roundKm(regime.startKm),
     endDistanceKm: roundKm(regime.endKm),
     lengthKm: roundKm(lengthKm),
@@ -287,7 +290,7 @@ function mergeAdjacentSections(input: TerrainSectionData[]) {
   const merged: TerrainSectionData[] = [];
   for (const section of input) {
     const previous = merged.at(-1);
-    if (!previous || previous.dominantTerrain !== section.dominantTerrain) {
+    if (!previous || previous.segmentIndex !== section.segmentIndex || previous.dominantTerrain !== section.dominantTerrain) {
       merged.push({ ...section, id: `terrain-section-${merged.length + 1}` });
       continue;
     }

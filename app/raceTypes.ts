@@ -5,6 +5,9 @@ export type KeyMomentData = {
   distance: string;
   focusStartKm: number;
   focusEndKm: number;
+  segmentIndex?: number;
+  focusStartPosition?: { distanceM: number; segmentIndex: number };
+  focusEndPosition?: { distanceM: number; segmentIndex: number };
   gain?: string;
   loss?: string;
   text: string;

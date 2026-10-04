@@ -21,6 +21,23 @@ const route = Array.from({ length: 11 }, (_, index) => ({
   distanceM: index * 100,
 }));
 
+test("OSM corridor windows and matched evidence retain disconnected segment identity", () => {
+  const points = [
+    { latitude: 45, longitude: 13, distanceM: 0, segmentIndex: 0 },
+    { latitude: 45, longitude: 13.01, distanceM: 1000, segmentIndex: 0 },
+    { latitude: 46, longitude: 14, distanceM: 1000, segmentIndex: 1 },
+    { latitude: 46, longitude: 14.01, distanceM: 2000, segmentIndex: 1 },
+  ];
+  const windows = getRouteCorridorWindows(points, 5, 1, 0.001);
+  assert.deepEqual(windows.map((window) => window.segmentIndex), [0, 1]);
+  assert.ok(windows[0].box.north < windows[1].box.south);
+  const data = createGeoEnrichment(points, [
+    { id: 1, type: "way", tags: { surface: "gravel" }, geometry: [{ lat: 45, lon: 13 }, { lat: 45, lon: 13.01 }] },
+    { id: 2, type: "way", tags: { surface: "gravel" }, geometry: [{ lat: 46, lon: 14 }, { lat: 46, lon: 14.01 }] },
+  ]);
+  assert.deepEqual(data.segments.map((segment) => segment.segmentIndex), [0, 1]);
+});
+
 function makeLongRoute(totalKm, startLongitude = 0) {
   return Array.from({ length: totalKm + 1 }, (_, index) => ({
     latitude: 45 + Math.sin(index / 30) * 0.01,

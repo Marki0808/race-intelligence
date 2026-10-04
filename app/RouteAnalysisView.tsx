@@ -105,7 +105,7 @@ export default function RouteAnalysisView({
         requestOsm ? fetch("/api/geo-enrichment", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ points: thinRouteForMatching(analysis.points).map(({ latitude, longitude, distanceM }) => ({ latitude, longitude, distanceM })) }),
+          body: JSON.stringify({ points: thinRouteForMatching(analysis.points).map(({ latitude, longitude, distanceM, segmentIndex }) => ({ latitude, longitude, distanceM, segmentIndex })) }),
         }).then(async (response) => response.ok ? await response.json() as GeoEnrichmentData : unknownGeoEvidence()).catch(() => unknownGeoEvidence()) : Promise.resolve(null),
         requestMapillary ? fetch("/api/mapillary", {
           method: "POST",

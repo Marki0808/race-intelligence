@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { Map as LeafletMap } from "leaflet";
 import type { KeyMomentData } from "./raceTypes";
-import type { RouteAnalysisData } from "./gpxAnalysis";
+import { groupAnalyzedPointsBySegment, type RouteAnalysisData } from "./gpxAnalysis";
 
 export default function CourseExplorer({
   selectedMoment,
@@ -46,17 +46,16 @@ export default function CourseExplorer({
         attribution: "&copy; OpenStreetMap contributors",
       }).addTo(map);
 
-      const coordinates = points.map((point) => [
-        point.latitude,
-        point.longitude,
-      ]) as [number, number][];
-      const route = L.polyline(coordinates, {
-        color: "#17211c",
-        weight: 4,
-        opacity: 0.9,
-      }).addTo(map);
+      groupAnalyzedPointsBySegment(points).filter((segment) => segment.length > 1).forEach((segment) => L.polyline(
+        segment.map(({ latitude, longitude }) => [latitude, longitude]) as [number, number][],
+        { color: "#17211c", weight: 4, opacity: 0.9 },
+      ).addTo(map!));
+      const bounds = L.latLngBounds(points.map(({ latitude, longitude }) => [latitude, longitude]));
+      const traversedPoints = groupAnalyzedPointsBySegment(points).flatMap((segment) => segment.length > 1 ? segment : []);
+      const start = traversedPoints[0] ?? points[0];
+      const finish = traversedPoints.at(-1) ?? points.at(-1)!;
 
-      L.circleMarker(coordinates[0], {
+      L.circleMarker([start.latitude, start.longitude], {
         radius: 7,
         color: "#17211c",
         weight: 3,
@@ -70,7 +69,7 @@ export default function CourseExplorer({
           offset: [0, -8],
         });
 
-      L.circleMarker(coordinates[coordinates.length - 1], {
+      L.circleMarker([finish.latitude, finish.longitude], {
         radius: 7,
         color: "#17211c",
         weight: 3,
@@ -84,7 +83,7 @@ export default function CourseExplorer({
           offset: [0, -8],
         });
 
-      map.fitBounds(route.getBounds(), { padding: [30, 30] });
+      if (bounds.isValid()) map.fitBounds(bounds, { padding: [30, 30] });
     }
 
     void createMap();
@@ -103,8 +102,9 @@ export default function CourseExplorer({
 
     const selectedPoints = points.filter(
       (point) =>
-        point.distanceM >= moment.focusStartKm * 1000 &&
-        point.distanceM <= moment.focusEndKm * 1000,
+        (moment.segmentIndex === undefined || point.segmentIndex === moment.segmentIndex) &&
+        point.distanceM >= (moment.focusStartPosition?.distanceM ?? moment.focusStartKm * 1000) &&
+        point.distanceM <= (moment.focusEndPosition?.distanceM ?? moment.focusEndKm * 1000),
     );
     if (selectedPoints.length === 0) return;
 
@@ -212,16 +212,12 @@ function ElevationProfile({
   const height = 260;
   const padding = 8;
   const range = Math.max(maxElevation - minElevation, 1);
-  const coordinates = points.map((point, index) => {
-    const x =
-      padding +
-      (index / Math.max(points.length - 1, 1)) * (width - padding * 2);
+  const paths = groupAnalyzedPointsBySegment(points).map((segment) => segment.map((point) => {
+    const x = padding + (point.distanceM / Math.max(1, points.at(-1)?.distanceM ?? 1)) * (width - padding * 2);
     const normalized = (point.elevationM - minElevation) / range;
     const y = height - padding - normalized * (height - padding * 2);
     return `${x},${y}`;
-  });
-  const line = coordinates.join(" ");
-  const area = [`${padding},${height}`, ...coordinates, `${width - padding},${height}`].join(" ");
+  }));
 
   return (
     <svg
@@ -231,15 +227,15 @@ function ElevationProfile({
       aria-label="GPX-derived elevation profile"
       role="img"
     >
-      <polygon points={area} fill="#a7c957" opacity="0.16" />
-      <polyline
-        points={line}
+      {paths.map((path, index) => <polyline
+        key={index}
+        points={path.join(" ")}
         fill="none"
         stroke="#a7c957"
         strokeWidth="4"
         strokeLinecap="round"
         strokeLinejoin="round"
-      />
+      />)}
     </svg>
   );
 }

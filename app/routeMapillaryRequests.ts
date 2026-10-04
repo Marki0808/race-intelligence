@@ -7,11 +7,12 @@ export function buildMapillaryRequests(sections: readonly RouteSection[], points
   return sections.map((section) => {
     const startM = section.startKm * 1000;
     const endM = section.endKm * 1000;
-    const matching = points.filter((point) => point.distanceM >= startM && point.distanceM <= endM);
-    const endpoints = [nearestPoint(points, startM), nearestPoint(points, endM)].filter((point): point is RouteAnalysisData["points"][number] => point !== null);
+    const segmentPoints = points.filter((point) => point.segmentIndex === section.segmentIndex);
+    const matching = segmentPoints.filter((point) => point.distanceM >= startM && point.distanceM <= endM);
+    const endpoints = [nearestPoint(segmentPoints, startM), nearestPoint(segmentPoints, endM)].filter((point): point is RouteAnalysisData["points"][number] => point !== null);
     const combined = [...new Map([...matching, ...endpoints].map((point) => [point.distanceM, point])).values()].sort((left, right) => left.distanceM - right.distanceM);
-    const sampled = thinRouteForMatching(combined, 120).map(({ latitude, longitude, distanceM }) => ({ latitude, longitude, distanceM }));
-    return { id: section.id, startDistanceKm: section.startKm, endDistanceKm: section.endKm, points: sampled };
+    const sampled = thinRouteForMatching(combined, 120).map(({ latitude, longitude, distanceM, segmentIndex }) => ({ latitude, longitude, distanceM, segmentIndex }));
+    return { id: section.id, startDistanceKm: section.startKm, endDistanceKm: section.endKm, segmentIndex: section.segmentIndex, points: sampled };
   }).filter((section) => section.points.length >= 2);
 }
 
@@ -21,5 +22,5 @@ function nearestPoint(points: RouteAnalysisData["points"], distanceM: number) {
 }
 
 export function toMapillaryRoutePoints(points: readonly MapillaryRoutePoint[]) {
-  return points.map(({ latitude, longitude, distanceM }) => ({ latitude, longitude, distanceM }));
+  return points.map(({ latitude, longitude, distanceM, segmentIndex }) => ({ latitude, longitude, distanceM, segmentIndex }));
 }

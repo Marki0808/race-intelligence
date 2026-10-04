@@ -599,6 +599,20 @@ test("OSM ranges crossing a Route Section boundary are clipped independently to 
   assert.deepEqual(attached.map((section) => section.terrainEvidence[0]?.evidenceSharePercent), [100, 100]);
 });
 
+test("OSM Surface Evidence does not cross an equal-kilometer component boundary", () => {
+  const segmentZero = { ...routeSectionRange(9, 10, "component-zero"), segmentIndex: 0 };
+  const segmentOne = { ...routeSectionRange(10, 11, "component-one"), segmentIndex: 1 };
+  const data = makeGeoData([
+    { ...makeGeoSegment("segment-zero-evidence", 9, 11, "gravel"), segmentIndex: 0 },
+  ]);
+
+  const [first, second] = attachTerrainEvidenceToRouteSections([segmentZero, segmentOne], data);
+  assert.ok(first.terrainEvidenceCoveragePercent > 0);
+  assert.ok(first.terrainEvidence.some((evidence) => evidence.terrain === "gravel"));
+  assert.equal(second.terrainEvidenceCoveragePercent, 0);
+  assert.deepEqual(second.terrainEvidence, []);
+});
+
 test("overlapping OSM ranges count unique mapped distance once", () => {
   const section = routeSectionRange(0, 10);
   const data = makeGeoData([
