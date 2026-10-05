@@ -3,25 +3,117 @@ import type { GpxRouteMetricsData } from "./gpxAnalysis";
 import type { KeyMomentData } from "./raceTypes";
 import type { RouteDynamicEvent, RouteDynamicsResult } from "./routeDynamics";
 
-/** GPX facts that can be remembered independently of the primary Route Section boundaries. */
+export type RouteElevationExtreme = {
+  elevationM: number;
+  point: GpxRoutePointData;
+};
+
+export type StructuredRouteKeyMomentEvent = {
+  factId: string;
+  eventId: string;
+  kind: "climb" | "descent";
+  roles: Array<"longest" | "largest">;
+  segmentIndex: number;
+  startKm: number;
+  endKm: number;
+  distanceKm: number;
+  elevationChangeM: number;
+};
+
+type RouteKeyMomentBaseFact = {
+  title: string;
+  startKm: number;
+  endKm: number;
+  segmentIndex: number;
+  text: string;
+  gain?: number;
+  loss?: number;
+};
+
+/** Selects first-in-route extrema, preserving the current tie behavior. */
+export function findRouteElevationExtremes(points: readonly GpxRoutePointData[]): {
+  highest: RouteElevationExtreme;
+  lowest: RouteElevationExtreme;
+} {
+  if (!points.length) throw new Error("Route elevation extrema require at least one point.");
+  const highest = points.reduce((selected, point) => point.elevationM > selected.elevationM ? point : selected);
+  const lowest = points.reduce((selected, point) => point.elevationM < selected.elevationM ? point : selected);
+  return {
+    highest: { elevationM: highest.elevationM, point: highest },
+    lowest: { elevationM: lowest.elevationM, point: lowest },
+  };
+}
+
+/** Selects the existing longest/largest event facts once for both UI and CourseBriefInput. */
+export function selectStructuredRouteKeyMomentEvents(
+  dynamics: RouteDynamicsResult,
+): StructuredRouteKeyMomentEvent[] {
+  const selected = new Map<string, { event: RouteDynamicEvent; kind: "climb" | "descent"; roles: Array<"longest" | "largest"> }>();
+
+  for (const kind of ["climb", "descent"] as const) {
+    const events = dynamics.events.filter((event) => event.rhythm === kind);
+    if (!events.length) continue;
+
+    const longest = firstMaximum(events, (event) => event.endKm - event.startKm);
+    const largest = firstMaximum(events, (event) => kind === "climb" ? event.ascentM : event.descentM);
+    addSelectedEvent(selected, kind, longest, "longest");
+    addSelectedEvent(selected, kind, largest, "largest");
+  }
+
+  return [...selected.values()].map(({ event, kind, roles }) => ({
+    factId: `key.${kind}.s${event.segmentIndex ?? 0}.${event.id}`,
+    eventId: event.id,
+    kind,
+    roles,
+    segmentIndex: event.segmentIndex ?? 0,
+    startKm: event.startKm,
+    endKm: event.endKm,
+    distanceKm: event.endKm - event.startKm,
+    elevationChangeM: kind === "climb" ? event.ascentM : event.descentM,
+  }));
+}
+
+/** GPX facts remembered independently of the primary Route Section boundaries. */
 export function createRouteKeyMoments(
   points: readonly GpxRoutePointData[],
   metrics: GpxRouteMetricsData,
   dynamics: RouteDynamicsResult,
 ): KeyMomentData[] {
   if (points.length < 2) return [];
-  const facts: Array<{ title: string; startKm: number; endKm: number; segmentIndex: number; text: string; gain?: number; loss?: number }> = [];
-  const high = extremePoint(points, "high");
-  const low = extremePoint(points, "low");
-  facts.push({ title: "Highest point", startKm: high.distanceM / 1000, endKm: high.distanceM / 1000, segmentIndex: high.segmentIndex, text: `The GPX records its highest elevation here: ${Math.round(metrics.highestPointM)} m.` });
-  facts.push({ title: "Lowest point", startKm: low.distanceM / 1000, endKm: low.distanceM / 1000, segmentIndex: low.segmentIndex, text: `The GPX records its lowest elevation here: ${Math.round(metrics.lowestPointM)} m.` });
+  const extrema = findRouteElevationExtremes(points);
+  const facts: RouteKeyMomentBaseFact[] = [
+    {
+      title: "Highest point",
+      startKm: extrema.highest.point.distanceM / 1000,
+      endKm: extrema.highest.point.distanceM / 1000,
+      segmentIndex: extrema.highest.point.segmentIndex,
+      text: `The GPX records its highest elevation here: ${Math.round(metrics.highestPointM)} m.`,
+    },
+    {
+      title: "Lowest point",
+      startKm: extrema.lowest.point.distanceM / 1000,
+      endKm: extrema.lowest.point.distanceM / 1000,
+      segmentIndex: extrema.lowest.point.segmentIndex,
+      text: `The GPX records its lowest elevation here: ${Math.round(metrics.lowestPointM)} m.`,
+    },
+    ...selectStructuredRouteKeyMomentEvents(dynamics).map(toDisplayFact),
+  ];
 
-  const climbs = dynamics.events.filter((event) => event.rhythm === "climb");
-  const descents = dynamics.events.filter((event) => event.rhythm === "descent");
-  addExtremes(facts, climbs, "climb");
-  addExtremes(facts, descents, "descent");
-  const rolling = dynamics.events.filter((event) => event.rhythm === "rolling").sort((a, b) => (b.endKm - b.startKm) - (a.endKm - a.startKm))[0];
-  if (rolling && facts.length < 7) facts.push(eventFact("Most rolling stretch", rolling, "Repeated climbs and descents create a rolling elevation pattern."));
+  const rolling = dynamics.events
+    .filter((event) => event.rhythm === "rolling")
+    .reduce<RouteDynamicEvent | null>((selected, event) => {
+      if (!selected || event.endKm - event.startKm > selected.endKm - selected.startKm) return event;
+      return selected;
+    }, null);
+  if (rolling && facts.length < 7) {
+    facts.push({
+      title: "Most rolling stretch",
+      startKm: rolling.startKm,
+      endKm: rolling.endKm,
+      segmentIndex: rolling.segmentIndex ?? 0,
+      text: "Repeated climbs and descents create a rolling elevation pattern.",
+    });
+  }
 
   return facts.slice(0, 8).map((fact, index) => {
     const startKm = round1(fact.startKm);
@@ -45,38 +137,43 @@ export function createRouteKeyMoments(
   });
 }
 
-function addExtremes(
-  facts: Array<{ title: string; startKm: number; endKm: number; segmentIndex: number; text: string; gain?: number; loss?: number }>,
-  events: RouteDynamicEvent[],
-  direction: "climb" | "descent",
+function addSelectedEvent(
+  selected: Map<string, { event: RouteDynamicEvent; kind: "climb" | "descent"; roles: Array<"longest" | "largest"> }>,
+  kind: "climb" | "descent",
+  event: RouteDynamicEvent,
+  role: "longest" | "largest",
 ) {
-  if (!events.length) return;
-  const byLength = [...events].sort((a, b) => (b.endKm - b.startKm) - (a.endKm - a.startKm));
-  const byMagnitude = [...events].sort((a, b) =>
-    (direction === "climb" ? b.ascentM - a.ascentM : b.descentM - a.descentM),
-  );
-  facts.push(eventFact(direction === "climb" ? "Longest climb" : "Longest descent", byLength[0], `The longest detected ${direction} event spans ${(byLength[0].endKm - byLength[0].startKm).toFixed(1)} km.`));
-  facts.push(eventFact(direction === "climb" ? "Biggest climb" : "Biggest descent", byMagnitude[0], direction === "climb"
-    ? `The GPX-derived smoothed profile gains about ${byMagnitude[0].ascentM} m during this climb.`
-    : `The GPX-derived smoothed profile loses about ${byMagnitude[0].descentM} m during this descent.`));
+  const key = `${kind}:${event.id}`;
+  const existing = selected.get(key);
+  if (existing) existing.roles.push(role);
+  else selected.set(key, { event, kind, roles: [role] });
 }
 
-function eventFact(title: string, event: RouteDynamicEvent, text: string) {
+function firstMaximum<T>(values: readonly T[], score: (value: T) => number): T {
+  return values.reduce((selected, value) => score(value) > score(selected) ? value : selected);
+}
+
+function toDisplayFact(fact: StructuredRouteKeyMomentEvent): RouteKeyMomentBaseFact {
+  const kindLabel = fact.kind === "climb" ? "climb" : "descent";
+  const roleTitle = fact.roles.length === 2
+    ? "Longest and biggest"
+    : fact.roles[0] === "longest" ? "Longest" : "Biggest";
+  const title = `${roleTitle} ${kindLabel}`;
+  const text = fact.roles.length === 2
+    ? `This detected ${kindLabel} is both the longest and largest by elevation change.`
+    : fact.roles[0] === "longest"
+      ? `The longest detected ${kindLabel} event spans ${fact.distanceKm.toFixed(1)} km.`
+      : fact.kind === "climb"
+        ? `The GPX-derived smoothed profile gains about ${fact.elevationChangeM} m during this climb.`
+        : `The GPX-derived smoothed profile loses about ${fact.elevationChangeM} m during this descent.`;
   return {
     title,
-    startKm: event.startKm,
-    endKm: event.endKm,
-    segmentIndex: event.segmentIndex ?? 0,
+    startKm: fact.startKm,
+    endKm: fact.endKm,
+    segmentIndex: fact.segmentIndex,
     text,
-    ...(event.rhythm === "climb" ? { gain: event.ascentM } : {}),
-    ...(event.rhythm === "descent" ? { loss: event.descentM } : {}),
+    ...(fact.kind === "climb" ? { gain: fact.elevationChangeM } : { loss: fact.elevationChangeM }),
   };
-}
-
-function extremePoint(points: readonly GpxRoutePointData[], kind: "high" | "low") {
-  return points.reduce((selected, point) => kind === "high"
-    ? point.elevationM > selected.elevationM ? point : selected
-    : point.elevationM < selected.elevationM ? point : selected);
 }
 
 function round1(value: number) { return Number(value.toFixed(1)); }
