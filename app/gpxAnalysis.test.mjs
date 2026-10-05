@@ -53,6 +53,99 @@ test("empty and singleton-only track components are preserved but fail analysis 
   );
 });
 
+test("short GPX routes across flat, gentle-climb, and gentle-descent profiles analyze safely end to end", async (t) => {
+  const distancesM = [50, 100, 300, 500, 1000];
+  const profiles = ["flat", "gentle climb", "gentle descent"];
+
+  for (const distanceM of distancesM) {
+    for (const profile of profiles) {
+      await t.test(`${distanceM} m ${profile}`, () => {
+        const parsed = parseGpxText(makeShortRouteGpx(distanceM, profile, 11));
+        const analysis = analyzeGpxRoute(parsed);
+        const expectedDeltaM = profile === "flat" ? 0 : (distanceM / 1000) * 5 * (profile === "gentle climb" ? 1 : -1);
+        const allowedRhythms = profile === "flat" ? ["flat"] : profile === "gentle climb" ? ["flat", "climb"] : ["flat", "descent"];
+
+        assert.equal(parsed.segments.length, 1);
+        assert.equal(parsed.segments[0].length, 11);
+        assert.ok(Math.abs(analysis.metrics.distanceKm - distanceM / 1000) <= 0.005);
+        assert.equal(analysis.metrics.elevationGainM, Math.round(Math.max(0, expectedDeltaM)));
+        assert.equal(analysis.metrics.elevationLossM, Math.round(Math.max(0, -expectedDeltaM)));
+        assert.equal(analysis.metrics.highestPointM, Math.max(100, 100 + expectedDeltaM));
+        assert.equal(analysis.metrics.lowestPointM, Math.min(100, 100 + expectedDeltaM));
+        assert.ok(Number.isFinite(analysis.routeDynamics.totalDistanceKm));
+        assert.ok(analysis.routeDynamics.samples.every((sample) => Number.isFinite(sample.distanceM) && Number.isFinite(sample.medium.verticalIntensityMPerKm)));
+        assert.ok(analysis.routeDynamics.events.every((event) =>
+          event.segmentIndex === 0 && event.startKm >= 0 && event.endKm >= event.startKm && event.endKm <= analysis.metrics.distanceKm + 0.01 &&
+          allowedRhythms.includes(event.rhythm),
+        ));
+        assert.ok(analysis.routeSections.every((section) =>
+          section.segmentIndex === 0 && section.startPosition.segmentIndex === 0 && section.endPosition.segmentIndex === 0 &&
+          Number.isFinite(section.elevationMinM) && Number.isFinite(section.elevationMaxM) &&
+          section.startKm >= 0 && section.endKm >= section.startKm && section.endKm <= analysis.metrics.distanceKm + 0.01 &&
+          allowedRhythms.includes(section.dominantRhythm),
+        ));
+        assert.ok(analysis.keyMoments.every((moment) =>
+          moment.segmentIndex === 0 && moment.focusStartKm >= 0 && moment.focusEndKm >= moment.focusStartKm && moment.focusEndKm <= analysis.metrics.distanceKm + 0.01,
+        ));
+        assert.ok(analysis.keyMoments.every((moment) => moment.source === "GPX-derived"));
+      });
+    }
+  }
+});
+
+test("sparse endpoint-only short GPX routes analyze without fabricated transitions", async (t) => {
+  for (const distanceM of [300, 1000]) {
+    for (const profile of ["flat", "gentle climb", "gentle descent"]) {
+      await t.test(`${distanceM} m sparse ${profile}`, () => {
+        const analysis = analyzeGpxRoute(parseGpxText(makeShortRouteGpx(distanceM, profile, 2)));
+        assert.equal(analysis.points.length, 2);
+        assert.ok(Math.abs(analysis.metrics.distanceKm - distanceM / 1000) <= 0.005);
+        assert.ok(analysis.routeDynamics.events.every((event) => event.segmentIndex === 0 && event.startPosition.segmentIndex === 0 && event.endPosition.segmentIndex === 0));
+        assert.ok(analysis.routeSections.every((section) => section.segmentIndex === 0 && section.startPosition.segmentIndex === 0 && section.endPosition.segmentIndex === 0));
+        assert.ok(analysis.keyMoments.every((moment) => moment.segmentIndex === 0));
+      });
+    }
+  }
+});
+
+test("two short disconnected GPX segments do not create gap distance, elevation changes, dynamics, or crossing sections", () => {
+  const parsed = parseGpxText(`<gpx><trk><trkseg>
+    <trkpt lat="45" lon="13"><ele>100</ele></trkpt>
+    <trkpt lat="45" lon="13.000635"><ele>110</ele></trkpt>
+    <trkpt lat="45" lon="13.00127"><ele>120</ele></trkpt>
+  </trkseg><trkseg>
+    <trkpt lat="46" lon="14"><ele>900</ele></trkpt>
+    <trkpt lat="46" lon="14.000635"><ele>890</ele></trkpt>
+    <trkpt lat="46" lon="14.00127"><ele>880</ele></trkpt>
+  </trkseg></trk></gpx>`);
+  const analysis = analyzeGpxRoute(parsed);
+
+  assert.deepEqual(parsed.segments.map((segment) => segment.length), [3, 3]);
+  assert.equal(analysis.segments.length, 2);
+  assert.ok(Math.abs(analysis.metrics.distanceKm - 0.2) < 0.01);
+  assert.equal(analysis.metrics.elevationGainM, 20);
+  assert.equal(analysis.metrics.elevationLossM, 20);
+  assert.equal(analysis.points[2].distanceM, analysis.points[3].distanceM);
+  assert.ok(analysis.routeDynamics.events.every((event) => event.startPosition.segmentIndex === event.segmentIndex && event.endPosition.segmentIndex === event.segmentIndex));
+  assert.ok(analysis.routeSections.every((section) => section.startPosition.segmentIndex === section.segmentIndex && section.endPosition.segmentIndex === section.segmentIndex));
+  assert.ok(analysis.keyMoments.every((moment) => moment.focusStartPosition.segmentIndex === moment.segmentIndex && moment.focusEndPosition.segmentIndex === moment.segmentIndex));
+});
+
+function makeShortRouteGpx(distanceM, profile, pointCount) {
+  const latitude = 45;
+  const earthRadiusM = 6_371_000;
+  const legDistanceM = distanceM / (pointCount - 1);
+  const deltaLongitudeRadians = 2 * Math.asin(Math.sin(legDistanceM / (2 * earthRadiusM)) / Math.cos(latitude * Math.PI / 180));
+  const deltaLongitudeDegrees = deltaLongitudeRadians * 180 / Math.PI;
+  const totalElevationChangeM = profile === "flat" ? 0 : (distanceM / 1000) * 5 * (profile === "gentle climb" ? 1 : -1);
+  const points = Array.from({ length: pointCount }, (_, index) => {
+    const longitude = 13 + deltaLongitudeDegrees * index;
+    const elevation = 100 + totalElevationChangeM * index / (pointCount - 1);
+    return `<trkpt lat="${latitude}" lon="${longitude}"><ele>${elevation}</ele></trkpt>`;
+  }).join("");
+  return `<gpx version="1.1"><trk><trkseg>${points}</trkseg></trk></gpx>`;
+}
+
 test("disconnected track segments add no connector distance or elevation change", () => {
   const parsed = parseGpxText(`<gpx><trk><trkseg><trkpt lat="45" lon="13"><ele>100</ele></trkpt><trkpt lat="45.009" lon="13"><ele>150</ele></trkpt></trkseg><trkseg><trkpt lat="46" lon="14"><ele>9000</ele></trkpt><trkpt lat="46.009" lon="14"><ele>8940</ele></trkpt></trkseg></trk></gpx>`);
   const analysis = analyzeGpxRoute(parsed);
