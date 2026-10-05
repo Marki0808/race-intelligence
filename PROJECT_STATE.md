@@ -1,8 +1,10 @@
 # Race Intelligence — Project State
 
-**Last verified against:** `main` at `649dfb0c34ee399a092ec39a845b00f1c1d5f8be`
-**Verification date:** 2026-10-04
+**Last verified against:** `main` at `f6ec794ebe3914e06f7a1037dcc768d38816b4c2`
+**Verification date:** 2026-10-05
 **Document scope:** Current repository architecture plus separately labeled Production facts supplied from completed operational verification.
+
+Sections 1–9 and 11–16 describe repository-derived implementation and status. Section 10 records operational facts from Production verification; it does not imply that every code path or external-provider persistence behavior was verified in Production.
 
 ## 1. Project overview
 
@@ -17,10 +19,10 @@ Current analytical outputs include distance and elevation metrics, Route Dynamic
 
 ### Route Mode
 
-1. The browser reads the selected GPX text and `parseGpxText` extracts route points and elevation.
+1. The browser reads the selected GPX text. `parseGpxText` preserves each `<trkseg>` as a separate ordered component and assigns its points a `segmentIndex`. Empty and singleton components do not create traversed edges. Multiple `<trk>` elements remain unsupported and are rejected by the parser.
 2. The browser computes two separate identities: physical `routeFingerprint` and normalized ordered-input `analysisInputFingerprint`.
 3. Route Analysis is looked up through the server persistence API when the route is eligible. Otherwise, compatible local IndexedDB analysis can be reused. On a miss or persistence failure, `analyzeGpxRoute` computes results locally.
-4. Deterministic analysis produces route metrics, Route Dynamics, final Route Sections, Key Route Moments, and course character. Route Sections describe the dominant runner-facing phases; Key Route Moments are discrete facts/highlights, not another segmentation.
+4. Deterministic analysis computes distance and elevation changes only along traversed edges within each component. Route Dynamics and Route Sections are segment-aware; no synthetic adjacency is introduced across component boundaries. Route Sections describe the dominant runner-facing phases; Key Route Moments are discrete facts/highlights, not another segmentation.
 5. Optional evidence requests run separately from deterministic Route Analysis. Route Mode can request OSM evidence through the application Geo Enrichment API and Mapillary imagery through the application Mapillary API for local/noncanonical uploads as well as registered routes. OSM evidence is classified from returned OSM ways; Mapillary searches are built per Route Section. Requests may fail or return partial/no usable evidence, and neither provider defines Route Section boundaries.
 6. For local/noncanonical routes, compatible analysis and enrichment/cache data can be stored in browser IndexedDB. For registered physical routes that meet shared-route eligibility rules, the same evidence flow can additionally reuse or persist compatible data through the server-side shared store. External evidence availability is independent of shared-persistence eligibility: a route may request/use provider evidence without being eligible for shared persistence. The UI presents route-derived analysis and clearly scoped evidence/coverage states.
 
@@ -36,17 +38,17 @@ Distance, elevation, dynamics, Route Sections, and Key Route Moments come from p
 
 ### Physical route identity
 
-`routeFingerprint + routeFingerprintVersion` identifies normalized physical route geometry. The fingerprint implementation uses ordered latitude/longitude geometry and deliberately excludes elevation. Its normalized geometry is also the route geometry stored for the shared route record.
+`routeFingerprint + routeFingerprintVersion` identifies normalized physical route geometry. The current global fingerprint algorithm is version 2. Its ordered, path-topology-aware geometry preserves component boundaries, so one continuous path differs from disconnected paths even when they contain the same coordinates. Elevation is excluded. Its normalized geometry is also the route geometry stored for the shared route record.
 
-This identity is used for physical route records, shared-route eligibility, race-edition route links, and OSM/Mapillary reuse. Direction is significant in the current fingerprint implementation.
+This identity is used for physical route records, shared-route eligibility, race-edition route links, and OSM/Mapillary reuse. Direction and path topology are significant. Legacy v1 physical identities remain legacy data and are not silently reused as v2 identities. Physical identity is independent of Route Analysis version.
 
 ### Analysis input identity
 
-`analysisInputFingerprint` identifies the normalized ordered numerical input supplied to deterministic Route Analysis; it is not a hash of the original GPX text or its raw numeric formatting. It includes ordered latitude, longitude, and elevation values, preserving point order and point count/density. Deterministic normalization includes treating negative zero and zero equivalently. It excludes filename, GPX metadata/name, upload time, and browser-specific state.
+`analysisInputFingerprint` identifies the normalized ordered numerical input supplied to deterministic Route Analysis; it is not a hash of the original GPX text or its raw numeric formatting. Its current algorithm version is 2. It includes component topology and, within each component, ordered latitude, longitude, and elevation values, preserving point order and point count/density. Deterministic normalization includes treating negative zero and zero equivalently. It excludes filename, GPX metadata/name, upload time, and browser-specific state. Legacy analyses without the current input identity are not accepted as current cache hits.
 
 ### Analysis algorithm identity
 
-`analysisVersion` identifies Route Analysis algorithm/data semantics. A valid analysis cache hit requires all three:
+`analysisVersion` identifies Route Analysis algorithm/data semantics. The current `ROUTE_ANALYSIS_VERSION` is 2; older analysis versions are not treated as current. A valid analysis cache hit requires all three:
 
 ```text
 physical route identity
@@ -54,13 +56,13 @@ physical route identity
 + analysisInputFingerprint
 ```
 
-These identities are separate because the same physical trail can be represented with different elevation inputs or point samples. Geometry-based evidence and eligibility can remain reusable, while a cached deterministic analysis must match the exact analysis input and algorithm version.
+These identities are separate because the same physical trail can be represented with different elevation inputs, point samples, or component topology. Geometry-based evidence and eligibility can remain reusable, while a cached deterministic analysis must match the exact analysis input and algorithm version.
 
 ## 4. Local and shared persistence
 
 ### Browser-local IndexedDB
 
-`app/routePersistence.ts` provides optional local persistence for route metadata, analysis variants, OSM enrichment, Mapillary enrichment, and race-edition references. The current analysis store is `analysis-variants`, keyed by physical fingerprint/version, analysis version, and analysis-input fingerprint.
+`app/routePersistence.ts` provides optional local persistence for route metadata, analysis variants, OSM enrichment, Mapillary enrichment, and race-edition references. The current analysis store is `analysis-variants`, keyed by physical fingerprint/version, analysis version, and analysis-input fingerprint. The v2 physical identity and segment-aware JSON data required no IndexedDB schema-version bump.
 
 The legacy local `analyses` object store is not used as a fallback for current lookups. Legacy analyses without `analysisInputFingerprint` fail closed. Local persistence is an optimization: when IndexedDB is unavailable or an operation fails, Route Mode can recompute the analysis locally. An IndexedDB open blocked by another tab may therefore mean no cache for that attempt; the route can still be analyzed.
 
@@ -78,7 +80,7 @@ The current migrations define eight shared tables:
 
 | Table | Role and identity |
 | --- | --- |
-| `routes` | Physical route record, unique by fingerprint and fingerprint version; includes normalized geometry and distance metadata. Persistence scope is constrained to `shared`. |
+| `routes` | Physical route record, unique by fingerprint and fingerprint version; includes normalized topology-aware geometry and distance metadata. Persistence scope is constrained to `shared`. |
 | `route_analyses` | Deterministic analysis JSON attached to a route. Current identity is `route_id + analysis_version + analysis_input_fingerprint`. |
 | `route_osm_enrichments` | Current merged OSM evidence for a route, keyed by route, OSM schema version, and provider. |
 | `route_osm_snapshots` | OSM retrieval snapshots associated with an enrichment; content hash prevents duplicate snapshots. |
@@ -99,6 +101,8 @@ Retrieval coverage, matched/classifiable coverage, unavailable ranges, and class
 
 OSM evidence and snapshots are persisted independently from Route Analysis and are physical-route based, not elevation-dependent. Partial results can be merged and reused by route/schema/provider identity.
 
+OSM requests, matching, and evidence ranges preserve `segmentIndex`. Equal cumulative kilometer positions on different components do not share evidence.
+
 Current Surface Evidence presentation semantics:
 
 - Exact mapped coverage of **0%** is `missing`, even if inconsistent category data is present.
@@ -112,13 +116,15 @@ Mapillary supplies optional route imagery as a separate evidence layer. Requests
 
 Mapillary persistence/reuse is keyed by physical route fingerprint/version, Mapillary schema version, and provider. It is not keyed by `analysisVersion` or `analysisInputFingerprint`; changing Route Analysis semantics alone does not invalidate compatible imagery.
 
+Mapillary request validation and image matching preserve component identity and do not bridge disconnected paths.
+
 Current implementation builds section requests from the server-derived analysis and drops request groups with fewer than two sampled points. Consequently it does not guarantee imagery coverage for every very short Route Section or continuous image coverage along every route point. Provider search and matching limits also mean “available” is evidence of matched imagery, not complete visual coverage.
 
 ## 8. Race registry and shared eligibility
 
 `app/raceRegistry.ts` exports the current static collection of `RaceRecordData`; it presently contains the Istria 110K record. Race identity, edition data, descriptive intelligence, and sources live in the race data model, while each edition supplies edition-specific facts including its GPX path.
 
-The server loads a registered edition's public GPX and computes the authorized physical and analysis-input identities. A physical-route match establishes that the route is eligible for shared physical-route evidence. The server-derived registry `analysisInputFingerprint` separately decides whether canonical Route Analysis can be reused or persisted.
+The server loads a registered edition's public GPX and computes the authorized v2 physical and analysis-input identities, including component topology. A physical-route match establishes that the route is eligible for shared physical-route evidence. The server-derived registry `analysisInputFingerprint` separately decides whether canonical Route Analysis can be reused or persisted.
 
 If physical geometry matches but elevation or ordered point input differs, the request must not receive canonical shared analysis or persist arbitrary uploaded analysis. It falls back to local analysis/reuse. Future registered races/editions can extend the registry, but the registry and currently available race data remain statically defined in this version.
 
@@ -127,6 +133,7 @@ If physical geometry matches but elevation or ordered point input differs, the r
 - Next.js application with server and client components/API routes.
 - Vercel Production hosts the application.
 - Browser Route Mode performs GPX parsing and deterministic analysis and can use IndexedDB locally.
+- GPX track components remain separate through metrics, Route Dynamics, Route Sections, evidence matching, and map/profile rendering.
 - Server API routes use a server-only PostgreSQL connection to Supabase/Postgres for shared persistence.
 - OSM evidence may use the public Overpass service; Mapillary imagery may use the Mapillary API when a server-side token is configured.
 
@@ -136,13 +143,19 @@ No credentials, connection strings, tokens, or environment values belong in this
 
 > The following are operational facts supplied from completed Production verification. They are not inferred solely from repository code and were not re-queried while creating this document.
 
-- Vercel Production was reported **Ready and Current** after commit `649dfb0c34ee399a092ec39a845b00f1c1d5f8be` (`fix: key route analysis cache by input identity`).
+- The GPX segment-boundary implementation was deployed after commit `c75cd9faf988703a0a498c08a825924ccba396ce` (`fix: preserve GPX track segment boundaries`); global user-facing Route Section numbering was deployed after commit `f6ec794ebe3914e06f7a1037dcc768d38816b4c2` (`fix: number route sections globally`).
 - Vercel Production to server-side PostgreSQL/Supabase connectivity was previously verified.
+- After the v2 transition, Production verification reported Istria 110K 2027 metrics of approximately 110.73 km distance, 4,168 m gain, 4,240 m loss, 1,017 m highest, and 3 m lowest.
 - All eight shared persistence tables were reachable from Production.
 - Shared persistence write, read-back, idempotency, and cleanup were smoke-tested.
 - The analysis-input identity migration was manually applied and verified: `analysis_input_fingerprint` is nullable text; the old route/version uniqueness rule was removed; a variant-aware partial unique index exists; RLS remained enabled; and the route foreign key retains `ON DELETE RESTRICT`.
 - Controlled live persistence tests verified identical full-identity idempotency, coexistence and specific read-back of two input variants for one physical route/analysis version, cache misses for unknown fingerprints and legacy NULL fingerprints, and cleanup restoring all eight table counts to baseline.
 - The Surface Evidence zero-versus-low-coverage presentation change was reported deployed to Production.
+- Production persistence verification after the v2 transition found one route with `fingerprint_version = 2`, one linked analysis with `analysis_version = 2` and non-null `analysis_input_fingerprint`, and a matching race-edition link. The computed canonical Istria registry identities matched the persisted route and analysis, supporting shared analysis reuse.
+- At that read-only verification point, there were no OSM or Mapillary enrichment rows associated with a v2 route. Their shared persistence was not Production-verified by that check.
+- A deterministic fixture with one track, two disconnected track segments, ten points, an expected traversed distance of about 4.024 km, a 22.330 km component gap, and a 680 m boundary elevation jump was verified in Production. Observed metrics were 4.02 km distance, +40 m gain, 0 m loss, 840 m highest, and 120 m lowest; the gap and boundary elevation jump were excluded.
+- No database migration or IndexedDB schema-version bump was required for the GPX segment-boundary implementation.
+- Production rendering of that fixture showed separate route paths, elevation-profile paths, and component-specific section maps. Route Sections did not span the boundary. After the globally sequential numbering fix was deployed, the two component sections displayed as Route Section 1 and Route Section 2.
 
 ## 11. Testing and quality gates
 
@@ -155,7 +168,7 @@ Before important changes, the project workflow uses:
 - `git diff --check` and review of the complete Git diff.
 - Controlled live database smoke tests with synthetic data and cleanup when persistence semantics change.
 
-At commit `649dfb0c34ee399a092ec39a845b00f1c1d5f8be`, the reported full suite result was **175 passed, 0 failed**. This is a point-in-time result, not a permanent suite count.
+At commit `f6ec794ebe3914e06f7a1037dcc768d38816b4c2`, the reported full suite result was **194 passed, 0 failed**. This is a point-in-time result, not a permanent suite count.
 
 ## 12. Architectural invariants
 
@@ -172,12 +185,14 @@ At commit `649dfb0c34ee399a092ec39a845b00f1c1d5f8be`, the reported full suite re
 - Shared database persistence and provider credentials remain server-side.
 - GPX-derived analysis, OSM evidence, and Mapillary evidence retain distinct provenance and failure behavior.
 - Route Sections are the primary runner-facing segmentation; Key Route Moments are highlights/facts rather than a second segmentation.
+- `<trkseg>` components remain disconnected throughout analysis and evidence processing; no distance, elevation change, dynamics, section, or matching edge is synthesized across a component boundary.
+- User-facing Route Section ordinals are globally sequential in course order. They are presentation ordinals and do not replace internal section IDs or `segmentIndex`.
+- Overall route ascent is computed from raw GPX traversal. Individual Route Section ascent is computed from its resampled and smoothed profile, so section ascent values need not sum exactly to raw route ascent.
 
 ## 13. Known limitations and open correctness work
 
 | Issue | Status and confidence |
 | --- | --- |
-| GPX track-segment boundaries | **Confirmed code limitation.** `parseGpxText` extracts all `trkpt` elements into one point list and does not preserve `<trkseg>` boundaries. `analyzeGpxRoute` calculates distance and elevation change between every adjacent point. Disconnected segments can therefore create synthetic straight-line distance/elevation relationships. |
 | Mapillary section coverage | **Confirmed code limitation.** Requests are made per Route Section; generated requests with fewer than two sampled points are discarded. Imagery is not guaranteed for every section or continuously along the route. |
 | Race Mode versus Route Mode | **Current product distinction.** Race Mode is a curated registered-race experience; Route Mode analyzes a user-selected GPX. Arbitrary uploads do not become registered races or shared canonical analyses. |
 | Race registry scalability | **Current architectural limit.** Available race records are statically imported and listed in `raceRegistry.ts`; no database-backed registry or dynamic race ingestion exists. |
@@ -187,9 +202,8 @@ At commit `649dfb0c34ee399a092ec39a845b00f1c1d5f8be`, the reported full suite re
 
 ## 14. Current priorities
 
-1. Correct GPX `<trkseg>` boundary handling so disconnected track segments do not create synthetic joins; define appropriate parsing and analysis behavior and cover it with deterministic tests.
-2. Add regression coverage for very short valid GPX routes, based on the reported synthetic failure, before deciding whether a generic engine fix is required.
-3. Keep external evidence coverage and provenance explicit as route and provider behavior evolves; do not infer terrain or imagery where evidence is absent.
+1. Add regression coverage for very short valid GPX routes, based on the reported synthetic failure, before deciding whether a generic engine fix is required.
+2. Keep external evidence coverage and provenance explicit as route and provider behavior evolves; do not infer terrain or imagery where evidence is absent.
 
 ## 15. Safe development workflow
 
