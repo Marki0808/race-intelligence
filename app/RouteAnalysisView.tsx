@@ -12,7 +12,7 @@ import TerrainImageViewer from "./TerrainImageViewer";
 import TerrainSectionMap from "./TerrainSectionMap";
 import { attachTerrainEvidenceToRouteSections } from "./routeEvidenceAdapter";
 import { sortRouteEmbeddedEventsForDisplay, type RouteSection } from "./routeSectionEngine";
-import { getRouteImageryPresentation, getSurfaceEvidencePresentation } from "./routeSectionPresentation";
+import { getRouteImageryPresentation, getSurfaceEvidencePresentation, numberRouteSectionsForDisplay } from "./routeSectionPresentation";
 import { buildMapillaryRequests } from "./routeMapillaryRequests";
 import { enrichSharedRoute, type SharedRouteCache } from "./routePersistenceClient";
 import type { RouteFingerprintResult } from "./routeFingerprint";
@@ -174,8 +174,8 @@ export default function RouteAnalysisView({
           </div>
           {analysis.routeSections.length ? (
             <div className="space-y-5">
-              {displayedSections.map((section) => (
-                <RouteSectionCard key={section.id} section={section} imageEvidence={imageEvidence.get(section.id) ?? null} onSelectImage={setSelectedImage} />
+              {numberRouteSectionsForDisplay(displayedSections).map(({ section, ordinal }) => (
+                <RouteSectionCard key={`${section.segmentIndex}:${section.id}`} section={section} ordinal={ordinal} imageEvidence={imageEvidence.get(section.id) ?? null} onSelectImage={setSelectedImage} />
               ))}
             </div>
           ) : <p className="text-sm text-black/45">No stable route rhythm could be distinguished from this GPX elevation profile.</p>}
@@ -203,10 +203,12 @@ export default function RouteAnalysisView({
 
 function RouteSectionCard({
   section,
+  ordinal,
   imageEvidence,
   onSelectImage,
 }: {
   section: RouteSection;
+  ordinal: number;
   imageEvidence: MapillarySectionEvidence | null;
   onSelectImage: (image: MapillaryImageEvidence) => void;
 }) {
@@ -222,7 +224,7 @@ function RouteSectionCard({
     <article className="rounded-3xl border border-black/10 bg-[#f4f2ed] p-6 sm:p-8">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#71805d]">Route Section {section.id.replace("route-section-", "")}</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#71805d]">Route Section {ordinal}</p>
           <h3 className="mt-2 text-2xl font-semibold">{title[section.dominantRhythm]} · {section.startKm}–{section.endKm} km</h3>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-black/55">{section.description}</p>
         </div>

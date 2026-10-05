@@ -10,6 +10,7 @@ import {
 } from "./gpxAnalysis.ts";
 import { createRouteFingerprint } from "./routeFingerprint.ts";
 import { createAnalysisInputFingerprint } from "./analysisInputFingerprint.ts";
+import { numberRouteSectionsForDisplay } from "./routeSectionPresentation.ts";
 import { ROUTE_ANALYSIS_VERSION } from "./routePersistence.ts";
 
 test("route analysis calculates distance, gain, loss, high and low points", () => {
@@ -98,6 +99,21 @@ test("Route Dynamics and Route Sections analyze each sustained track segment ind
   assert.ok(analysis.metrics.distanceKm > 15.9 && analysis.metrics.distanceKm < 16.1);
   assert.equal(analysis.metrics.elevationGainM, 500);
   assert.equal(analysis.metrics.elevationLossM, 450);
+});
+
+test("multi-segment Route Sections keep segment identity and use globally sequential display ordinals", () => {
+  const segment = (latitude, startElevationM) => Array.from({ length: 5 }, (_, index) => ({
+    latitude,
+    longitude: 15.9 + index * 0.0065,
+    elevationM: startElevationM + index * 5,
+  }));
+  const analysis = analyzeGpxRoute({ segments: [segment(45.8, 120), segment(46, 820)] });
+
+  assert.equal(analysis.routeSections.length, 2);
+  assert.deepEqual(analysis.routeSections.map((section) => section.segmentIndex), [0, 1]);
+  assert.ok(analysis.routeSections.every((section) => section.startPosition.segmentIndex === section.endPosition.segmentIndex));
+  assert.deepEqual(numberRouteSectionsForDisplay(analysis.routeSections).map(({ ordinal }) => ordinal), [1, 2]);
+  assert.deepEqual(numberRouteSectionsForDisplay(analysis.routeSections).map(({ section }) => section.segmentIndex), [0, 1]);
 });
 
 test("route name falls back neutrally when the GPX has no name", () => {

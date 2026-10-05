@@ -1,6 +1,10 @@
 import type { MapillarySectionEvidence } from "./mapillaryTerrainProof.ts";
 import type { RouteSection, RouteSectionMapPoint } from "./routeSectionEngine.ts";
 
+export function numberRouteSectionsForDisplay<T>(sections: readonly T[]): Array<{ section: T; ordinal: number }> {
+  return sections.map((section, index) => ({ section, ordinal: index + 1 }));
+}
+
 export function hasRenderableSectionMap(points: readonly Pick<RouteSectionMapPoint, "latitude" | "longitude">[]): boolean {
   return points.length >= 2 && points.every((point) => Number.isFinite(point.latitude) && Number.isFinite(point.longitude));
 }

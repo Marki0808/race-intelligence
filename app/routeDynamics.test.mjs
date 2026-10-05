@@ -6,7 +6,7 @@ import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis.ts";
 import { applyRunnerFacingSectionSignificance, buildConsolidatedRouteSections, buildRouteSections, buildRouteSectionsWithSignificance, consolidateRoutePhases, mergeRoutePhases, sortRouteEmbeddedEventsForDisplay } from "./routeSectionEngine.ts";
 import { createRouteKeyMoments } from "./routeKeyMoments.ts";
 import { attachTerrainEvidenceToRouteSections } from "./routeEvidenceAdapter.ts";
-import { getRouteImageryPresentation, getSurfaceEvidencePresentation, hasRenderableSectionMap } from "./routeSectionPresentation.ts";
+import { getRouteImageryPresentation, getSurfaceEvidencePresentation, hasRenderableSectionMap, numberRouteSectionsForDisplay } from "./routeSectionPresentation.ts";
 
 function makeRoute(parts, { spacingM = 100, noise = 0 } = {}) {
   const points = [{ latitude: 45, longitude: 13, elevationM: 100, distanceM: 0 }];
@@ -29,6 +29,17 @@ function makeRoute(parts, { spacingM = 100, noise = 0 } = {}) {
   }
   return points;
 }
+
+test("Route Section display ordinals continue across segment boundaries", () => {
+  const sections = [
+    { id: "route-section-1", segmentIndex: 0 },
+    { id: "route-section-2", segmentIndex: 0 },
+    { id: "route-section-1", segmentIndex: 1 },
+    { id: "route-section-2", segmentIndex: 1 },
+  ];
+
+  assert.deepEqual(numberRouteSectionsForDisplay(sections).map(({ ordinal }) => ordinal), [1, 2, 3, 4]);
+});
 
 const sectionsFor = (parts, options) => {
   const points = makeRoute(parts, options);
