@@ -1,6 +1,6 @@
 # Race Intelligence — Project State
 
-**Last verified against:** `main` at `f6ec794ebe3914e06f7a1037dcc768d38816b4c2`
+**Last verified against:** `main` at `6bb91c63c5c83c72b4ba1f8b12fb280985918f54`
 **Verification date:** 2026-10-05
 **Document scope:** Current repository architecture plus separately labeled Production facts supplied from completed operational verification.
 
@@ -156,6 +156,8 @@ No credentials, connection strings, tokens, or environment values belong in this
 - A deterministic fixture with one track, two disconnected track segments, ten points, an expected traversed distance of about 4.024 km, a 22.330 km component gap, and a 680 m boundary elevation jump was verified in Production. Observed metrics were 4.02 km distance, +40 m gain, 0 m loss, 840 m highest, and 120 m lowest; the gap and boundary elevation jump were excluded.
 - No database migration or IndexedDB schema-version bump was required for the GPX segment-boundary implementation.
 - Production rendering of that fixture showed separate route paths, elevation-profile paths, and component-specific section maps. Route Sections did not span the boundary. After the globally sequential numbering fix was deployed, the two component sections displayed as Route Section 1 and Route Section 2.
+- A deterministic short-route fixture with one track, one segment, and 11 points was manually verified in Production. It traversed approximately 300.0 m with monotonically increasing elevation; Route Mode showed 0.30 km, +25 m gain, 0 m loss, 125 m high, and 100 m low. The route rendered as one continuous path with correct start/finish markers and elevation profile, analysis completed without error, and a Route Section stayed within 0–0.30 km. OSM and Mapillary were not refreshed during this check.
+- An earlier failure had been observed on a synthetic route of roughly 300 m, but its exact fixture was unavailable and the failure was not reproduced. Current representative automated tests and the Production verification above pass; no generic short-route bug is currently known.
 
 ## 11. Testing and quality gates
 
@@ -168,7 +170,7 @@ Before important changes, the project workflow uses:
 - `git diff --check` and review of the complete Git diff.
 - Controlled live database smoke tests with synthetic data and cleanup when persistence semantics change.
 
-At commit `f6ec794ebe3914e06f7a1037dcc768d38816b4c2`, the reported full suite result was **194 passed, 0 failed**. This is a point-in-time result, not a permanent suite count.
+At commit `6bb91c63c5c83c72b4ba1f8b12fb280985918f54`, the reported full suite result was **218 passed, 0 failed**, including short-route regression cases. This is a point-in-time result, not a permanent suite count.
 
 ## 12. Architectural invariants
 
@@ -197,13 +199,11 @@ At commit `f6ec794ebe3914e06f7a1037dcc768d38816b4c2`, the reported full suite re
 | Race Mode versus Route Mode | **Current product distinction.** Race Mode is a curated registered-race experience; Route Mode analyzes a user-selected GPX. Arbitrary uploads do not become registered races or shared canonical analyses. |
 | Race registry scalability | **Current architectural limit.** Available race records are statically imported and listed in `raceRegistry.ts`; no database-backed registry or dynamic race ingestion exists. |
 | IndexedDB fallback | **Confirmed behavior.** Persistence is optional; failed/unavailable local storage falls back to computing analysis in memory. A blocked database upgrade may prevent caching during that attempt. |
-| Extremely short routes | **Previously observed, not independently reproduced in this review.** A synthetic route of roughly 300 m was reported to fail in Route Analysis around `routeSectionEngine.ts`. Treat as an open regression candidate, not a general claim that all short routes fail. |
 | Public OSM availability | **Provider-dependent limitation.** Overpass can time out, rate-limit, or return partial coverage. The UI and data model preserve unavailable/unknown ranges; successful classification depends on actual returned OSM ways and tags. |
 
 ## 14. Current priorities
 
-1. Add regression coverage for very short valid GPX routes, based on the reported synthetic failure, before deciding whether a generic engine fix is required.
-2. Keep external evidence coverage and provenance explicit as route and provider behavior evolves; do not infer terrain or imagery where evidence is absent.
+1. Keep external evidence coverage and provenance explicit as route and provider behavior evolves; do not infer terrain or imagery where evidence is absent.
 
 ## 15. Safe development workflow
 
