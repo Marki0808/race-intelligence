@@ -171,7 +171,16 @@ export function buildCourseBriefInput(
     derivedFacts: {
       verticalProgression: buildVerticalProgression(analysis),
       sections,
-      keyMoments: selectStructuredRouteKeyMomentEvents(analysis.routeDynamics),
+      keyMoments: selectStructuredRouteKeyMomentEvents(analysis.routeDynamics).map((fact) => ({
+        factId: fact.factId,
+        kind: fact.kind,
+        roles: fact.roles,
+        segmentIndex: fact.segmentIndex,
+        startKm: fact.startKm,
+        endKm: fact.endKm,
+        distanceKm: fact.distanceKm,
+        elevationChangeM: fact.elevationChangeM,
+      })),
     },
     evidenceScopedFacts: {
       osmSurface: buildOsmSurfaceFacts(sections, analysis.routeSections, osm),
