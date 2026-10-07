@@ -1,7 +1,7 @@
 # Race Intelligence — Project State
 
-**Last verified against:** `main` at `6bb91c63c5c83c72b4ba1f8b12fb280985918f54`
-**Verification date:** 2026-10-05
+**Last verified against:** `main` at `9d968c1a2176425a402e76f39b6cecdca6b2e8fa`
+**Verification date:** 2026-10-07
 **Document scope:** Current repository architecture plus separately labeled Production facts supplied from completed operational verification.
 
 Sections 1–9 and 11–16 describe repository-derived implementation and status. Section 10 records operational facts from Production verification; it does not imply that every code path or external-provider persistence behavior was verified in Production.
@@ -13,7 +13,7 @@ Race Intelligence helps trail runners understand a route before running or racin
 - **Race Mode:** a curated race experience resolved from a statically registered `RaceRecordData`. It presents race/edition information, course exploration, Key Moments, Course Character, sources, and course analysis.
 - **Route Mode:** a user selects a GPX file for deterministic route analysis. Analysis runs in the browser. OSM and Mapillary evidence can also be requested for local/noncanonical uploads through the application APIs; shared-persistence eligibility is not required to request or use that evidence. For registered physical routes that meet the shared-route rules, the same evidence flow can additionally use server-side shared persistence and reuse.
 
-Current analytical outputs include distance and elevation metrics, Route Dynamics, consolidated runner-facing Route Sections, Key Route Moments, and optional surface/imagery evidence. GPX-derived outputs are distinct from external provider evidence. There is no AI analysis or database-backed race search in the current implementation.
+Current analytical outputs include distance and elevation metrics, Route Dynamics, consolidated runner-facing Route Sections, Key Route Moments, optional surface/imagery evidence, and a narrow Course Brief generated from deterministic route facts. GPX-derived outputs are distinct from external provider evidence. Race search remains statically registered rather than database-backed.
 
 ## 2. End-to-end data flow
 
@@ -29,6 +29,39 @@ Current analytical outputs include distance and elevation metrics, Route Dynamic
 ### Race Mode
 
 Race Mode resolves a route parameter against the static `raceRegistry`, then supplies the resolved race record to data-driven page components. Its selected edition supplies the GPX reference and descriptive race intelligence. It is separate from arbitrary GPX upload in Route Mode.
+
+### Course Brief
+
+Course Brief is an ephemeral, server-generated summary of a caller-submitted `CourseBriefInputV1`. The checked-in deterministic builder projects Route Analysis into a compact input with three provenance groups:
+
+- `directFacts`: route metrics, elevation extrema, and track components.
+- `derivedFacts`: smoothed vertical progression, ordered Route Sections, and structured Key Route Moments.
+- `evidenceScopedFacts`: optional section-scoped OSM surface evidence.
+
+Raw GPX is not sent to the model. Coordinates, Mapillary data, filenames, user data, and race context are excluded from the Course Brief input. Its `schemaVersion` is 1.
+
+The generation flow is:
+
+```text
+validated CourseBriefInputV1
+→ deterministic fact index
+→ eligible claim enumeration
+→ request-specific eligible option catalog
+→ model selects option IDs only
+→ IDs map to canonical claims
+→ semantic and redundancy validation
+→ deterministic rendering
+```
+
+Application code decides which claims are factually eligible. The model selects and prioritizes from that set; it does not calculate route metrics, determine claim eligibility, author final claim parameters, or write the final prose. The closed catalog contains `vertical_concentration`, `vertical_transition`, `key_moment`, `highest_point`, `lowest_point`, and `osm_surface_category`. It does not support claims about difficulty, technicality, runnability, strategy, hazards, weather, nutrition, or pacing unless a separately designed evidence model supports them.
+
+The server-side API uses the OpenAI Responses API with `gpt-5.4-mini`, `store: false`, `maxRetries: 0`, no reasoning effort, low verbosity, and bounded output and request duration. Prompt version is 2; the internal model-selection schema version is 1. `OPENAI_API_KEY` is configured in Vercel Production and API billing was reported active; secret values do not belong in this document.
+
+`CourseBriefInputV1` remains schema version 1; the prompt version is 2, selection schema version is 1, and rendered Course Brief schema version is unchanged. `ROUTE_ANALYSIS_VERSION` remains 2. This implementation made no physical fingerprint, analysis-input fingerprint, database migration, or IndexedDB schema-version change.
+
+Input validation is strict and the request body is limited to 64 KiB. Eligible-option enumeration and final semantic validation share the same evaluator; the request-specific Structured Output schema limits selections to eligible IDs. Final semantic and redundancy checks remain defense in depth, and prose is rendered deterministically. Public errors are sanitized. Telemetry excludes prompts, provider output, route values, coordinates, GPX, raw OSM/Mapillary evidence, credentials, and user data.
+
+The API accepts caller-submitted `CourseBriefInputV1` and validates it internally; it does not independently derive the facts from trusted GPX/OSM sources. This is suitable only for the current ephemeral caller-visible flow. Submitted Course Brief input must not become authoritative shared persistent/cache data without trusted server-side derivation and identity. The endpoint also lacks durable authentication/rate-limit protection suitable for unrestricted public exposure; abuse and cost controls are required before broad public exposure.
 
 ### Evidence boundary
 
@@ -158,6 +191,11 @@ No credentials, connection strings, tokens, or environment values belong in this
 - Production rendering of that fixture showed separate route paths, elevation-profile paths, and component-specific section maps. Route Sections did not span the boundary. After the globally sequential numbering fix was deployed, the two component sections displayed as Route Section 1 and Route Section 2.
 - A deterministic short-route fixture with one track, one segment, and 11 points was manually verified in Production. It traversed approximately 300.0 m with monotonically increasing elevation; Route Mode showed 0.30 km, +25 m gain, 0 m loss, 125 m high, and 100 m low. The route rendered as one continuous path with correct start/finish markers and elevation profile, analysis completed without error, and a Route Section stayed within 0–0.30 km. OSM and Mapillary were not refreshed during this check.
 - An earlier failure had been observed on a synthetic route of roughly 300 m, but its exact fixture was unavailable and the failure was not reproduced. Current representative automated tests and the Production verification above pass; no generic short-route bug is currently known.
+- Course Brief Phase 2 was implemented in commit `9d968c1a2176425a402e76f39b6cecdca6b2e8fa` (`feat: add deterministic course brief selection`), reported Ready in Vercel Production, and passed one controlled Production smoke test using the checked-in Istria 110K input, `analysisVersion = 2`, and OSM `not-requested`. The local repository `HEAD` matched that commit at verification time.
+- Earlier Production Course Brief attempts failed closed when the model-facing schema allowed invalid claim parameters, including `vertical_concentration` with `phase = early` and `direction = null`. The deterministic eligible-option design replaced model-authored claim parameters with selection of eligible option IDs.
+- The final smoke-test precheck validated the input and found 7 eligible options: 0 vertical concentrations, 1 vertical transition, 4 Key Moment role options, 1 highest point, 1 lowest point, and 0 OSM surface categories. Exactly one `POST /api/course-brief` was made; it returned HTTP 200 in 3,495 ms with no retry, OSM, Mapillary, or database request.
+- The successful response selected a climb-to-descent vertical transition, the longest climb, and the longest descent. Deterministic rendering described the early-to-late smoothed-profile transition, a climb from 2.1–9.1 km with 526 m ascent, and a descent from 31.4–36.1 km with 482 m descent. Provider telemetry reported `gpt-5.4-mini`, 2,768 input tokens, 42 output tokens, 2,810 total tokens, 0 cached input tokens, 0 reasoning tokens, 2,552 ms provider duration, success, no error category, and `retryable = false`. The provider request ID is intentionally omitted.
+- Production verification confirms the deterministic eligible-option selection, canonical claim mapping, semantic/redundancy validation, and renderer completed successfully for this request. It does not establish broader content quality or justify unrestricted public exposure. Editorial usefulness was assessed as concise and grounded, with the headline transition considered somewhat subtle.
 
 ## 11. Testing and quality gates
 
@@ -171,6 +209,8 @@ Before important changes, the project workflow uses:
 - Controlled live database smoke tests with synthetic data and cleanup when persistence semantics change.
 
 At commit `6bb91c63c5c83c72b4ba1f8b12fb280985918f54`, the reported full suite result was **218 passed, 0 failed**, including short-route regression cases. This is a point-in-time result, not a permanent suite count.
+
+For Course Brief Phase 2 commit `9d968c1a2176425a402e76f39b6cecdca6b2e8fa`, reported verification was **279 passed, 0 failed** in the full Node suite and **38 passed** focused Course Brief tests; TypeScript, ESLint, production build, and `git diff --check` passed. Direct eligible-option tests cover concentration thresholds/ties, transition dominance/ties, Key Moment direction/roles, extrema, OSM evidence eligibility/unavailable states, and request-specific selection behavior. These are point-in-time results.
 
 ## 12. Architectural invariants
 
@@ -190,6 +230,10 @@ At commit `6bb91c63c5c83c72b4ba1f8b12fb280985918f54`, the reported full suite re
 - `<trkseg>` components remain disconnected throughout analysis and evidence processing; no distance, elevation change, dynamics, section, or matching edge is synthesized across a component boundary.
 - User-facing Route Section ordinals are globally sequential in course order. They are presentation ordinals and do not replace internal section IDs or `segmentIndex`.
 - Overall route ascent is computed from raw GPX traversal. Individual Route Section ascent is computed from its resampled and smoothed profile, so section ascent values need not sum exactly to raw route ascent.
+- Course Brief claims are restricted to deterministic eligible options and are validated before rendering; the model cannot establish new facts or author final prose.
+- Course Brief input is caller-submitted and is not independently derived server-side. It must not be trusted as shared persistent/cache data without a trusted derivation and identity path.
+- Course Brief generation is ephemeral and is not persisted or cached.
+- The Course Brief API has no durable authentication/rate-limit protection suitable for unrestricted public exposure; do not broadly expose generation before abuse and cost controls are designed.
 
 ## 13. Known limitations and open correctness work
 
@@ -200,10 +244,14 @@ At commit `6bb91c63c5c83c72b4ba1f8b12fb280985918f54`, the reported full suite re
 | Race registry scalability | **Current architectural limit.** Available race records are statically imported and listed in `raceRegistry.ts`; no database-backed registry or dynamic race ingestion exists. |
 | IndexedDB fallback | **Confirmed behavior.** Persistence is optional; failed/unavailable local storage falls back to computing analysis in memory. A blocked database upgrade may prevent caching during that attempt. |
 | Public OSM availability | **Provider-dependent limitation.** Overpass can time out, rate-limit, or return partial coverage. The UI and data model preserve unavailable/unknown ranges; successful classification depends on actual returned OSM ways and tags. |
+| Course Brief trust boundary | **Confirmed code limitation.** The endpoint strictly validates caller-submitted `CourseBriefInputV1` but does not independently derive its facts from trusted source data. It is ephemeral only; do not use submitted facts as authoritative shared persistent/cache data. |
+| Course Brief public access | **Confirmed code limitation.** The generation endpoint lacks durable authentication/rate-limit protection suitable for unrestricted public exposure. Abuse and cost controls are needed before broad exposure. |
+| Course Brief editorial scope | **Current product limitation.** The six-claim catalog is intentionally narrow and does not cover difficulty, technicality, runnability, strategy, hazards, weather, nutrition, or pacing. The first Production output was grounded and concise, but its usefulness needs product review before expanding the catalog or exposing the feature widely. |
 
 ## 14. Current priorities
 
-1. Keep external evidence coverage and provenance explicit as route and provider behavior evolves; do not infer terrain or imagery where evidence is absent.
+1. Review what a Course Brief should communicate to a trail runner and decide whether the current claim vocabulary is sufficient before adding claims, broader AI behavior, or UI. Treat this as product/editorial review, not a wording-tuning engineering task.
+2. Keep external evidence coverage and provenance explicit as route and provider behavior evolves; do not infer terrain or imagery where evidence is absent.
 
 ## 15. Safe development workflow
 
