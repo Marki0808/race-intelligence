@@ -64,10 +64,11 @@ export type CourseBriefProviderMetadata = {
 export type CourseBriefProviderRequest = {
   systemInstructions: string;
   userData: string;
+  eligibleOptionIds: string[];
 };
 
 export type CourseBriefProviderResult =
-  | { ok: true; candidate: unknown; metadata: CourseBriefProviderMetadata }
+  | { ok: true; selection: unknown; metadata: CourseBriefProviderMetadata }
   | { ok: false; error: Exclude<CourseBriefErrorCode, "invalid_input" | "unsupported_generated_claim" | "insufficient_route_facts">; retryable: boolean; retryAfterSeconds: number | null; metadata: CourseBriefProviderMetadata };
 
 export interface CourseBriefProvider {

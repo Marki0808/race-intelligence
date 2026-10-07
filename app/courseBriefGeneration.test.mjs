@@ -3,7 +3,10 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { APIError, APIConnectionTimeoutError } from "openai";
 import { buildCourseBriefFactIndex } from "./courseBriefFactIndex.ts";
-import { validateCourseBriefCandidate } from "./courseBriefClaimValidation.ts";
+import {
+  enumerateEligibleCourseBriefClaimOptions,
+  validateCourseBriefCandidate,
+} from "./courseBriefClaimValidation.ts";
 import {
   MAX_COURSE_BRIEF_REQUEST_BYTES,
   courseBriefInputSchema,
@@ -12,6 +15,11 @@ import {
 import { generateCourseBrief } from "./courseBriefGeneration.ts";
 import { renderCourseBrief } from "./courseBriefOutput.ts";
 import { COURSE_BRIEF_PROMPT_VERSION, buildCourseBriefPrompt } from "./courseBriefPrompt.ts";
+import {
+  COURSE_BRIEF_SELECTION_SCHEMA_VERSION,
+  createCourseBriefSelectionSchema,
+  mapCourseBriefSelectionToCandidate,
+} from "./courseBriefSelection.ts";
 import {
   COURSE_BRIEF_MAX_OUTPUT_TOKENS,
   COURSE_BRIEF_MODEL,
@@ -82,6 +90,67 @@ function observation(claimType, supportingFactIds, extras = {}) {
 
 function candidate(observations, headlineObservationIndex = 0, schemaVersion = 1) {
   return { schemaVersion, headlineObservationIndex, observations };
+}
+
+function selectionFor(input, observations, headlineSelectionIndex = 0) {
+  const options = enumerateEligibleCourseBriefClaimOptions(input);
+  const canonical = ({ claimType, supportingFactIds, phase, direction, transition, role, terrainCategory }) =>
+    JSON.stringify({ claimType, supportingFactIds, phase, direction, transition, role, terrainCategory });
+  const selectedOptionIds = observations.map((target) => {
+    const match = options.find((option) => canonical(option) === canonical(target));
+    assert.ok(match, `No eligible option for ${JSON.stringify(target)}`);
+    return match.optionId;
+  });
+  return {
+    selectionSchemaVersion: COURSE_BRIEF_SELECTION_SCHEMA_VERSION,
+    selectedOptionIds,
+    headlineSelectionIndex,
+  };
+}
+
+function successResult(input, observations, headlineSelectionIndex = 0) {
+  return {
+    ok: true,
+    selection: selectionFor(input, observations, headlineSelectionIndex),
+    metadata: metadata(),
+  };
+}
+
+function withVerticalBins(input, gains, losses) {
+  const copy = structuredClone(input);
+  copy.derivedFacts.verticalProgression = {
+    basis: "route-dynamics-smoothed-profile",
+    early: { factId: "progression.early", gainM: gains[0], lossM: losses[0] },
+    middle: { factId: "progression.middle", gainM: gains[1], lossM: losses[1] },
+    late: { factId: "progression.late", gainM: gains[2], lossM: losses[2] },
+  };
+  return copy;
+}
+
+function withKeyMoments(input, keyMoments) {
+  const copy = structuredClone(input);
+  copy.derivedFacts.keyMoments = keyMoments;
+  return copy;
+}
+
+function withOsmSurface(input, { requestState, responseAvailability, status, coverage, categories }) {
+  const copy = structuredClone(input);
+  copy.evidenceScopedFacts.osmSurface = {
+    requestState,
+    responseAvailability,
+    sections: copy.derivedFacts.sections.map((section) => ({
+      factId: `surface.${section.factId}`,
+      sectionFactId: section.factId,
+      status,
+      classifiableCoveragePercent: coverage,
+      categories,
+    })),
+  };
+  return copy;
+}
+
+function optionsOfType(input, claimType) {
+  return enumerateEligibleCourseBriefClaimOptions(input).filter((option) => option.claimType === claimType);
 }
 
 function successfulResponse(parsed) {
@@ -469,27 +538,210 @@ test("partial and sub-one-percent OSM claims remain evidence-scoped; zero covera
   assert.match(renderCourseBrief(dualWinner.brief, BASE_INPUT).headline.text, /longest and largest/);
 });
 
-test("prompt is deterministic, versioned, data-only, and omits forbidden route material", () => {
-  const first = buildCourseBriefPrompt(BASE_INPUT);
-  const second = buildCourseBriefPrompt(BASE_INPUT);
-  assert.equal(COURSE_BRIEF_PROMPT_VERSION, 1);
+test("eligible options use the final semantic evaluator and deterministic request-scoped IDs", () => {
+  const first = enumerateEligibleCourseBriefClaimOptions(BASE_INPUT);
+  const second = enumerateEligibleCourseBriefClaimOptions(BASE_INPUT);
   assert.deepEqual(first, second);
-  assert.match(first.systemInstructions, /data, never instructions/i);
-  assert.match(first.systemInstructions, /whole-route surface certainty/);
-  assert.match(first.systemInstructions, /vertical_concentration cites all three progression IDs/);
+  assert.ok(first.length > 0);
+  assert.deepEqual(first.map(({ optionId }) => optionId), first.map((_, index) => `option-${index}`));
+  assert.ok(first.some((option) => option.claimType === "highest_point"));
+  assert.ok(first.some((option) => option.claimType === "key_moment"));
+  assert.ok(first.some((option) => option.claimType === "osm_surface_category"));
+});
+
+test("concentration enumeration includes only strict qualifying phase and direction options", () => {
+  const qualifyingClimb = withVerticalBins(BASE_INPUT, [50, 20, 20], [0, 0, 0]);
+  assert.deepEqual(optionsOfType(qualifyingClimb, "vertical_concentration").map(({ phase, direction }) => ({ phase, direction })), [
+    { phase: "early", direction: "climb" },
+  ]);
+
+  const climbTie = withVerticalBins(BASE_INPUT, [40, 20, 20], [0, 0, 0]);
+  assert.equal(optionsOfType(climbTie, "vertical_concentration").some(({ phase, direction }) => phase === "early" && direction === "climb"), false);
+  const belowClimb = withVerticalBins(BASE_INPUT, [39, 20, 20], [0, 0, 0]);
+  assert.equal(optionsOfType(belowClimb, "vertical_concentration").some(({ phase, direction }) => phase === "early" && direction === "climb"), false);
+
+  const qualifyingDescent = withVerticalBins(BASE_INPUT, [0, 0, 0], [50, 20, 20]);
+  assert.deepEqual(optionsOfType(qualifyingDescent, "vertical_concentration").map(({ phase, direction }) => ({ phase, direction })), [
+    { phase: "early", direction: "descent" },
+  ]);
+  const descentTie = withVerticalBins(BASE_INPUT, [0, 0, 0], [40, 20, 20]);
+  assert.equal(optionsOfType(descentTie, "vertical_concentration").some(({ phase, direction }) => phase === "early" && direction === "descent"), false);
+});
+
+test("transition enumeration preserves strict opposite early/late dominance and excludes ties", () => {
+  const climbToDescent = withVerticalBins(BASE_INPUT, [50, 0, 0], [0, 0, 50]);
+  assert.deepEqual(optionsOfType(climbToDescent, "vertical_transition").map(({ transition }) => transition), ["climb-to-descent"]);
+
+  const descentToClimb = withVerticalBins(BASE_INPUT, [0, 0, 50], [50, 0, 0]);
+  assert.deepEqual(optionsOfType(descentToClimb, "vertical_transition").map(({ transition }) => transition), ["descent-to-climb"]);
+
+  for (const input of [
+    withVerticalBins(BASE_INPUT, [20, 0, 0], [20, 0, 50]),
+    withVerticalBins(BASE_INPUT, [50, 0, 20], [0, 0, 20]),
+    withVerticalBins(BASE_INPUT, [50, 0, 50], [0, 0, 20]),
+  ]) {
+    assert.deepEqual(optionsOfType(input, "vertical_transition"), []);
+  }
+});
+
+test("Key Moment enumeration uses each deterministic fact direction and declared roles only", () => {
+  const input = withKeyMoments(BASE_INPUT, [
+    { factId: "key.climb.s0.fixture-climb-longest", kind: "climb", roles: ["longest"], segmentIndex: 0, startKm: 1, endKm: 3, distanceKm: 2, elevationChangeM: 90 },
+    { factId: "key.descent.s0.fixture-descent-largest", kind: "descent", roles: ["largest"], segmentIndex: 0, startKm: 4, endKm: 6, distanceKm: 2, elevationChangeM: 100 },
+    { factId: "key.climb.s0.fixture-climb-dual", kind: "climb", roles: ["longest", "largest"], segmentIndex: 0, startKm: 7, endKm: 9, distanceKm: 2, elevationChangeM: 110 },
+  ]);
+  assert.deepEqual(optionsOfType(input, "key_moment").map(({ supportingFactIds, direction, role }) => ({ factId: supportingFactIds[0], direction, role })), [
+    { factId: input.derivedFacts.keyMoments[0].factId, direction: "climb", role: "longest" },
+    { factId: input.derivedFacts.keyMoments[1].factId, direction: "descent", role: "largest" },
+    { factId: input.derivedFacts.keyMoments[2].factId, direction: "climb", role: "longest" },
+    { factId: input.derivedFacts.keyMoments[2].factId, direction: "climb", role: "largest" },
+  ]);
+});
+
+test("extrema enumeration contains only canonical highest and lowest facts with null parameters", () => {
+  const input = withKeyMoments(BASE_INPUT, [
+    { factId: "key.climb.s0.fixture-climb", kind: "climb", roles: ["longest"], segmentIndex: 0, startKm: 1, endKm: 3, distanceKm: 2, elevationChangeM: 100 },
+  ]);
+  const highest = optionsOfType(input, "highest_point");
+  const lowest = optionsOfType(input, "lowest_point");
+  assert.equal(highest.length, 1);
+  assert.equal(lowest.length, 1);
+  assert.deepEqual(highest[0], {
+    optionId: highest[0].optionId,
+    claimType: "highest_point",
+    supportingFactIds: [input.directFacts.highest.factId],
+    phase: null, direction: null, transition: null, role: null, terrainCategory: null,
+  });
+  assert.deepEqual(lowest[0], {
+    optionId: lowest[0].optionId,
+    claimType: "lowest_point",
+    supportingFactIds: [input.directFacts.lowest.factId],
+    phase: null, direction: null, transition: null, role: null, terrainCategory: null,
+  });
+  assert.equal(highest[0].supportingFactIds.includes(input.directFacts.distance.factId), false);
+});
+
+test("OSM enumeration requires received positive scoped evidence and an actually present category", () => {
+  const gravel = [{ category: "gravel", shareOfClassifiableEvidencePercent: 100 }];
+  const valid = withOsmSurface(BASE_INPUT, {
+    requestState: "received", responseAvailability: "available", status: "partial", coverage: 12, categories: gravel,
+  });
+  assert.deepEqual(optionsOfType(valid, "osm_surface_category").map(({ terrainCategory }) => terrainCategory), ["gravel"]);
+  assert.equal(optionsOfType(valid, "osm_surface_category").some(({ terrainCategory }) => terrainCategory === "paved"), false);
+
+  const casesWithoutOsm = [
+    withOsmSurface(BASE_INPUT, { requestState: "not-requested", responseAvailability: null, status: "not-requested", coverage: null, categories: [] }),
+    withOsmSurface(BASE_INPUT, { requestState: "unavailable", responseAvailability: null, status: "unavailable", coverage: null, categories: [] }),
+    withOsmSurface(BASE_INPUT, { requestState: "received", responseAvailability: "not-found", status: "missing", coverage: 0, categories: [] }),
+    withOsmSurface(BASE_INPUT, { requestState: "received", responseAvailability: "available", status: "missing", coverage: 0, categories: [] }),
+  ];
+  for (const input of casesWithoutOsm) assert.deepEqual(optionsOfType(input, "osm_surface_category"), []);
+});
+
+test("selection mapping accepts only eligible IDs and valid bounded headline references", async () => {
+  const options = enumerateEligibleCourseBriefClaimOptions(BASE_INPUT);
+  const valid = {
+    selectionSchemaVersion: 1,
+    selectedOptionIds: [options[0].optionId],
+    headlineSelectionIndex: 0,
+  };
+  const mapped = mapCourseBriefSelectionToCandidate(valid, options);
+  assert.equal(mapped.ok, true);
+  assert.deepEqual(mapped.candidate.observations[0], {
+    claimType: options[0].claimType,
+    supportingFactIds: options[0].supportingFactIds,
+    phase: options[0].phase,
+    direction: options[0].direction,
+    transition: options[0].transition,
+    role: options[0].role,
+    terrainCategory: options[0].terrainCategory,
+  });
+  for (const invalid of [
+    { ...valid, selectedOptionIds: ["unknown-option"] },
+    { ...valid, selectedOptionIds: [] },
+    { ...valid, selectedOptionIds: [options[0].optionId, options[1].optionId, options[2].optionId, options[3].optionId] },
+    { ...valid, headlineSelectionIndex: 1 },
+    { ...valid, selectionSchemaVersion: 2 },
+    { ...valid, claimType: "highest_point" },
+  ]) {
+    assert.equal(mapCourseBriefSelectionToCandidate(invalid, options).error, "invalid_provider_response");
+  }
+
+  const duplicateId = [{ ...options[0], optionId: "same" }, { ...options[1], optionId: "same" }];
+  assert.equal(mapCourseBriefSelectionToCandidate(valid, duplicateId).error, "invalid_provider_response");
+  assert.equal(createCourseBriefSelectionSchema(["one"]).safeParse(valid).success, false);
+  const repeatedSelection = await generateCourseBrief(BASE_INPUT, providerFrom({
+    ok: true,
+    selection: { ...valid, selectedOptionIds: [options[0].optionId, options[0].optionId] },
+    metadata: metadata(),
+  }));
+  assert.equal(repeatedSelection.error, "unsupported_generated_claim");
+});
+
+test("Istria eligible options contain only canonically supported deterministic claims", async () => {
+  const gpx = await readFile(new URL("../public/ISTRIA_110K_2027.gpx", import.meta.url), "utf8");
+  const analysis = analyzeGpxRoute(parseGpxText(gpx));
+  const input = buildCourseBriefInput(analysis, {
+    analysisVersion: 2,
+    osm: { requestState: "not-requested" },
+  });
+  assert.equal(validateCourseBriefInput(input).ok, true);
+  const options = enumerateEligibleCourseBriefClaimOptions(input);
+  assert.ok(options.length > 0);
+  assert.equal(optionsOfType(input, "osm_surface_category").length, 0);
+  assert.equal(optionsOfType(input, "vertical_concentration").length, 0);
+  assert.deepEqual(options.filter(({ claimType }) => claimType === "vertical_transition").map(({ transition }) => transition), ["climb-to-descent"]);
+  const keyOptions = optionsOfType(input, "key_moment");
+  assert.equal(keyOptions.length, 4);
+  assert.deepEqual(keyOptions.map(({ supportingFactIds, direction, role }) => ({ factId: supportingFactIds[0], direction, role })),
+    input.derivedFacts.keyMoments.flatMap((moment) => moment.roles.map((role) => ({ factId: moment.factId, direction: moment.kind, role }))));
+  assert.ok(keyOptions.some(({ direction }) => direction === "climb"));
+  assert.ok(keyOptions.some(({ direction }) => direction === "descent"));
+  assert.equal(optionsOfType(input, "highest_point").length, 1);
+  assert.equal(optionsOfType(input, "lowest_point").length, 1);
+  assert.equal(input.analysisVersion, 2);
+  assert.equal(input.evidenceScopedFacts.osmSurface.requestState, "not-requested");
+});
+
+test("prompt is deterministic, versioned, data-only, and contains only canonical eligible options", () => {
+  const options = enumerateEligibleCourseBriefClaimOptions(BASE_INPUT);
+  const first = buildCourseBriefPrompt(BASE_INPUT, options);
+  const second = buildCourseBriefPrompt(BASE_INPUT, options);
+  assert.equal(COURSE_BRIEF_PROMPT_VERSION, 2);
+  assert.deepEqual(first, second);
+  assert.match(first.systemInstructions, /eligibleOptions only/i);
+  assert.match(first.systemInstructions, /zero-based index/i);
+  assert.match(first.systemInstructions, /do not author or alter claim types/i);
+  assert.ok(first.systemInstructions.includes(`selectionSchemaVersion ${COURSE_BRIEF_SELECTION_SCHEMA_VERSION}`));
+  const promptData = JSON.parse(first.userData);
+  assert.deepEqual(promptData.eligibleOptions, options);
   for (const forbidden of ["latitude", "longitude", "filename", "Mapillary", "raceContext"]) assert.equal(first.userData.includes(forbidden), false);
 });
 
-test("OpenAI adapter uses mocked Responses Structured Outputs and returns safe usage metadata", async () => {
+test("request-specific selection schema binds exact eligible IDs and returns safe usage metadata", async () => {
+  const optionIds = ["option-0", "option-1"];
+  const optionSchema = createCourseBriefSelectionSchema(optionIds).toJSONSchema();
+  assert.equal(optionSchema.additionalProperties, false);
+  assert.deepEqual(optionSchema.required, ["selectionSchemaVersion", "selectedOptionIds", "headlineSelectionIndex"]);
+  assert.deepEqual(optionSchema.properties.selectedOptionIds.items.enum, optionIds);
+  assert.equal(optionSchema.properties.selectionSchemaVersion.minimum, 1);
+  assert.equal(optionSchema.properties.selectionSchemaVersion.maximum, 1);
+  assert.equal(optionSchema.properties.headlineSelectionIndex.maximum, 2);
+  assert.equal(optionSchema.properties.selectedOptionIds.maxItems, 3);
+  assert.equal(optionSchema.properties.selectedOptionIds.minItems, 1);
+
   let calls = 0;
   let request;
   const provider = new OpenAiCourseBriefProvider({
     now: (() => { let value = 100; return () => value += 12; })(),
-    responses: { async parse(value) { calls += 1; request = value; return successfulResponse(candidate([observation("highest_point", ["route.highest"])])); } },
+    responses: { async parse(value) { calls += 1; request = value; return successfulResponse({
+      selectionSchemaVersion: 1, selectedOptionIds: ["option-0"], headlineSelectionIndex: 0,
+    }); } },
   });
-  const result = await provider.generate({ systemInstructions: "instructions", userData: "{}" });
+  const result = await provider.generate({ systemInstructions: "instructions", userData: "{}", eligibleOptionIds: optionIds });
   assert.equal(calls, 1);
   assert.equal(result.ok, true);
+  assert.deepEqual(result.selection, { selectionSchemaVersion: 1, selectedOptionIds: ["option-0"], headlineSelectionIndex: 0 });
   assert.equal(result.metadata.provider, "openai");
   assert.equal(result.metadata.requestId, "req_test_01");
   assert.equal(result.metadata.usage.cachedInputTokens, 10);
@@ -503,48 +755,101 @@ test("OpenAI adapter uses mocked Responses Structured Outputs and returns safe u
   assert.equal(COURSE_BRIEF_PROVIDER_TIMEOUT_MS >= 12_000 && COURSE_BRIEF_PROVIDER_TIMEOUT_MS <= 15_000, true);
   assert.deepEqual(Object.keys(request.text.format).sort(), ["name", "schema", "strict", "type"]);
   assert.equal(request.text.format.strict, true);
-  assert.equal(request.text.format.schema.additionalProperties, false);
-  assert.deepEqual(request.text.format.schema.required, ["schemaVersion", "headlineObservationIndex", "observations"]);
-  assert.equal(request.text.format.schema.properties.schemaVersion.minimum, 1);
-  assert.equal(request.text.format.schema.properties.schemaVersion.maximum, 1);
-  assert.equal("const" in request.text.format.schema.properties.schemaVersion, false);
-  assert.equal(request.text.format.schema.properties.observations.maxItems, 3);
-  assert.deepEqual(request.text.format.schema.properties.observations.items.required, [
-    "claimType", "supportingFactIds", "phase", "direction", "transition", "role", "terrainCategory",
-  ]);
+  assert.deepEqual({ ...request.text.format.schema, $schema: optionSchema.$schema }, optionSchema);
+  assert.equal(request.text.format.name, "course_brief_selection_v1");
+});
+
+test("low-option selection catalogs handle zero, one, and two eligible IDs deterministically", async () => {
+  assert.throws(() => createCourseBriefSelectionSchema([]), /non-empty set/);
+
+  const oneOptionSchema = createCourseBriefSelectionSchema(["only-option"]);
+  assert.equal(oneOptionSchema.safeParse({
+    selectionSchemaVersion: 1,
+    selectedOptionIds: ["only-option"],
+    headlineSelectionIndex: 0,
+  }).success, true);
+
+  const twoOptionSchema = createCourseBriefSelectionSchema(["option-a", "option-b"]);
+  const twoOptionJsonSchema = twoOptionSchema.toJSONSchema();
+  assert.deepEqual(twoOptionJsonSchema.properties.selectedOptionIds.items.enum, ["option-a", "option-b"]);
+  assert.equal(twoOptionSchema.safeParse({
+    selectionSchemaVersion: 1,
+    selectedOptionIds: ["option-a"],
+    headlineSelectionIndex: 0,
+  }).success, true);
+  assert.equal(twoOptionSchema.safeParse({
+    selectionSchemaVersion: 1,
+    selectedOptionIds: ["option-a", "option-b"],
+    headlineSelectionIndex: 1,
+  }).success, true);
+  assert.equal(twoOptionSchema.safeParse({
+    selectionSchemaVersion: 1,
+    selectedOptionIds: ["option-c"],
+    headlineSelectionIndex: 0,
+  }).success, false);
+
+  const minimalInput = withOsmSurface(withKeyMoments(BASE_INPUT, []), {
+    requestState: "not-requested", responseAvailability: null, status: "not-requested", coverage: null, categories: [],
+  });
+  minimalInput.derivedFacts.verticalProgression = null;
+  const validInput = validateCourseBriefInput(minimalInput);
+  assert.equal(validInput.ok, true);
+  const minimalOptions = enumerateEligibleCourseBriefClaimOptions(validInput.input);
+  assert.deepEqual(minimalOptions.map(({ claimType }) => claimType), ["highest_point", "lowest_point"]);
+
+  let capturedRequest;
+  const generated = await generateCourseBrief(validInput.input, {
+    async generate(request) {
+      capturedRequest = request;
+      return {
+        ok: true,
+        selection: { selectionSchemaVersion: 1, selectedOptionIds: [minimalOptions[0].optionId], headlineSelectionIndex: 0 },
+        metadata: metadata(),
+      };
+    },
+  });
+  assert.equal(generated.ok, true);
+  assert.deepEqual(capturedRequest.eligibleOptionIds, minimalOptions.map(({ optionId }) => optionId));
+  // Valid CourseBriefInputV1 always includes canonical highest/lowest facts,
+  // so a zero-option generation state cannot be produced without invalid input.
 });
 
 test("OpenAI adapter handles missing key, refusal, incomplete, and missing parsed output", async () => {
-  const missing = await new OpenAiCourseBriefProvider().generate({ systemInstructions: "", userData: "{}" });
+  const ids = enumerateEligibleCourseBriefClaimOptions(BASE_INPUT).map(({ optionId }) => optionId);
+  const providerRequest = { systemInstructions: "", userData: "{}", eligibleOptionIds: ids };
+  const missing = await new OpenAiCourseBriefProvider().generate(providerRequest);
   assert.equal(missing.ok, false);
   assert.equal(missing.error, "provider_not_configured");
 
   const refusal = successfulResponse(null);
   refusal.output = [{ type: "message", content: [{ type: "refusal", refusal: "private provider text" }] }];
-  const refused = await new OpenAiCourseBriefProvider({ responses: { async parse() { return refusal; } } }).generate({ systemInstructions: "", userData: "{}" });
+  const refused = await new OpenAiCourseBriefProvider({ responses: { async parse() { return refusal; } } }).generate(providerRequest);
   assert.equal(refused.ok, false);
   assert.equal(refused.error, "refusal_or_incomplete");
   assert.equal(JSON.stringify(refused).includes("private provider text"), false);
 
-  const incomplete = successfulResponse(candidate([observation("highest_point", ["route.highest"])]));
+  const validSelection = selectionFor(BASE_INPUT, [observation("highest_point", ["route.highest"])]);
+  const incomplete = successfulResponse(validSelection);
   incomplete.status = "incomplete";
   incomplete.incomplete_details = { reason: "max_output_tokens" };
-  const partial = await new OpenAiCourseBriefProvider({ responses: { async parse() { return incomplete; } } }).generate({ systemInstructions: "", userData: "{}" });
+  const partial = await new OpenAiCourseBriefProvider({ responses: { async parse() { return incomplete; } } }).generate(providerRequest);
   assert.equal(partial.error, "refusal_or_incomplete");
 
-  const malformed = await new OpenAiCourseBriefProvider({ responses: { async parse() { return successfulResponse({ invalid: true }); } } }).generate({ systemInstructions: "", userData: "{}" });
+  const malformed = await new OpenAiCourseBriefProvider({ responses: { async parse() { return successfulResponse({ invalid: true }); } } }).generate(providerRequest);
   assert.equal(malformed.ok, true);
-  assert.equal(validateCourseBriefCandidate(malformed.candidate, BASE_INPUT).error, "invalid_provider_response");
+  assert.equal(mapCourseBriefSelectionToCandidate(malformed.selection, enumerateEligibleCourseBriefClaimOptions(BASE_INPUT)).error, "invalid_provider_response");
 });
 
 test("OpenAI adapter categorizes timeout, 429, and provider 5xx without retries", async () => {
   let calls = 0;
-  const timedOut = await new OpenAiCourseBriefProvider({ responses: { async parse() { calls += 1; throw new APIConnectionTimeoutError(); } } }).generate({ systemInstructions: "", userData: "{}" });
+  const ids = enumerateEligibleCourseBriefClaimOptions(BASE_INPUT).map(({ optionId }) => optionId);
+  const providerRequest = { systemInstructions: "", userData: "{}", eligibleOptionIds: ids };
+  const timedOut = await new OpenAiCourseBriefProvider({ responses: { async parse() { calls += 1; throw new APIConnectionTimeoutError(); } } }).generate(providerRequest);
   assert.equal(timedOut.error, "timeout");
-  const rateLimited = await new OpenAiCourseBriefProvider({ responses: { async parse() { calls += 1; throw new APIError(429, {}, "hidden", new Headers({ "retry-after": "7" })); } } }).generate({ systemInstructions: "", userData: "{}" });
+  const rateLimited = await new OpenAiCourseBriefProvider({ responses: { async parse() { calls += 1; throw new APIError(429, {}, "hidden", new Headers({ "retry-after": "7" })); } } }).generate(providerRequest);
   assert.equal(rateLimited.error, "rate_limited");
   assert.equal(rateLimited.retryAfterSeconds, 7);
-  const unavailable = await new OpenAiCourseBriefProvider({ responses: { async parse() { calls += 1; throw new APIError(503, {}, "hidden", new Headers()); } } }).generate({ systemInstructions: "", userData: "{}" });
+  const unavailable = await new OpenAiCourseBriefProvider({ responses: { async parse() { calls += 1; throw new APIError(503, {}, "hidden", new Headers()); } } }).generate(providerRequest);
   assert.equal(unavailable.error, "provider_unavailable");
   assert.equal(JSON.stringify([timedOut, rateLimited, unavailable]).includes("hidden"), false);
   assert.equal(calls, 3);
@@ -554,7 +859,7 @@ test("OpenAI adapter categorizes timeout, 429, and provider 5xx without retries"
 test("generation returns deterministic 1- and 3-claim results and emits metadata only", async () => {
   const first = observation("highest_point", ["route.highest"]);
   const third = observation("key_moment", [BASE_INPUT.derivedFacts.keyMoments[1].factId], { direction: "descent", role: "longest" });
-  const provider = providerFrom({ ok: true, candidate: candidate([first, third, observation("lowest_point", ["route.lowest"])], 1), metadata: metadata() });
+  const provider = providerFrom(successResult(BASE_INPUT, [first, third, observation("lowest_point", ["route.lowest"])], 1));
   const events = [];
   const a = await generateCourseBrief(BASE_INPUT, provider, (event) => events.push(event));
   const b = await generateCourseBrief(BASE_INPUT, provider);
@@ -566,7 +871,7 @@ test("generation returns deterministic 1- and 3-claim results and emits metadata
   assert.equal("userData" in events[0], false);
   assert.equal("providerOutput" in events[0], false);
   assert.equal("semanticRejection" in events[0], false);
-  const one = await generateCourseBrief(BASE_INPUT, providerFrom({ ok: true, candidate: candidate([first]), metadata: metadata() }));
+  const one = await generateCourseBrief(BASE_INPUT, providerFrom(successResult(BASE_INPUT, [first])));
   assert.equal(one.brief.observations.length, 1);
 });
 
@@ -581,27 +886,27 @@ test("generation rejects invalid input before provider call and maps provider/co
     (event) => providerFailureEvents.push(event));
   assert.equal(missing.error, "provider_not_configured");
   assert.equal("semanticRejection" in providerFailureEvents[0], false);
-  const allInvalid = await generateCourseBrief(BASE_INPUT, providerFrom({ ok: true, candidate: candidate([observation("highest_point", ["route.lowest"])]), metadata: metadata() }));
-  assert.equal(allInvalid.error, "unsupported_generated_claim");
+  const allInvalid = await generateCourseBrief(BASE_INPUT, providerFrom({
+    ok: true, selection: { selectionSchemaVersion: 1, selectedOptionIds: ["not-eligible"], headlineSelectionIndex: 0 }, metadata: metadata(),
+  }));
+  assert.equal(allInvalid.error, "invalid_provider_response");
 });
 
-test("generation adds safe rejection diagnostics to telemetry without logging generated content", async () => {
-  const rejected = observation("key_moment", [BASE_INPUT.derivedFacts.keyMoments[1].factId], {
-    direction: "descent", role: "largest",
-  });
+test("generation revalidates selected options and adds safe redundancy diagnostics to telemetry", async () => {
+  const moment = BASE_INPUT.derivedFacts.keyMoments[0];
+  const selected = [
+    observation("key_moment", [moment.factId], { direction: "climb", role: "longest" }),
+    observation("key_moment", [moment.factId], { direction: "climb", role: "largest" }),
+  ];
   const events = [];
-  const result = await generateCourseBrief(BASE_INPUT, providerFrom({
-    ok: true,
-    candidate: candidate([observation("highest_point", ["route.highest"]), rejected]),
-    metadata: metadata(),
-  }), (event) => events.push(event));
+  const result = await generateCourseBrief(BASE_INPUT, providerFrom(successResult(BASE_INPUT, selected)), (event) => events.push(event));
   assert.equal(result.error, "unsupported_generated_claim");
   assert.deepEqual(events[0].semanticRejection, {
     observationIndex: 1,
     claimType: "key_moment",
-    supportingFactIds: [BASE_INPUT.derivedFacts.keyMoments[1].factId],
-    parameters: { phase: null, direction: "descent", transition: null, role: "largest", terrainCategory: null },
-    code: "key_moment_role_mismatch",
+    supportingFactIds: [moment.factId],
+    parameters: { phase: null, direction: "climb", transition: null, role: "largest", terrainCategory: null },
+    code: "duplicate_key_moment",
   });
   assert.equal(events[0].providerRequestId, "req_test_01");
   assert.equal(events[0].inputTokens, 10);
@@ -616,7 +921,7 @@ test("generation adds safe rejection diagnostics to telemetry without logging ge
 test("course brief API enforces body limits and returns sanitized success/error responses", async () => {
   let calls = 0;
   const successHandler = createCourseBriefPostHandler(() => providerFrom({
-    ok: true, candidate: candidate([observation("highest_point", ["route.highest"])]), metadata: metadata(),
+    ...successResult(BASE_INPUT, [observation("highest_point", ["route.highest"])]),
   }), () => { calls += 1; });
   const tooLarge = await successHandler(new Request("http://localhost/api/course-brief", {
     method: "POST", headers: { "content-length": String(MAX_COURSE_BRIEF_REQUEST_BYTES + 1) }, body: "{}",
@@ -655,13 +960,11 @@ test("course brief API enforces body limits and returns sanitized success/error 
 
 test("API logs compact semantic rejection details but returns only the generic sanitized error", async () => {
   const telemetry = [];
-  const rejected = observation("key_moment", [BASE_INPUT.derivedFacts.keyMoments[1].factId], {
-    direction: "descent", role: "largest",
-  });
+  const moment = BASE_INPUT.derivedFacts.keyMoments[0];
+  const rejected = observation("key_moment", [moment.factId], { direction: "climb", role: "largest" });
+  const selected = [observation("key_moment", [moment.factId], { direction: "climb", role: "longest" }), rejected];
   const handler = createCourseBriefPostHandler(() => providerFrom({
-    ok: true,
-    candidate: candidate([rejected]),
-    metadata: metadata(),
+    ...successResult(BASE_INPUT, selected),
   }), (event) => telemetry.push(event));
   const response = await post(handler, JSON.stringify(BASE_INPUT));
   const body = await response.json();
@@ -672,8 +975,8 @@ test("API logs compact semantic rejection details but returns only the generic s
   assert.equal(JSON.stringify(body).includes(rejected.supportingFactIds[0]), false);
   assert.equal(JSON.stringify(body).includes("key_moment"), false);
   assert.equal(telemetry.length, 1);
-  assert.equal(telemetry[0].semanticRejection.code, "key_moment_role_mismatch");
-  assert.equal(telemetry[0].semanticRejection.observationIndex, 0);
+  assert.equal(telemetry[0].semanticRejection.code, "duplicate_key_moment");
+  assert.equal(telemetry[0].semanticRejection.observationIndex, 1);
   assert.equal(telemetry[0].category, "unsupported_generated_claim");
 });
 
@@ -681,7 +984,7 @@ test("course brief API trusts actual streamed byte count over missing or incorre
   let providerCalls = 0;
   const handler = createCourseBriefPostHandler(() => ({ async generate() {
     providerCalls += 1;
-    return { ok: true, candidate: candidate([observation("highest_point", ["route.highest"])]), metadata: metadata() };
+    return successResult(BASE_INPUT, [observation("highest_point", ["route.highest"])]);
   } }), () => undefined);
   const validBody = JSON.stringify(BASE_INPUT);
   const withoutLength = await handler(new Request("http://localhost/api/course-brief", {
@@ -710,7 +1013,7 @@ test("API rejects structural and semantic invalidity before provider work and is
   let telemetryCalls = 0;
   const handler = createCourseBriefPostHandler(() => {
     providerFactoryCalls += 1;
-    return { async generate() { providerCalls += 1; return { ok: true, candidate: candidate([observation("highest_point", ["route.highest"])]), metadata: metadata() }; } };
+    return { async generate() { providerCalls += 1; return successResult(BASE_INPUT, [observation("highest_point", ["route.highest"])]); } };
   }, () => { telemetryCalls += 1; });
   const invalid = await post(handler, JSON.stringify({ ...BASE_INPUT, extra: "x" }));
   assert.equal(invalid.status, 400);

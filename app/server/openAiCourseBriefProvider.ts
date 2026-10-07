@@ -1,7 +1,7 @@
 import OpenAI, { APIError, OpenAIError } from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
 import { ZodError } from "zod";
-import { courseBriefCandidateSchema } from "../courseBriefOutput.ts";
+import { createCourseBriefSelectionSchema } from "../courseBriefSelection.ts";
 import type {
   CourseBriefProvider,
   CourseBriefProviderMetadata,
@@ -63,7 +63,10 @@ export class OpenAiCourseBriefProvider implements CourseBriefProvider {
         reasoning: { effort: "none" },
         text: {
           verbosity: "low",
-          format: zodTextFormat(courseBriefCandidateSchema, "course_brief_candidate_v1"),
+          format: zodTextFormat(
+            createCourseBriefSelectionSchema(request.eligibleOptionIds),
+            "course_brief_selection_v1",
+          ),
         },
         max_output_tokens: COURSE_BRIEF_MAX_OUTPUT_TOKENS,
         truncation: "disabled",
@@ -75,7 +78,7 @@ export class OpenAiCourseBriefProvider implements CourseBriefProvider {
       }
       if (containsRefusal(response.output)) return providerFailure("refusal_or_incomplete", false, null, metadata);
       if (response.output_parsed === null) return providerFailure("invalid_provider_response", false, null, metadata);
-      return { ok: true, candidate: response.output_parsed, metadata };
+      return { ok: true, selection: response.output_parsed, metadata };
     } catch (error) {
       const durationMs = Math.max(0, this.now() - startedAt);
       if (isTimeoutError(error)) return providerFailure("timeout", true, null, emptyMetadata(durationMs));

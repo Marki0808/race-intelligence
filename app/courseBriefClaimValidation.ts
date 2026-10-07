@@ -11,6 +11,10 @@ export type CourseBriefClaimValidationResult =
   | { ok: false; error: "invalid_provider_response" | "insufficient_route_facts" }
   | { ok: false; error: "unsupported_generated_claim"; rejection: CourseBriefSemanticRejectionDiagnostic };
 
+export type EligibleCourseBriefClaimOption = CourseBriefObservationCandidate & {
+  optionId: string;
+};
+
 /** Validates output structure, references, claim semantics, then redundancy in that order. */
 export function validateCourseBriefCandidate(
   value: unknown,
@@ -27,7 +31,7 @@ export function validateCourseBriefCandidate(
   for (const [observationIndex, observation] of parsed.data.observations.entries()) {
     const facts = resolveCourseBriefFactIds(observation.supportingFactIds, factIndex);
     if (!facts) return { ok: false, error: "invalid_provider_response" };
-    const semanticResult = validateObservation(observation, facts, input, factIndex);
+    const semanticResult = evaluateClaimObservation(observation, facts, input, factIndex);
     if (semanticResult !== "valid") {
       if (semanticResult === "insufficient_route_facts") return { ok: false, error: semanticResult };
       return {
@@ -57,7 +61,90 @@ export function validateCourseBriefCandidate(
   return { ok: true, brief, factIndex };
 }
 
-function validateObservation(
+/** Enumerates options using the same semantic evaluator used for final validation. */
+export function enumerateEligibleCourseBriefClaimOptions(
+  input: CourseBriefInputV1,
+): EligibleCourseBriefClaimOption[] {
+  const factIndex = buildCourseBriefFactIndex(input);
+  if (!factIndex) return [];
+
+  const candidates: CourseBriefObservationCandidate[] = [];
+  const emptyParameters = {
+    phase: null,
+    direction: null,
+    transition: null,
+    role: null,
+    terrainCategory: null,
+  } as const;
+  const progressionFactIds = ["progression.early", "progression.middle", "progression.late"];
+
+  for (const phase of ["early", "middle", "late"] as const) {
+    for (const direction of ["climb", "descent"] as const) {
+      candidates.push({
+        claimType: "vertical_concentration",
+        supportingFactIds: [...progressionFactIds],
+        ...emptyParameters,
+        phase,
+        direction,
+      });
+    }
+  }
+
+  for (const transition of ["climb-to-descent", "descent-to-climb"] as const) {
+    candidates.push({
+      claimType: "vertical_transition",
+      supportingFactIds: [...progressionFactIds],
+      ...emptyParameters,
+      transition,
+    });
+  }
+
+  for (const moment of input.derivedFacts.keyMoments) {
+    for (const role of moment.roles) {
+      candidates.push({
+        claimType: "key_moment",
+        supportingFactIds: [moment.factId],
+        ...emptyParameters,
+        direction: moment.kind,
+        role,
+      });
+    }
+  }
+
+  candidates.push(
+    {
+      claimType: "highest_point",
+      supportingFactIds: [input.directFacts.highest.factId],
+      ...emptyParameters,
+    },
+    {
+      claimType: "lowest_point",
+      supportingFactIds: [input.directFacts.lowest.factId],
+      ...emptyParameters,
+    },
+  );
+
+  for (const surface of input.evidenceScopedFacts.osmSurface.sections) {
+    for (const { category } of surface.categories) {
+      candidates.push({
+        claimType: "osm_surface_category",
+        supportingFactIds: [surface.factId],
+        ...emptyParameters,
+        terrainCategory: category,
+      });
+    }
+  }
+
+  const options: EligibleCourseBriefClaimOption[] = [];
+  for (const candidate of candidates) {
+    const facts = resolveCourseBriefFactIds(candidate.supportingFactIds, factIndex);
+    if (!facts || evaluateClaimObservation(candidate, facts, input, factIndex) !== "valid") continue;
+    options.push({ optionId: `option-${options.length}`, ...candidate });
+  }
+  return options;
+}
+
+function evaluateClaimObservation(
   observation: CourseBriefObservationCandidate,
   facts: CourseBriefFactIndexEntry[],
   input: CourseBriefInputV1,

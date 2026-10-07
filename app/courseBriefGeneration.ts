@@ -1,6 +1,10 @@
-import { validateCourseBriefCandidate } from "./courseBriefClaimValidation.ts";
+import {
+  enumerateEligibleCourseBriefClaimOptions,
+  validateCourseBriefCandidate,
+} from "./courseBriefClaimValidation.ts";
 import { validateCourseBriefInput } from "./courseBriefInputValidation.ts";
 import { buildCourseBriefPrompt } from "./courseBriefPrompt.ts";
+import { mapCourseBriefSelectionToCandidate } from "./courseBriefSelection.ts";
 import { renderCourseBrief } from "./courseBriefOutput.ts";
 import type {
   CourseBriefSemanticRejectionDiagnostic,
@@ -27,10 +31,19 @@ export async function generateCourseBrief(
     emitTelemetry(telemetry, emptyTelemetry("invalid_input", false));
     return { ok: false, error: "invalid_input", retryable: false, retryAfterSeconds: null };
   }
-  const prompt = buildCourseBriefPrompt(validation.input);
+  const eligibleOptions = enumerateEligibleCourseBriefClaimOptions(validation.input);
+  if (eligibleOptions.length === 0) {
+    emitTelemetry(telemetry, emptyTelemetry("insufficient_route_facts", false));
+    return { ok: false, error: "insufficient_route_facts", retryable: false, retryAfterSeconds: null };
+  }
+  const prompt = buildCourseBriefPrompt(validation.input, eligibleOptions);
   let providerResult;
   try {
-    providerResult = await provider.generate({ systemInstructions: prompt.systemInstructions, userData: prompt.userData });
+    providerResult = await provider.generate({
+      systemInstructions: prompt.systemInstructions,
+      userData: prompt.userData,
+      eligibleOptionIds: eligibleOptions.map(({ optionId }) => optionId),
+    });
   } catch {
     const event = emptyTelemetry("provider_unavailable", true);
     emitTelemetry(telemetry, event);
@@ -46,7 +59,13 @@ export async function generateCourseBrief(
     };
   }
 
-  const claims = validateCourseBriefCandidate(providerResult.candidate, validation.input);
+  const mappedSelection = mapCourseBriefSelectionToCandidate(providerResult.selection, eligibleOptions);
+  if (!mappedSelection.ok) {
+    emitTelemetry(telemetry, telemetryFromMetadata(providerResult.metadata, mappedSelection.error, false));
+    return { ok: false, error: mappedSelection.error, retryable: false, retryAfterSeconds: null };
+  }
+
+  const claims = validateCourseBriefCandidate(mappedSelection.candidate, validation.input);
   if (!claims.ok) {
     const semanticRejection = claims.error === "unsupported_generated_claim" ? claims.rejection : undefined;
     emitTelemetry(telemetry, telemetryFromMetadata(providerResult.metadata, claims.error, false, semanticRejection));
