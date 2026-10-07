@@ -1,6 +1,6 @@
 # Race Intelligence — Project State
 
-**Last verified against:** `main` at `9d968c1a2176425a402e76f39b6cecdca6b2e8fa`
+**Last verified against:** `main` at `3a46657ab591633817466712a9b1e209797d4131`
 **Verification date:** 2026-10-07
 **Document scope:** Current repository architecture plus separately labeled Production facts supplied from completed operational verification.
 
@@ -13,7 +13,7 @@ Race Intelligence helps trail runners understand a route before running or racin
 - **Race Mode:** a curated race experience resolved from a statically registered `RaceRecordData`. It presents race/edition information, course exploration, Key Moments, Course Character, sources, and course analysis.
 - **Route Mode:** a user selects a GPX file for deterministic route analysis. Analysis runs in the browser. OSM and Mapillary evidence can also be requested for local/noncanonical uploads through the application APIs; shared-persistence eligibility is not required to request or use that evidence. For registered physical routes that meet the shared-route rules, the same evidence flow can additionally use server-side shared persistence and reuse.
 
-Current analytical outputs include distance and elevation metrics, Route Dynamics, consolidated runner-facing Route Sections, Key Route Moments, optional surface/imagery evidence, and a narrow Course Brief generated from deterministic route facts. GPX-derived outputs are distinct from external provider evidence. Race search remains statically registered rather than database-backed.
+Current analytical outputs include distance and elevation metrics, Route Dynamics, consolidated runner-facing Route Sections, Key Route Moments, optional surface/imagery evidence, and Course Brief engines. Course Brief V1 is the current API flow; a separate deterministic V2 engine is implemented but is not wired into that API. GPX-derived outputs are distinct from external provider evidence. Race search remains statically registered rather than database-backed.
 
 ## 2. End-to-end data flow
 
@@ -30,9 +30,19 @@ Current analytical outputs include distance and elevation metrics, Route Dynamic
 
 Race Mode resolves a route parameter against the static `raceRegistry`, then supplies the resolved race record to data-driven page components. Its selected edition supplies the GPX reference and descriptive race intelligence. It is separate from arbitrary GPX upload in Route Mode.
 
-### Course Brief
+### Course Phases and Narrative
 
-Course Brief is an ephemeral, server-generated summary of a caller-submitted `CourseBriefInputV1`. The checked-in deterministic builder projects Route Analysis into a compact input with three provenance groups:
+The deterministic Course Intelligence layers consume final Route Sections and remain race-agnostic.
+
+- **Course Phase V1** consumes final Route Sections and groups persistent/stable route rhythm into the closed vocabulary `climb-dominant`, `descent-dominant`, `repeated-vertical`, `low-vertical`, and `mixed`. Components are processed independently; phases and transitions do not cross disconnected GPX components. A same-character run across at least two adjacent sections is persistent; a single-section phase uses Route Dynamics stability (currently 0.58) plus route-relative support (currently at least 8% of component distance or 20% of vertical work), with a repeated-vertical pattern also recognized by the phase rules. These are algorithm configuration values, not universal distance cutoffs. `COURSE_PHASE_ALGORITHM_VERSION = 1`.
+- **Course Narrative V1** consumes Course Phases, transitions, and structural route evidence to form larger Narrative Units. Patterns include phase characters and `evolving`; units preserve component identity and may be enriched by extrema and selected Key Moments. Event tiers are deterministic. `COURSE_NARRATIVE_ALGORITHM_VERSION = 1`.
+- **Course Brief Narrative Facts V2** is a compact deterministic projection in `CourseBriefInputV2`. Its closed fact catalog is `UNIT_CHARACTER`, `STRUCTURAL_TRANSITION`, `VERTICAL_INTENSITY_EVOLUTION`, `PERSISTENT_FINISH_CHARACTER`, `ANCHOR_WITHIN_UNIT`, and `SIGNIFICANT_INTERRUPTION`. Facts are structured data, not prose; direct structural facts are separated from bounded interpretations. Interruptions are retained but are not currently selectable. Decreasing vertical-intensity evolution is implemented; increasing evolution is not. Race Context, geographic anchors, and OSM are not part of this input. `COURSE_BRIEF_INPUT_SCHEMA_VERSION = 2`; `NARRATIVE_FACT_SCHEMA_VERSION = 1`.
+
+For checked-in Istria 110K, the current analysis produces **15 Route Sections → 5 Course Phases → 4 Narrative Units → 25 Narrative Fact records, of which 14 are selectable**. The phase ranges are 0–30.45 km climb-dominant; 30.45–42.75 km descent-dominant; 42.75–86.25 km repeated-vertical; 86.25–100.55 km descent-dominant; and 100.55–110.73 km low-vertical. The four Narrative Units are 0–30.45 km climb-dominant; 30.45–42.75 km descent-dominant; 42.75–86.25 km repeated-vertical; and 86.25–110.73 km evolving. These are observed Istria outputs, not universal thresholds.
+
+### Course Brief V1 API flow
+
+The current `/api/course-brief` flow is an ephemeral, server-generated summary of a caller-submitted `CourseBriefInputV1`. The checked-in deterministic builder projects Route Analysis into a compact input with three provenance groups:
 
 - `directFacts`: route metrics, elevation extrema, and track components.
 - `derivedFacts`: smoothed vertical progression, ordered Route Sections, and structured Key Route Moments.
@@ -40,7 +50,7 @@ Course Brief is an ephemeral, server-generated summary of a caller-submitted `Co
 
 Raw GPX is not sent to the model. Coordinates, Mapillary data, filenames, user data, and race context are excluded from the Course Brief input. Its `schemaVersion` is 1.
 
-The generation flow is:
+The V1 generation flow is:
 
 ```text
 validated CourseBriefInputV1
@@ -57,11 +67,30 @@ Application code decides which claims are factually eligible. The model selects 
 
 The server-side API uses the OpenAI Responses API with `gpt-5.4-mini`, `store: false`, `maxRetries: 0`, no reasoning effort, low verbosity, and bounded output and request duration. Prompt version is 2; the internal model-selection schema version is 1. `OPENAI_API_KEY` is configured in Vercel Production and API billing was reported active; secret values do not belong in this document.
 
-`CourseBriefInputV1` remains schema version 1; the prompt version is 2, selection schema version is 1, and rendered Course Brief schema version is unchanged. `ROUTE_ANALYSIS_VERSION` remains 2. This implementation made no physical fingerprint, analysis-input fingerprint, database migration, or IndexedDB schema-version change.
+`CourseBriefInputV1` is schema version 1; its prompt version is 2, selection schema version is 1, and rendered Course Brief schema version is 1. This is the V1/API path; its OpenAI ID-selection architecture is not the V2 selector. `ROUTE_ANALYSIS_VERSION` remains 2. The Course Brief milestones made no physical fingerprint, analysis-input fingerprint, database migration, or IndexedDB schema-version change.
 
 Input validation is strict and the request body is limited to 64 KiB. Eligible-option enumeration and final semantic validation share the same evaluator; the request-specific Structured Output schema limits selections to eligible IDs. Final semantic and redundancy checks remain defense in depth, and prose is rendered deterministically. Public errors are sanitized. Telemetry excludes prompts, provider output, route values, coordinates, GPX, raw OSM/Mapillary evidence, credentials, and user data.
 
 The API accepts caller-submitted `CourseBriefInputV1` and validates it internally; it does not independently derive the facts from trusted GPX/OSM sources. This is suitable only for the current ephemeral caller-visible flow. Submitted Course Brief input must not become authoritative shared persistent/cache data without trusted server-side derivation and identity. The endpoint also lacks durable authentication/rate-limit protection suitable for unrestricted public exposure; abuse and cost controls are required before broad public exposure.
+
+### Course Brief V2 deterministic engine — Phase 3C2A
+
+The separate V2 engine in `app/courseBriefCandidates.ts` implements:
+
+```text
+CourseBriefInputV2
+→ validation
+→ deterministic candidate construction
+→ deterministic coverage/redundancy selection
+→ deterministic chronological ordering
+→ deterministic rendering
+```
+
+It does **not** call a provider and is not wired into `/api/course-brief`; the V1 API remains separate. Candidate patterns are `UNIT`, `UNIT_WITH_ANCHOR`, `TRANSITION_TO_UNIT`, `EVOLVING_FINISH`, `EVOLUTION`, and `STANDALONE_TRANSITION`. Transitions normally attach to the destination unit; a candidate has at most one structural anchor; broad evolution cannot suppress a distinctive unit story; components remain separate. Selection is deterministic. Five rendered observations is a safety ceiling, not a limit on route complexity. V2 has no separate headline; zero candidates return a typed `insufficient_route_facts` result. Rendering uses validated canonical facts only, contains no AI prose, and adds no runner advice.
+
+`COURSE_BRIEF_CANDIDATE_ALGORITHM_VERSION = 1` and `COURSE_BRIEF_OUTPUT_V2_SCHEMA_VERSION = 2`. Checked-in Istria currently yields four candidates, selects all four, omits none, and represents its traversable component. The engine's data structure is under review; its current deterministic wording is not approved final product copy. Natural-language quality and race-specific enrichment remain future work.
+
+**AI decision:** Phase 2's AI selection architecture remains implemented for Course Brief V1/proof work. Initial Course Brief V2 does not use AI for factual correctness, grouping, coverage, ordering, selection, or rendering. An optional AI stylistic/prose layer may be evaluated separately, but no decision has been made to add it. Deterministic fallback remains a product principle.
 
 ### Evidence boundary
 
@@ -161,6 +190,31 @@ The server loads a registered edition's public GPX and computes the authorized v
 
 If physical geometry matches but elevation or ordered point input differs, the request must not receive canonical shared analysis or persist arbitrary uploaded analysis. It falls back to local analysis/reuse. Future registered races/editions can extend the registry, but the registry and currently available race data remain statically defined in this version.
 
+### Phase 3D — Race Context and Verified Route Anchors
+
+**Status: DESIGN AUDIT COMPLETE; IMPLEMENTATION NOT STARTED.** The design keeps structural route intelligence race-agnostic and treats Race Context as optional edition-specific enrichment. A Route Anchor is a race/geographic fact linked to a defensible position or range on the current GPX; Race Context is not itself a positioned Route Anchor. Provenance and positional confidence are separate. The model is edition-aware and fail-closed; place identity differs from route-visit identity; disconnected components remain isolated. Official text can provide context or ordering constraints, but not exact route position. Proximity alone does not prove route visitation, and a place name does not imply terrain or difficulty.
+
+Anchors are planned to attach **after deterministic structural selection**, so they cannot change which Course Brief candidates are selected. The proposed flow is:
+
+```text
+validated V2 input
+→ candidates
+→ deterministic structural selection
+→ verified-anchor attachment
+→ structured render tokens
+→ deterministic renderer
+```
+
+`CourseBriefInputV2` and Narrative Facts remain race-agnostic. The current Istria repository data contains the 2027 race context, Buzet start and Umag finish labels, Buzet/Livade aid-station context, official source references, and checked-in GPX. **Zero named locations are independently verified in repository data as named-place-to-current-GPX-position matches suitable for deterministic Course Brief wording.** The GPX extrema have route positions, but those do not establish geographic identity; Buzet/Umag endpoint matches are not verified, Žbevnica is not verified at the GPX high point, and Motovun/Oprtalj/Grožnjan/Gomila are not positioned.
+
+Planned sequence; none of these implementation steps has started:
+
+1. **3D1:** compact edition-aware anchor schemas, strict validation, pure deterministic anchor index, and synthetic tests.
+2. **3D2:** current-edition evidence and defensible route-position matching; manually curated development evidence must remain tied to actual sources.
+3. **3D3:** deterministic attachment to already-selected Course Brief candidates.
+4. **3D4:** structured geographic render tokens and deterministic wording.
+5. Later: automatic source discovery, extraction, geocoding, and matching.
+
 ## 9. Production architecture
 
 - Next.js application with server and client components/API routes.
@@ -196,6 +250,7 @@ No credentials, connection strings, tokens, or environment values belong in this
 - The final smoke-test precheck validated the input and found 7 eligible options: 0 vertical concentrations, 1 vertical transition, 4 Key Moment role options, 1 highest point, 1 lowest point, and 0 OSM surface categories. Exactly one `POST /api/course-brief` was made; it returned HTTP 200 in 3,495 ms with no retry, OSM, Mapillary, or database request.
 - The successful response selected a climb-to-descent vertical transition, the longest climb, and the longest descent. Deterministic rendering described the early-to-late smoothed-profile transition, a climb from 2.1–9.1 km with 526 m ascent, and a descent from 31.4–36.1 km with 482 m descent. Provider telemetry reported `gpt-5.4-mini`, 2,768 input tokens, 42 output tokens, 2,810 total tokens, 0 cached input tokens, 0 reasoning tokens, 2,552 ms provider duration, success, no error category, and `retryable = false`. The provider request ID is intentionally omitted.
 - Production verification confirms the deterministic eligible-option selection, canonical claim mapping, semantic/redundancy validation, and renderer completed successfully for this request. It does not establish broader content quality or justify unrestricted public exposure. Editorial usefulness was assessed as concise and grounded, with the headline transition considered somewhat subtle.
+- No Production verification is claimed for the Phase 3C2A deterministic Course Brief V2 engine or the Phase 3D anchor design. The V2 engine is not wired to the production API.
 
 ## 11. Testing and quality gates
 
@@ -211,6 +266,8 @@ Before important changes, the project workflow uses:
 At commit `6bb91c63c5c83c72b4ba1f8b12fb280985918f54`, the reported full suite result was **218 passed, 0 failed**, including short-route regression cases. This is a point-in-time result, not a permanent suite count.
 
 For Course Brief Phase 2 commit `9d968c1a2176425a402e76f39b6cecdca6b2e8fa`, reported verification was **279 passed, 0 failed** in the full Node suite and **38 passed** focused Course Brief tests; TypeScript, ESLint, production build, and `git diff --check` passed. Direct eligible-option tests cover concentration thresholds/ties, transition dominance/ties, Key Moment direction/roles, extrema, OSM evidence eligibility/unavailable states, and request-specific selection behavior. These are point-in-time results.
+
+For Phase 3C2A commit `3a46657ab591633817466712a9b1e209797d4131` (`feat: add deterministic course brief v2 engine`), the reported focused tests were **23/23** and the full Node suite was **363/363**. TypeScript, ESLint, production build, and `git diff --check` passed. The Istria checked-in GPX evaluation is an automated/local deterministic result, not Production verification. These are point-in-time results.
 
 ## 12. Architectural invariants
 
@@ -234,6 +291,9 @@ For Course Brief Phase 2 commit `9d968c1a2176425a402e76f39b6cecdca6b2e8fa`, repo
 - Course Brief input is caller-submitted and is not independently derived server-side. It must not be trusted as shared persistent/cache data without a trusted derivation and identity path.
 - Course Brief generation is ephemeral and is not persisted or cached.
 - The Course Brief API has no durable authentication/rate-limit protection suitable for unrestricted public exposure; do not broadly expose generation before abuse and cost controls are designed.
+- Course Brief V2 is a separate deterministic engine and is not integrated into the V1 API or Production. Its current deterministic wording is not final product copy.
+- Phase 3D Race Context/Verified Route Anchor work is design-only. Current Istria data has no independently verified named-place-to-current-GPX-position matches; no geographic wording should be inferred from race labels or GPX extrema.
+- `CourseBriefInputV2` validation checks schema and internal consistency, not source authenticity. A caller-submitted V2 input can be fabricated; future caller-submitted Race Context or anchors have the same trust limitation. Persistent/shared canonical use requires trusted server derivation or trusted stored evidence. This is not solved by the Phase 3D design audit.
 
 ## 13. Known limitations and open correctness work
 
@@ -250,8 +310,8 @@ For Course Brief Phase 2 commit `9d968c1a2176425a402e76f39b6cecdca6b2e8fa`, repo
 
 ## 14. Current priorities
 
-1. Review what a Course Brief should communicate to a trail runner and decide whether the current claim vocabulary is sufficient before adding claims, broader AI behavior, or UI. Treat this as product/editorial review, not a wording-tuning engineering task.
-2. Keep external evidence coverage and provenance explicit as route and provider behavior evolves; do not infer terrain or imagery where evidence is absent.
+1. Approve the Phase 3D design and update this document before implementation begins; then implement 3D1 only: compact edition-aware anchor schemas, strict validation, a pure deterministic index, and synthetic tests.
+2. Keep external evidence coverage and provenance explicit as route and provider behavior evolves; do not infer terrain, imagery, or geographic position where evidence is absent.
 
 ## 15. Safe development workflow
 
