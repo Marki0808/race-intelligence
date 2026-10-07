@@ -189,7 +189,9 @@ test("opposite-direction concentration and transition claims are supported when 
 });
 
 test("claim validation fails closed for missing IDs, wrong fact kinds, invalid parameters, and bad headline indexes", () => {
-  assert.equal(validateCourseBriefCandidate(candidate([observation("highest_point", ["route.absent"])]), BASE_INPUT).error, "invalid_provider_response");
+  const unknownFact = validateCourseBriefCandidate(candidate([observation("highest_point", ["route.absent"])]), BASE_INPUT);
+  assert.equal(unknownFact.error, "invalid_provider_response");
+  assert.equal("rejection" in unknownFact, false);
   assert.equal(validateCourseBriefCandidate(candidate([observation("highest_point", ["route.distance"])]), BASE_INPUT).error, "unsupported_generated_claim");
   assert.equal(validateCourseBriefCandidate(candidate([observation("vertical_concentration", PROGRESSION_IDS, { phase: "late", direction: "climb" })]), BASE_INPUT).error, "unsupported_generated_claim");
   assert.equal(validateCourseBriefCandidate(candidate([observation("vertical_transition", PROGRESSION_IDS, { transition: "descent-to-climb" })]), BASE_INPUT).error, "unsupported_generated_claim");
@@ -308,6 +310,137 @@ test("vertical claim validation rejects concentration ties and flat or tied tran
   } } });
   assert.equal(validateCourseBriefCandidate(candidate([observation("vertical_transition", PROGRESSION_IDS,
     { transition: "climb-to-descent" })]), tiedLateDirection).error, "unsupported_generated_claim");
+});
+
+test("semantic rejection diagnostics distinguish claim rule failures without changing public categories", () => {
+  const tiedConcentration = makeInput({ derivedFacts: { ...BASE_INPUT.derivedFacts, verticalProgression: {
+    basis: "route-dynamics-smoothed-profile",
+    early: { factId: "progression.early", gainM: 500, lossM: 0 },
+    middle: { factId: "progression.middle", gainM: 250, lossM: 0 },
+    late: { factId: "progression.late", gainM: 250, lossM: 0 },
+  } } });
+  const concentration = validateCourseBriefCandidate(candidate([
+    observation("vertical_concentration", PROGRESSION_IDS, { phase: "early", direction: "climb" }),
+  ]), tiedConcentration);
+  assert.equal(concentration.error, "unsupported_generated_claim");
+  assert.equal(concentration.rejection.code, "vertical_concentration_threshold_failed");
+  assert.equal(validateCourseBriefCandidate(candidate([
+    observation("vertical_concentration", PROGRESSION_IDS, { direction: "climb" }),
+  ]), BASE_INPUT).rejection.code, "vertical_concentration_invalid_parameters");
+  assert.equal(validateCourseBriefCandidate(candidate([
+    observation("vertical_concentration", ["route.highest", PROGRESSION_IDS[1], PROGRESSION_IDS[2]], { phase: "early", direction: "climb" }),
+  ]), BASE_INPUT).rejection.code, "vertical_concentration_invalid_facts");
+
+  const transition = validateCourseBriefCandidate(candidate([
+    observation("vertical_transition", PROGRESSION_IDS, { transition: "descent-to-climb" }),
+  ]), BASE_INPUT);
+  assert.equal(transition.rejection.code, "vertical_transition_direction_failed");
+  assert.equal(validateCourseBriefCandidate(candidate([
+    observation("vertical_transition", PROGRESSION_IDS, { phase: "early", transition: "climb-to-descent" }),
+  ]), BASE_INPUT).rejection.code, "vertical_transition_invalid_parameters");
+  assert.equal(validateCourseBriefCandidate(candidate([
+    observation("vertical_transition", ["route.highest", PROGRESSION_IDS[1], PROGRESSION_IDS[2]], { transition: "climb-to-descent" }),
+  ]), BASE_INPUT).rejection.code, "vertical_transition_invalid_facts");
+
+  const descentId = BASE_INPUT.derivedFacts.keyMoments[1].factId;
+  assert.equal(validateCourseBriefCandidate(candidate([
+    observation("key_moment", [descentId], { phase: "early", direction: "descent", role: "longest" }),
+  ]), BASE_INPUT).rejection.code, "key_moment_invalid_parameters");
+  assert.equal(validateCourseBriefCandidate(candidate([
+    observation("key_moment", ["route.highest"], { direction: "climb", role: "longest" }),
+  ]), BASE_INPUT).rejection.code, "key_moment_invalid_fact");
+  const keyDirection = validateCourseBriefCandidate(candidate([
+    observation("key_moment", [descentId], { direction: "climb", role: "longest" }),
+  ]), BASE_INPUT);
+  assert.equal(keyDirection.rejection.code, "key_moment_direction_mismatch");
+  const keyRole = validateCourseBriefCandidate(candidate([
+    observation("key_moment", [descentId], { direction: "descent", role: "largest" }),
+  ]), BASE_INPUT);
+  assert.equal(keyRole.rejection.code, "key_moment_role_mismatch");
+
+  const wrongHighestFact = validateCourseBriefCandidate(candidate([
+    observation("highest_point", ["route.lowest"]),
+  ]), BASE_INPUT);
+  assert.equal(wrongHighestFact.rejection.code, "highest_point_invalid_fact");
+  const invalidHighestParameters = validateCourseBriefCandidate(candidate([
+    observation("highest_point", ["route.highest"], { direction: "climb" }),
+  ]), BASE_INPUT);
+  assert.equal(invalidHighestParameters.rejection.code, "highest_point_invalid_parameters");
+  assert.equal(validateCourseBriefCandidate(candidate([
+    observation("lowest_point", ["route.highest"]),
+  ]), BASE_INPUT).rejection.code, "lowest_point_invalid_fact");
+  assert.equal(validateCourseBriefCandidate(candidate([
+    observation("lowest_point", ["route.lowest"], { role: "largest" }),
+  ]), BASE_INPUT).rejection.code, "lowest_point_invalid_parameters");
+
+  const surfaceId = BASE_INPUT.evidenceScopedFacts.osmSurface.sections[0].factId;
+  const wrongOsmFact = validateCourseBriefCandidate(candidate([
+    observation("osm_surface_category", ["route.distance"], { terrainCategory: "gravel" }),
+  ]), BASE_INPUT);
+  assert.equal(wrongOsmFact.rejection.code, "osm_surface_invalid_fact");
+  const invalidOsmParameters = validateCourseBriefCandidate(candidate([
+    observation("osm_surface_category", [surfaceId], { terrainCategory: "gravel", direction: "climb" }),
+  ]), BASE_INPUT);
+  assert.equal(invalidOsmParameters.rejection.code, "osm_surface_invalid_parameters");
+  const wrongOsmCategory = validateCourseBriefCandidate(candidate([
+    observation("osm_surface_category", [surfaceId], { terrainCategory: "paved" }),
+  ]), BASE_INPUT);
+  assert.equal(wrongOsmCategory.error, "insufficient_route_facts");
+  assert.equal("rejection" in wrongOsmCategory, false,
+    "category absence remains insufficient route evidence under existing public semantics");
+
+  const noOsm = makeInput({ evidenceScopedFacts: { osmSurface: {
+    requestState: "not-requested", responseAvailability: null,
+    sections: [{ ...BASE_INPUT.evidenceScopedFacts.osmSurface.sections[0], status: "not-requested", classifiableCoveragePercent: null, categories: [] }],
+  } } });
+  const unavailableOsmClaim = validateCourseBriefCandidate(candidate([
+    observation("osm_surface_category", [surfaceId], { terrainCategory: "gravel" }),
+  ]), noOsm);
+  assert.equal(unavailableOsmClaim.error, "insufficient_route_facts");
+  assert.equal("rejection" in unavailableOsmClaim, false,
+    "existing insufficient-evidence behavior is not mislabeled as unsupported generated semantics");
+});
+
+test("semantic diagnostics identify the first rejected observation with compact normalized metadata", () => {
+  const validHighest = observation("highest_point", ["route.highest"]);
+  const rejectedKeyMoment = observation("key_moment", [BASE_INPUT.derivedFacts.keyMoments[1].factId], {
+    direction: "descent", role: "largest",
+  });
+  const result = validateCourseBriefCandidate(candidate([validHighest, rejectedKeyMoment]), BASE_INPUT);
+  assert.equal(result.error, "unsupported_generated_claim");
+  assert.deepEqual(result.rejection, {
+    observationIndex: 1,
+    claimType: "key_moment",
+    supportingFactIds: [BASE_INPUT.derivedFacts.keyMoments[1].factId],
+    parameters: { phase: null, direction: "descent", transition: null, role: "largest", terrainCategory: null },
+    code: "key_moment_role_mismatch",
+  });
+});
+
+test("redundant observations report the later observation and the specific redundancy rule", () => {
+  const highest = observation("highest_point", ["route.highest"]);
+  const duplicateClaim = validateCourseBriefCandidate(candidate([highest, { ...highest }]), BASE_INPUT);
+  assert.equal(duplicateClaim.rejection.code, "duplicate_claim");
+  assert.equal(duplicateClaim.rejection.observationIndex, 1);
+
+  const key = BASE_INPUT.derivedFacts.keyMoments[0];
+  const duplicateKey = validateCourseBriefCandidate(candidate([
+    observation("key_moment", [key.factId], { direction: "climb", role: "longest" }),
+    observation("key_moment", [key.factId], { direction: "climb", role: "largest" }),
+  ]), BASE_INPUT);
+  assert.equal(duplicateKey.rejection.code, "duplicate_key_moment");
+  assert.equal(duplicateKey.rejection.observationIndex, 1);
+
+  const surfaceId = BASE_INPUT.evidenceScopedFacts.osmSurface.sections[0].factId;
+  const surface = observation("osm_surface_category", [surfaceId], { terrainCategory: "gravel" });
+  const duplicateOsm = validateCourseBriefCandidate(candidate([surface, { ...surface }]), BASE_INPUT);
+  assert.equal(duplicateOsm.rejection.code, "duplicate_osm_claim");
+  assert.equal(duplicateOsm.rejection.observationIndex, 1);
+
+  const transition = observation("vertical_transition", PROGRESSION_IDS, { transition: "climb-to-descent" });
+  const duplicateTransition = validateCourseBriefCandidate(candidate([transition, { ...transition }]), BASE_INPUT);
+  assert.equal(duplicateTransition.rejection.code, "duplicate_vertical_transition");
+  assert.equal(duplicateTransition.rejection.observationIndex, 1);
 });
 
 test("partial and sub-one-percent OSM claims remain evidence-scoped; zero coverage cannot support a claim", () => {
@@ -432,6 +565,7 @@ test("generation returns deterministic 1- and 3-claim results and emits metadata
   assert.equal(events[0].inputTokens, 10);
   assert.equal("userData" in events[0], false);
   assert.equal("providerOutput" in events[0], false);
+  assert.equal("semanticRejection" in events[0], false);
   const one = await generateCourseBrief(BASE_INPUT, providerFrom({ ok: true, candidate: candidate([first]), metadata: metadata() }));
   assert.equal(one.brief.observations.length, 1);
 });
@@ -442,10 +576,41 @@ test("generation rejects invalid input before provider call and maps provider/co
   assert.equal((await generateCourseBrief({ ...BASE_INPUT, schemaVersion: 2 }, unusedProvider)).error, "invalid_input");
   assert.equal(calls, 0);
   assert.equal((await generateCourseBrief(BASE_INPUT, unusedProvider)).error, "provider_unavailable");
-  const missing = await generateCourseBrief(BASE_INPUT, providerFrom({ ok: false, error: "provider_not_configured", retryable: false, retryAfterSeconds: null, metadata: metadata() }));
+  const providerFailureEvents = [];
+  const missing = await generateCourseBrief(BASE_INPUT, providerFrom({ ok: false, error: "provider_not_configured", retryable: false, retryAfterSeconds: null, metadata: metadata() }),
+    (event) => providerFailureEvents.push(event));
   assert.equal(missing.error, "provider_not_configured");
+  assert.equal("semanticRejection" in providerFailureEvents[0], false);
   const allInvalid = await generateCourseBrief(BASE_INPUT, providerFrom({ ok: true, candidate: candidate([observation("highest_point", ["route.lowest"])]), metadata: metadata() }));
   assert.equal(allInvalid.error, "unsupported_generated_claim");
+});
+
+test("generation adds safe rejection diagnostics to telemetry without logging generated content", async () => {
+  const rejected = observation("key_moment", [BASE_INPUT.derivedFacts.keyMoments[1].factId], {
+    direction: "descent", role: "largest",
+  });
+  const events = [];
+  const result = await generateCourseBrief(BASE_INPUT, providerFrom({
+    ok: true,
+    candidate: candidate([observation("highest_point", ["route.highest"]), rejected]),
+    metadata: metadata(),
+  }), (event) => events.push(event));
+  assert.equal(result.error, "unsupported_generated_claim");
+  assert.deepEqual(events[0].semanticRejection, {
+    observationIndex: 1,
+    claimType: "key_moment",
+    supportingFactIds: [BASE_INPUT.derivedFacts.keyMoments[1].factId],
+    parameters: { phase: null, direction: "descent", transition: null, role: "largest", terrainCategory: null },
+    code: "key_moment_role_mismatch",
+  });
+  assert.equal(events[0].providerRequestId, "req_test_01");
+  assert.equal(events[0].inputTokens, 10);
+  assert.equal(events[0].outputTokens, 8);
+  assert.equal(events[0].durationMs, 12);
+  for (const privateField of ["prompt", "userData", "providerOutput", "rendered", "routeFacts", "OPENAI_API_KEY"]) {
+    assert.equal(privateField in events[0], false, privateField);
+  }
+  assert.equal(JSON.stringify(events[0]).includes("private provider text"), false);
 });
 
 test("course brief API enforces body limits and returns sanitized success/error responses", async () => {
@@ -486,6 +651,30 @@ test("course brief API enforces body limits and returns sanitized success/error 
   assert.deepEqual(limitedBody, { error: "rate_limited", retryable: true });
   assert.equal(JSON.stringify(limitedBody).includes("hidden"), false);
   assert.equal(calls, 1);
+});
+
+test("API logs compact semantic rejection details but returns only the generic sanitized error", async () => {
+  const telemetry = [];
+  const rejected = observation("key_moment", [BASE_INPUT.derivedFacts.keyMoments[1].factId], {
+    direction: "descent", role: "largest",
+  });
+  const handler = createCourseBriefPostHandler(() => providerFrom({
+    ok: true,
+    candidate: candidate([rejected]),
+    metadata: metadata(),
+  }), (event) => telemetry.push(event));
+  const response = await post(handler, JSON.stringify(BASE_INPUT));
+  const body = await response.json();
+  assert.equal(response.status, 502);
+  assert.deepEqual(body, { error: "unsupported_generated_claim", retryable: false });
+  assert.equal(JSON.stringify(body).includes("semanticRejection"), false);
+  assert.equal(JSON.stringify(body).includes("key_moment_role_mismatch"), false);
+  assert.equal(JSON.stringify(body).includes(rejected.supportingFactIds[0]), false);
+  assert.equal(JSON.stringify(body).includes("key_moment"), false);
+  assert.equal(telemetry.length, 1);
+  assert.equal(telemetry[0].semanticRejection.code, "key_moment_role_mismatch");
+  assert.equal(telemetry[0].semanticRejection.observationIndex, 0);
+  assert.equal(telemetry[0].category, "unsupported_generated_claim");
 });
 
 test("course brief API trusts actual streamed byte count over missing or incorrect Content-Length", async () => {

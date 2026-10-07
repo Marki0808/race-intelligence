@@ -2,7 +2,12 @@ import { validateCourseBriefCandidate } from "./courseBriefClaimValidation.ts";
 import { validateCourseBriefInput } from "./courseBriefInputValidation.ts";
 import { buildCourseBriefPrompt } from "./courseBriefPrompt.ts";
 import { renderCourseBrief } from "./courseBriefOutput.ts";
-import type { CourseBriefTelemetry, CourseBriefProvider, CourseBriefProviderMetadata } from "./server/courseBriefProvider.ts";
+import type {
+  CourseBriefSemanticRejectionDiagnostic,
+  CourseBriefTelemetry,
+  CourseBriefProvider,
+  CourseBriefProviderMetadata,
+} from "./server/courseBriefProvider.ts";
 import type { CourseBriefErrorCode } from "./server/courseBriefProvider.ts";
 
 export type CourseBriefGenerationResult =
@@ -43,7 +48,8 @@ export async function generateCourseBrief(
 
   const claims = validateCourseBriefCandidate(providerResult.candidate, validation.input);
   if (!claims.ok) {
-    emitTelemetry(telemetry, telemetryFromMetadata(providerResult.metadata, claims.error, false));
+    const semanticRejection = claims.error === "unsupported_generated_claim" ? claims.rejection : undefined;
+    emitTelemetry(telemetry, telemetryFromMetadata(providerResult.metadata, claims.error, false, semanticRejection));
     return { ok: false, error: claims.error, retryable: false, retryAfterSeconds: null };
   }
   const rendered = renderCourseBrief(claims.brief, validation.input);
@@ -55,6 +61,7 @@ function telemetryFromMetadata(
   metadata: CourseBriefProviderMetadata,
   category: CourseBriefErrorCode | null,
   retryable: boolean,
+  semanticRejection?: CourseBriefSemanticRejectionDiagnostic,
 ): CourseBriefTelemetry {
   return {
     model: metadata.model,
@@ -68,6 +75,7 @@ function telemetryFromMetadata(
     outcome: category === null ? "success" : "failure",
     category,
     retryable,
+    ...(semanticRejection ? { semanticRejection } : {}),
   };
 }
 
