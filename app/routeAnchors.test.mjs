@@ -151,7 +151,7 @@ function assertInvalidWith(specs, expectedCode, options) {
 test("schema versions and generic fixture identity are explicit", () => {
   assert.equal(RACE_CONTEXT_SCHEMA_VERSION, 1);
   assert.equal(ROUTE_ANCHOR_SCHEMA_VERSION, 1);
-  assert.equal(ROUTE_ANCHOR_EVIDENCE_SCHEMA_VERSION, 1);
+  assert.equal(ROUTE_ANCHOR_EVIDENCE_SCHEMA_VERSION, 2);
   assert.equal(ROUTE_ANCHOR_INDEX_ALGORITHM_VERSION, 1);
   assert.equal(validateRouteAnchorDataset(makeRecord()).success, true);
 });

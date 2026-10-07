@@ -3,7 +3,9 @@ import type { EvidenceProvenance } from "./geoEnrichment";
 
 export const RACE_CONTEXT_SCHEMA_VERSION = 1 as const;
 export const ROUTE_ANCHOR_SCHEMA_VERSION = 1 as const;
-export const ROUTE_ANCHOR_EVIDENCE_SCHEMA_VERSION = 1 as const;
+// Evidence v2 adds explicit geographic-coordinate semantics and route-kilometer
+// facts. The anchor/context/index contracts remain independently versioned.
+export const ROUTE_ANCHOR_EVIDENCE_SCHEMA_VERSION = 2 as const;
 export const ROUTE_ANCHOR_INDEX_ALGORITHM_VERSION = 1 as const;
 
 export const ROUTE_ANCHOR_TYPES = ["START", "FINISH", "NAMED_LOCATION", "AID_STATION"] as const;
@@ -27,6 +29,12 @@ export const ROUTE_ANCHOR_VERIFICATION_METHODS = [
   "manual-curation",
   "historical-reference",
   "unknown",
+] as const;
+export const ROUTE_ANCHOR_COORDINATE_SEMANTICS = [
+  "event-point",
+  "route-point",
+  "place-reference-point",
+  "feature-point",
 ] as const;
 
 const idSchema = z.string().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
@@ -93,7 +101,7 @@ export const routeAnchorRouteBoundsSchema = z.object({
   components: z.array(routeBoundsComponentSchema).max(128),
 }).strict();
 
-export const routeAnchorEvidenceV1Schema = z.object({
+export const routeAnchorEvidenceV2Schema = z.object({
   schemaVersion: z.literal(ROUTE_ANCHOR_EVIDENCE_SCHEMA_VERSION),
   evidenceId: idSchema,
   raceId: idSchema,
@@ -104,6 +112,19 @@ export const routeAnchorEvidenceV1Schema = z.object({
   provenance: z.enum(ROUTE_ANCHOR_PROVENANCE),
   verificationMethod: z.enum(ROUTE_ANCHOR_VERIFICATION_METHODS),
   positionFact: positionSchema.optional(),
+  routeKmFact: z.object({
+    distanceKm: finiteKmSchema,
+    componentIndex: componentIndexSchema.optional(),
+    convention: z.literal("traversed-distance-from-route-start"),
+  }).strict().optional(),
+  coordinateFact: z.object({
+    latitude: z.number().finite().min(-90).max(90),
+    longitude: z.number().finite().min(-180).max(180),
+    semantics: z.enum(ROUTE_ANCHOR_COORDINATE_SEMANTICS),
+    componentIndex: componentIndexSchema.optional(),
+  }).strict().optional(),
+  visitId: idSchema.optional(),
+  derivedFromEvidenceIds: z.array(idSchema).min(1).max(64).optional(),
   orderingFact: z.object({ beforeVisitId: idSchema, afterVisitId: idSchema }).strict().optional(),
   measuredOffsetM: z.number().finite().min(0).max(1_000_000).optional(),
   matchingPolicyVersion: z.number().int().min(1).max(10_000).optional(),
@@ -124,7 +145,7 @@ const routeAnchorV1Schema = z.object({
   evidenceIds: z.array(idSchema).min(1).max(64),
 }).strict();
 
-const orderingConstraintSchema = z.object({
+export const routeAnchorOrderingConstraintSchema = z.object({
   beforeVisitId: idSchema,
   afterVisitId: idSchema,
   evidenceIds: z.array(idSchema).min(1).max(64),
@@ -135,19 +156,21 @@ export const routeAnchorDatasetV1Schema = z.object({
   context: raceContextV1Schema,
   routeBounds: routeAnchorRouteBoundsSchema,
   anchors: z.array(routeAnchorV1Schema).max(10_000),
-  evidence: z.array(routeAnchorEvidenceV1Schema).max(20_000),
-  orderingConstraints: z.array(orderingConstraintSchema).max(20_000),
+  evidence: z.array(routeAnchorEvidenceV2Schema).max(20_000),
+  orderingConstraints: z.array(routeAnchorOrderingConstraintSchema).max(20_000),
 }).strict();
 
 export type RouteAnchorType = typeof ROUTE_ANCHOR_TYPES[number];
 export type RouteAnchorProvenance = typeof ROUTE_ANCHOR_PROVENANCE[number];
 export type RouteAnchorPositionConfidence = typeof ROUTE_ANCHOR_POSITION_CONFIDENCE[number];
 export type RouteAnchorPosition = z.infer<typeof positionSchema>;
-export type RouteAnchorEvidenceV1 = z.infer<typeof routeAnchorEvidenceV1Schema>;
+export type RouteAnchorEvidenceV2 = z.infer<typeof routeAnchorEvidenceV2Schema>;
+export type RouteAnchorCoordinateSemantics = typeof ROUTE_ANCHOR_COORDINATE_SEMANTICS[number];
 export type RaceContextV1 = z.infer<typeof raceContextV1Schema>;
 export type RouteAnchorRouteBounds = z.infer<typeof routeAnchorRouteBoundsSchema>;
 export type RouteAnchorDatasetV1 = z.infer<typeof routeAnchorDatasetV1Schema>;
 export type RouteAnchorV1 = RouteAnchorDatasetV1["anchors"][number];
+export type RouteAnchorOrderingConstraint = z.infer<typeof routeAnchorOrderingConstraintSchema>;
 
 export type RouteAnchorValidationIssue = {
   code: string;
@@ -273,11 +296,26 @@ export function validateRouteAnchorDataset(value: unknown): RouteAnchorValidatio
     } else if (evidence.sourceEditionYear !== null && evidence.sourceEditionYear !== context.editionYear) {
       add("evidence.source-edition-misuse", `${path}.sourceEditionYear`, "Only previous-edition evidence may refer to a different edition.");
     }
+    if (evidence.routeKmFact !== undefined && evidence.evidenceKind !== "official-structured-position") {
+      add("evidence.invalid-route-km-kind", `${path}.routeKmFact`, "Direct route kilometers require official structured position evidence.");
+    }
+    if (evidence.coordinateFact !== undefined
+      && !["official-map-or-coordinate", "geographic-match", "curated-verification"].includes(evidence.evidenceKind)) {
+      add("evidence.invalid-coordinate-kind", `${path}.coordinateFact`, "Coordinate facts require coordinate or matching evidence kinds.");
+    }
+    if (evidence.derivedFromEvidenceIds?.includes(evidence.evidenceId)) {
+      add("evidence.self-derived", `${path}.derivedFromEvidenceIds`, "Evidence cannot derive from itself.");
+    }
+    for (const sourceEvidenceId of evidence.derivedFromEvidenceIds ?? []) {
+      if (!evidenceById.has(sourceEvidenceId)) {
+        add("evidence.missing-derived-source", `${path}.derivedFromEvidenceIds`, "Derived evidence must reference existing source evidence.");
+      }
+    }
   }
 
   for (let index = 0; index < context.locations.length; index += 1) {
     const location = context.locations[index];
-    const linkedLocationEvidence = location.evidenceIds.map((evidenceId) => evidenceById.get(evidenceId)).filter((entry): entry is RouteAnchorEvidenceV1 => entry !== undefined);
+    const linkedLocationEvidence = location.evidenceIds.map((evidenceId) => evidenceById.get(evidenceId)).filter((entry): entry is RouteAnchorEvidenceV2 => entry !== undefined);
     if (linkedLocationEvidence.length > 0 && linkedLocationEvidence.every((entry) => entry.provenance === "previous-edition")
       && location.sourceEditionYear === null) {
       add("context.historical-source-unmarked", `context.locations.${index}.sourceEditionYear`, "Context supported only by previous-edition evidence must retain its source edition.");
@@ -373,7 +411,7 @@ export function validateRouteAnchorDataset(value: unknown): RouteAnchorValidatio
       }
     }
 
-    const linkedEvidence: RouteAnchorEvidenceV1[] = [];
+    const linkedEvidence: RouteAnchorEvidenceV2[] = [];
     for (const evidenceId of anchor.evidenceIds) {
       const evidence = evidenceById.get(evidenceId);
       if (!evidence) add("anchor.missing-evidence", `${path}.evidenceIds`, `Evidence '${evidenceId}' does not exist.`);
