@@ -1,7 +1,7 @@
 # Race Intelligence — Project State
 
-**Last verified against:** `main` at `3a46657ab591633817466712a9b1e209797d4131`
-**Verification date:** 2026-10-07
+**Last verified against:** `main` at `9102d82b81c8454c14834ccbb8c439e9ea736140`
+**Verification date:** 2026-10-09
 **Document scope:** Current repository architecture plus separately labeled Production facts supplied from completed operational verification.
 
 Sections 1–9 and 11–16 describe repository-derived implementation and status. Section 10 records operational facts from Production verification; it does not imply that every code path or external-provider persistence behavior was verified in Production.
@@ -192,28 +192,27 @@ If physical geometry matches but elevation or ordered point input differs, the r
 
 ### Phase 3D — Race Context and Verified Route Anchors
 
-**Status: DESIGN AUDIT COMPLETE; IMPLEMENTATION NOT STARTED.** The design keeps structural route intelligence race-agnostic and treats Race Context as optional edition-specific enrichment. A Route Anchor is a race/geographic fact linked to a defensible position or range on the current GPX; Race Context is not itself a positioned Route Anchor. Provenance and positional confidence are separate. The model is edition-aware and fail-closed; place identity differs from route-visit identity; disconnected components remain isolated. Official text can provide context or ordering constraints, but not exact route position. Proximity alone does not prove route visitation, and a place name does not imply terrain or difficulty.
+**Status: 3D1 and 3D2 IMPLEMENTED AND COMMITTED; 3D3 DESIGN AUDIT ACCEPTED, IMPLEMENTATION NOT STARTED.** Phase 3D1 was committed as `6ee9330adefb834ff40fff521cbf92d11cc3d93a` (`feat: add verified route anchor foundation`). Phase 3D2 was committed as `9102d82b81c8454c14834ccbb8c439e9ea736140` (`feat: add deterministic route anchor matching`). These are repository implementation facts; no Production verification of these anchor capabilities is claimed.
 
-Anchors are planned to attach **after deterministic structural selection**, so they cannot change which Course Brief candidates are selected. The proposed flow is:
+**Phase 3D1 — Route Anchor foundation.** `app/routeAnchors.ts` defines edition-aware `RaceContextV1`, `RouteAnchorV1`, evidence, route bounds, ordering constraints, validation, and a deterministic index. Race Context describes race/edition locations; a Route Anchor associates a context location/place with a route visit and a position when supported. Place identity (`placeId`) and visit identity (`visitId`) are distinct; repeated visits require distinct visit IDs. Anchor types are START, FINISH, NAMED_LOCATION, and AID_STATION. Provenance and positional confidence are separate fields. Provenance includes official, GPX-derived, previous-edition, estimated, and unknown; confidence is exact-direct, verified-match, approximate, context-only, or conflicting.
 
-```text
-validated V2 input
-→ candidates
-→ deterministic structural selection
-→ verified-anchor attachment
-→ structured render tokens
-→ deterministic renderer
-```
+Positions are component-scoped POINT, RANGE, ORDERED_ONLY, or UNPOSITIONED values. Coordinate evidence states whether a coordinate represents an event point, route point, place reference, or feature point. The validator checks edition/source references, evidence support, component/range bounds, endpoint consistency, unique anchor and visit IDs, and ordering consistency. Ordering constraints retain evidence-backed visit order as relational metadata; they do not create coordinates, kilometer positions, route distance, geometric continuity, or cross-component ownership. The pure index scopes queries to a component, uses half-open point ranges `[startKm, endKm)`, includes a terminal FINISH at the component endpoint, and uses strict interval overlap for ranges. Its position-safety helper distinguishes exact positions from qualified approximate positions; callers must still apply their own confidence policy.
 
-`CourseBriefInputV2` and Narrative Facts remain race-agnostic. The current Istria repository data contains the 2027 race context, Buzet start and Umag finish labels, Buzet/Livade aid-station context, official source references, and checked-in GPX. **Zero named locations are independently verified in repository data as named-place-to-current-GPX-position matches suitable for deterministic Course Brief wording.** The GPX extrema have route positions, but those do not establish geographic identity; Buzet/Umag endpoint matches are not verified, Žbevnica is not verified at the GPX high point, and Motovun/Oprtalj/Grožnjan/Gomila are not positioned.
+**Phase 3D2 — evidence and deterministic matching.** Evidence Schema V2 adds explicit coordinate semantics and route-kilometer facts. Matching algorithm version is 1 and match-policy version is 1. `app/routeAnchorMatching.ts` validates its input, projects coordinates independently onto traversed great-circle route segments, and retains component/visit identity. It does not construct connectors across disconnected components. Direct route-kilometer evidence is accepted only when in bounds and unambiguous; coordinate projections retain candidate visits so loops, out-and-back routes, and repeated passes can be reported ambiguous. Evidence-backed ordering can disambiguate plausible visits when spatial candidates already exist; ordering alone produces no position. Contradictions and endpoint mismatches fail closed and are returned as diagnostics rather than positioned anchors.
 
-Planned sequence; none of these implementation steps has started:
+START and FINISH positions are checked against the first and last traversed component endpoints. Coordinate semantics and generic offset policies constrain matching: route-point 30 m, event-point 100 m, feature-point 75 m, and place-reference-point 250 m; route-kilometer/coordinate agreement uses 0.1 km. A place-reference point can produce only an approximate named-location match; it cannot establish a START, FINISH, or AID_STATION. These are implementation policy thresholds, not guarantees of real-world accuracy or universal evidence standards. Approximate results are not position-safe for display. The exact-direct and verified-match results require trusted current-edition evidence and corresponding supported positions; previous-edition, estimated, unknown, or unsupported evidence cannot establish them by itself.
 
-1. **3D1:** compact edition-aware anchor schemas, strict validation, pure deterministic anchor index, and synthetic tests.
-2. **3D2:** current-edition evidence and defensible route-position matching; manually curated development evidence must remain tied to actual sources.
-3. **3D3:** deterministic attachment to already-selected Course Brief candidates.
-4. **3D4:** structured geographic render tokens and deterministic wording.
-5. Later: automatic source discovery, extraction, geocoding, and matching.
+The checked-in Istria 110K 2027 fixture currently produces **four context-only entries and zero position-safe anchors**: Buzet START, Umag FINISH, Buzet AID_STATION, and Livade AID_STATION. The matcher test confirms all four remain unpositioned and that there are zero position-safe named anchors. The checked-in GPX has no `<wpt>` or `<rtept>` elements. GPX waypoint ingestion/support as an evidence-discovery path is deferred; there is no live source discovery, geocoding, or provider integration. This evidence status does not imply that those places are absent from the race or route.
+
+**Phase 3D3 — next task.** The accepted design is a pure deterministic attachment layer that runs after Course Brief V2 structural candidate selection. It consumes already-selected observations/candidates plus validated position-safe matching output and emits separate structured attachment/render-token data. Geographic evidence must not alter structural candidate construction, selection, ordering, coverage, or count. `CourseBriefOutputV2` and its renderer remain unchanged in 3D3; no prose generation, string replacement, UI, API, or provider call belongs in this phase.
+
+A trust boundary remains: Course Brief V2 input has no route identity, while the matcher receives a caller-supplied `routeId` and route geometry. A future 3D3 caller must bind both outputs to the same current Route Analysis result and compare route/component bounds. The existing contracts cannot independently prove that a caller-supplied identity is authentic or that two same-bounds inputs represent identical geometry. No shared or persistent use may treat submitted identities or evidence as authoritative without a trusted derivation path.
+
+Planned sequence after the committed work:
+
+1. **3D3:** deterministic post-selection anchor attachment and synthetic tests; keep attachment output separately versioned and fail closed on ambiguous ownership or identity/bounds mismatch.
+2. **3D4:** structured geographic tokens and deterministic wording, using 3D3 output without changing structural selection.
+3. Later: source discovery, GPX waypoint ingestion, extraction, geocoding, or provider integrations only after separate design and evidence-trust review.
 
 ## 9. Production architecture
 
@@ -250,7 +249,7 @@ No credentials, connection strings, tokens, or environment values belong in this
 - The final smoke-test precheck validated the input and found 7 eligible options: 0 vertical concentrations, 1 vertical transition, 4 Key Moment role options, 1 highest point, 1 lowest point, and 0 OSM surface categories. Exactly one `POST /api/course-brief` was made; it returned HTTP 200 in 3,495 ms with no retry, OSM, Mapillary, or database request.
 - The successful response selected a climb-to-descent vertical transition, the longest climb, and the longest descent. Deterministic rendering described the early-to-late smoothed-profile transition, a climb from 2.1–9.1 km with 526 m ascent, and a descent from 31.4–36.1 km with 482 m descent. Provider telemetry reported `gpt-5.4-mini`, 2,768 input tokens, 42 output tokens, 2,810 total tokens, 0 cached input tokens, 0 reasoning tokens, 2,552 ms provider duration, success, no error category, and `retryable = false`. The provider request ID is intentionally omitted.
 - Production verification confirms the deterministic eligible-option selection, canonical claim mapping, semantic/redundancy validation, and renderer completed successfully for this request. It does not establish broader content quality or justify unrestricted public exposure. Editorial usefulness was assessed as concise and grounded, with the headline transition considered somewhat subtle.
-- No Production verification is claimed for the Phase 3C2A deterministic Course Brief V2 engine or the Phase 3D anchor design. The V2 engine is not wired to the production API.
+- No Production verification is claimed for the Phase 3C2A deterministic Course Brief V2 engine or the Phase 3D1/3D2 anchor implementation. The V2 engine is not wired to the production API; Phase 3D3 remains design-only.
 
 ## 11. Testing and quality gates
 
@@ -292,8 +291,8 @@ For Phase 3C2A commit `3a46657ab591633817466712a9b1e209797d4131` (`feat: add det
 - Course Brief generation is ephemeral and is not persisted or cached.
 - The Course Brief API has no durable authentication/rate-limit protection suitable for unrestricted public exposure; do not broadly expose generation before abuse and cost controls are designed.
 - Course Brief V2 is a separate deterministic engine and is not integrated into the V1 API or Production. Its current deterministic wording is not final product copy.
-- Phase 3D Race Context/Verified Route Anchor work is design-only. Current Istria data has no independently verified named-place-to-current-GPX-position matches; no geographic wording should be inferred from race labels or GPX extrema.
-- `CourseBriefInputV2` validation checks schema and internal consistency, not source authenticity. A caller-submitted V2 input can be fabricated; future caller-submitted Race Context or anchors have the same trust limitation. Persistent/shared canonical use requires trusted server derivation or trusted stored evidence. This is not solved by the Phase 3D design audit.
+- Phase 3D1/3D2 provide implemented anchor schemas, validation, indexing, evidence matching, and diagnostics; they are not Production-verified. Current Istria data yields four context-only entries and zero position-safe anchors. No geographic wording should be inferred from race labels or GPX extrema.
+- `CourseBriefInputV2` validation checks schema and internal consistency, not source authenticity. A caller-submitted V2 input can be fabricated; future caller-submitted Race Context or anchors have the same trust limitation. Persistent/shared canonical use requires trusted server derivation or trusted stored evidence. This is not solved by the current Phase 3D implementation or the accepted 3D3 design; 3D3's caller-supplied route binding remains unverified until a trusted composition path exists.
 
 ## 13. Known limitations and open correctness work
 
@@ -310,7 +309,7 @@ For Phase 3C2A commit `3a46657ab591633817466712a9b1e209797d4131` (`feat: add det
 
 ## 14. Current priorities
 
-1. Approve the Phase 3D design and update this document before implementation begins; then implement 3D1 only: compact edition-aware anchor schemas, strict validation, a pure deterministic index, and synthetic tests.
+1. Implement Phase 3D3: deterministic post-selection Course Brief anchor attachment, separately versioned enrichment output, fail-closed identity/bounds validation, and synthetic tests. Keep structural candidate generation and selection independent of geographic evidence.
 2. Keep external evidence coverage and provenance explicit as route and provider behavior evolves; do not infer terrain, imagery, or geographic position where evidence is absent.
 
 ## 15. Safe development workflow
