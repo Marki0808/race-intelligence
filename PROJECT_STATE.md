@@ -1,6 +1,6 @@
 # Race Intelligence — Project State
 
-**Last verified against:** `main` at `ec03081be1bcee9a4a4736d3af6e3485edd6093e`
+**Last verified against:** `main` at `40b4e71c9d496cd7d785fb732db3ee16db2aa82f`
 **Verification date:** 2026-10-09
 **Document scope:** Current repository architecture plus separately labeled Production facts supplied from completed operational verification.
 
@@ -13,7 +13,7 @@ Race Intelligence helps trail runners understand a route before running or racin
 - **Race Mode:** a curated race experience resolved from a statically registered `RaceRecordData`. It presents race/edition information, course exploration, Key Moments, Course Character, sources, and course analysis.
 - **Route Mode:** a user selects a GPX file for deterministic route analysis. Analysis runs in the browser. OSM and Mapillary evidence can also be requested for local/noncanonical uploads through the application APIs; shared-persistence eligibility is not required to request or use that evidence. For registered physical routes that meet the shared-route rules, the same evidence flow can additionally use server-side shared persistence and reuse.
 
-Current analytical outputs include distance and elevation metrics, Route Dynamics, consolidated runner-facing Route Sections, Key Route Moments, optional surface/imagery evidence, and Course Brief engines. Course Brief V1 is the current API flow; deterministic V2 structural and V3 geographic presentation engines are implemented separately and are not wired into that API or the application UI. GPX-derived outputs are distinct from external provider evidence. Race search remains statically registered rather than database-backed.
+Current analytical outputs include distance and elevation metrics, Route Dynamics, consolidated runner-facing Route Sections, Key Route Moments, optional surface/imagery evidence, and Course Brief. The deterministic V2 structural Course Brief is integrated into Race Mode and Route Mode; its separate V3 geographic presentation engine is not exposed. The V1 OpenAI API/provider flow remains separate and unchanged. GPX-derived outputs are distinct from external provider evidence. Race search remains statically registered rather than database-backed.
 
 ## 2. End-to-end data flow
 
@@ -25,10 +25,13 @@ Current analytical outputs include distance and elevation metrics, Route Dynamic
 4. Deterministic analysis computes distance and elevation changes only along traversed edges within each component. Route Dynamics and Route Sections are segment-aware; no synthetic adjacency is introduced across component boundaries. Route Sections describe the dominant runner-facing phases; Key Route Moments are discrete facts/highlights, not another segmentation.
 5. Optional evidence requests run separately from deterministic Route Analysis. Route Mode can request OSM evidence through the application Geo Enrichment API and Mapillary imagery through the application Mapillary API for local/noncanonical uploads as well as registered routes. OSM evidence is classified from returned OSM ways; Mapillary searches are built per Route Section. Requests may fail or return partial/no usable evidence, and neither provider defines Route Section boundaries.
 6. For local/noncanonical routes, compatible analysis and enrichment/cache data can be stored in browser IndexedDB. For registered physical routes that meet shared-route eligibility rules, the same evidence flow can additionally reuse or persist compatible data through the server-side shared store. External evidence availability is independent of shared-persistence eligibility: a route may request/use provider evidence without being eligible for shared persistence. The UI presents route-derived analysis and clearly scoped evidence/coverage states.
+7. Course Brief composes from that same completed `RouteAnalysisData` and displays its ordered structural observations. It does not reparse the GPX or refetch/recompute route analysis. Composition failure is isolated from existing route analysis and course content.
 
 ### Race Mode
 
 Race Mode resolves a route parameter against the static `raceRegistry`, then supplies the resolved race record to data-driven page components. Its selected edition supplies the GPX reference and descriptive race intelligence. It is separate from arbitrary GPX upload in Route Mode.
+
+The selected edition's existing GPX loading and analysis result is passed to Course Brief; the Course Brief view does not load a second GPX or run a second route analysis. This does not establish trusted edition-to-analysis provenance for geographic enrichment.
 
 ### Course Phases and Narrative
 
@@ -86,9 +89,15 @@ CourseBriefInputV2
 → deterministic rendering
 ```
 
-It does **not** call a provider and is not wired into `/api/course-brief`; the V1 API remains separate. Candidate patterns are `UNIT`, `UNIT_WITH_ANCHOR`, `TRANSITION_TO_UNIT`, `EVOLVING_FINISH`, `EVOLUTION`, and `STANDALONE_TRANSITION`. Transitions normally attach to the destination unit; a candidate has at most one structural anchor; broad evolution cannot suppress a distinctive unit story; components remain separate. Selection is deterministic. Five rendered observations is a safety ceiling, not a limit on route complexity. V2 has no separate headline; zero candidates return a typed `insufficient_route_facts` result. Rendering uses validated canonical facts only, contains no AI prose, and adds no runner advice.
+It does **not** call a provider and is not wired into `/api/course-brief`; the V1 API remains separate. Candidate patterns are `UNIT`, `UNIT_WITH_ANCHOR`, `TRANSITION_TO_UNIT`, `EVOLVING_FINISH`, `EVOLUTION`, and `STANDALONE_TRANSITION`. Transitions normally attach to the destination unit; a candidate has at most one structural anchor; broad evolution cannot suppress a distinctive unit story; components remain separate. Selection is deterministic. Five rendered observations is a safety ceiling, not a limit on route complexity. V2 has no separate headline; zero candidates return a typed `insufficient_route_facts` result. Rendering uses validated canonical facts only, contains no AI prose, and adds no runner advice. Structural V2 composition is now displayed by the application UI, but geographic presentation remains disabled there.
 
-`COURSE_BRIEF_CANDIDATE_ALGORITHM_VERSION = 1` and `COURSE_BRIEF_OUTPUT_V2_SCHEMA_VERSION = 2`. Checked-in Istria currently yields four candidates, selects all four, omits none, and represents its traversable component. The engine's data structure is under review; its current deterministic wording is not approved final product copy. Natural-language quality and race-specific enrichment remain future work.
+`COURSE_BRIEF_CANDIDATE_ALGORITHM_VERSION = 1` and `COURSE_BRIEF_OUTPUT_V2_SCHEMA_VERSION = 2`. Checked-in Istria currently yields four candidates, selects all four, omits none, and represents its traversable component. The deterministic renderer now uses plain-English descriptions of climb-led, descent-led, repeated-climb/descent, mixed, and relatively low vertical-change phases. It preserves selected measurements, anchors, source-fact references, observation order, and coverage. Its wording is improved but remains elevation/profile-based; the final Istria observation is still dense and technical. It is not considered complete or fully natural.
+
+### Course Brief composition and UI integration
+
+`app/courseBriefComposition.ts` composes the existing CourseBriefInputV2 builder, canonical candidate construction, deterministic selection, and V2 renderer over one supplied `RouteAnalysisData`. Structural failures are typed. Geographic evidence is optional, but internally consistent race/edition metadata and anchor evidence do not prove that the supplied analysis came from that edition's GPX. The helper therefore returns structural-only success with a diagnostic when independent edition-to-route provenance is unavailable; it does not enable geographic enrichment based on assertions, matching IDs, fingerprints, distance, or bounds alone.
+
+`app/CourseBriefView.tsx` displays ordered structural observations with a “GPX-derived summary” label in Race Mode and Route Mode. Race Mode passes its selected edition's existing analyzed course; Route Mode passes its existing uploaded-route analysis. The compact, single-column observation list has loading and unavailable states, and stale asynchronous results are discarded when the route or edition changes. Local visual inspection for Istria found the layout compact and readable; the final observation remains comparatively dense. This is not Production verification. The view renders structural V2 output only and does not display geographic claims or call the V1 API/provider.
 
 **AI decision:** Phase 2's AI selection architecture remains implemented for Course Brief V1/proof work. Initial Course Brief V2 does not use AI for factual correctness, grouping, coverage, ordering, selection, or rendering. An optional AI stylistic/prose layer may be evaluated separately, but no decision has been made to add it. Deterministic fallback remains a product principle.
 
@@ -192,7 +201,7 @@ If physical geometry matches but elevation or ordered point input differs, the r
 
 ### Phase 3D — Race Context and Verified Route Anchors
 
-**Status: Phase 3D1–3D4 engine work is implemented, tested, and committed; application API/UI integration and user-facing quality evaluation remain future work.** Phase 3D1 was committed as `6ee9330adefb834ff40fff521cbf92d11cc3d93a` (`feat: add verified route anchor foundation`), Phase 3D2 as `9102d82b81c8454c14834ccbb8c439e9ea736140` (`feat: add deterministic route anchor matching`), Phase 3D3 as `dd87ac3c8de903cf5b6ff0812d45e55f3934359d` (`feat: add deterministic course brief anchor attachment`), and Phase 3D4 as `ec03081be1bcee9a4a4736d3af6e3485edd6093e` (`feat: add evidence-safe course brief geographic rendering`). These are repository implementation facts; no Production verification of the anchor capabilities or geographic presentation layer is claimed.
+**Status: Phase 3D1–3D4 engine work is implemented, tested, and committed. Structural Course Brief composition and Race Mode/Route Mode UI integration are also implemented; user-facing quality evaluation remains open. Geographic presentation is not enabled in composition or UI.** Phase 3D1 was committed as `6ee9330adefb834ff40fff521cbf92d11cc3d93a` (`feat: add verified route anchor foundation`), Phase 3D2 as `9102d82b81c8454c14834ccbb8c439e9ea736140` (`feat: add deterministic route anchor matching`), Phase 3D3 as `dd87ac3c8de903cf5b6ff0812d45e55f3934359d` (`feat: add deterministic course brief anchor attachment`), and Phase 3D4 as `ec03081be1bcee9a4a4736d3af6e3485edd6093e` (`feat: add evidence-safe course brief geographic rendering`). Structural UI integration and renderer wording improvement were committed as `40b4e71c9d496cd7d785fb732db3ee16db2aa82f` (`feat: integrate course brief and improve narrative wording`). These are repository implementation facts; no Production verification of the anchor capabilities, geographic presentation layer, or current Course Brief V2 UI is claimed.
 
 **Phase 3D1 — Route Anchor foundation.** `app/routeAnchors.ts` defines edition-aware `RaceContextV1`, `RouteAnchorV1`, evidence, route bounds, ordering constraints, validation, and a deterministic index. Race Context describes race/edition locations; a Route Anchor associates a context location/place with a route visit and a position when supported. Place identity (`placeId`) and visit identity (`visitId`) are distinct; repeated visits require distinct visit IDs. Anchor types are START, FINISH, NAMED_LOCATION, and AID_STATION. Provenance and positional confidence are separate fields. Provenance includes official, GPX-derived, previous-edition, estimated, and unknown; confidence is exact-direct, verified-match, approximate, context-only, or conflicting.
 
@@ -218,7 +227,7 @@ A trust limitation remains: Course Brief V2 input and matching output do not ind
 
 The presentation retains each original V2 observation text as an exact structural span and adds at most one separately traced geographic span to an observation. Its closed claim vocabulary supports endpoint positions, structural-transition positions, route points, event points, and feature-point proximity. Templates distinguish exact source-backed positions from qualified coordinate projections; they do not claim travel through a settlement, and place-reference-point evidence is not rendered geographically. START/FINISH require matching endpoint evidence; transition wording also requires a structural transition fact at the same component and full-precision position. Contradictory, stale, mismatched, ambiguous, or unsupported evidence fails closed. With zero usable attachments, the renderer returns the unchanged V2 structural output and no geographic spans. CourseBriefOutputV2, candidate construction, selection, coverage, and its renderer remain unchanged.
 
-The checked-in Istria 110K 2027 evidence still yields four context-only matches and **zero position-safe attachments**, so its geographic presentation has zero geographic spans and preserves the structural text unchanged. No Istria geographic positions were added. Phase 3D4 has no API/UI integration and has not been Production-verified. No AI prose rewriting, discovery, geocoding, provider, persistence, database, or UI integration was added.
+The checked-in Istria 110K 2027 evidence still yields four context-only matches and **zero position-safe attachments**, so its geographic presentation has zero geographic spans and preserves the structural text unchanged. No Istria geographic positions were added. The V3 geographic renderer is not run by the current composition helper or displayed by the UI, and has not been Production-verified. Structural V2 composition is integrated into Race Mode and Route Mode, but that UI integration has not been Production-verified. No AI prose rewriting, discovery, geocoding, provider, persistence, database, or geographic UI integration was added.
 
 Later source discovery, GPX waypoint ingestion, extraction, geocoding, or provider integrations require separate design and evidence-trust review.
 
@@ -257,7 +266,7 @@ No credentials, connection strings, tokens, or environment values belong in this
 - The final smoke-test precheck validated the input and found 7 eligible options: 0 vertical concentrations, 1 vertical transition, 4 Key Moment role options, 1 highest point, 1 lowest point, and 0 OSM surface categories. Exactly one `POST /api/course-brief` was made; it returned HTTP 200 in 3,495 ms with no retry, OSM, Mapillary, or database request.
 - The successful response selected a climb-to-descent vertical transition, the longest climb, and the longest descent. Deterministic rendering described the early-to-late smoothed-profile transition, a climb from 2.1–9.1 km with 526 m ascent, and a descent from 31.4–36.1 km with 482 m descent. Provider telemetry reported `gpt-5.4-mini`, 2,768 input tokens, 42 output tokens, 2,810 total tokens, 0 cached input tokens, 0 reasoning tokens, 2,552 ms provider duration, success, no error category, and `retryable = false`. The provider request ID is intentionally omitted.
 - Production verification confirms the deterministic eligible-option selection, canonical claim mapping, semantic/redundancy validation, and renderer completed successfully for this request. It does not establish broader content quality or justify unrestricted public exposure. Editorial usefulness was assessed as concise and grounded, with the headline transition considered somewhat subtle.
-- No Production verification is claimed for the Phase 3C2A deterministic Course Brief V2 engine or the Phase 3D1–3D4 anchor/geographic-presentation engines. The V2 engine, 3D3 attachment layer, and 3D4 renderer are not wired to the production API or UI.
+- No Production verification is claimed for the Phase 3C2A deterministic Course Brief V2 engine, its structural UI integration, or the Phase 3D1–3D4 anchor/geographic-presentation engines. The V2 engine remains separate from the V1 production API. Repository code composes and displays structural V2 content in Race Mode and Route Mode; geographic enrichment remains disabled because independent edition-GPX provenance is unavailable.
 
 ## 11. Testing and quality gates
 
@@ -277,6 +286,8 @@ For Course Brief Phase 2 commit `9d968c1a2176425a402e76f39b6cecdca6b2e8fa`, repo
 For Phase 3C2A commit `3a46657ab591633817466712a9b1e209797d4131` (`feat: add deterministic course brief v2 engine`), the reported focused tests were **23/23** and the full Node suite was **363/363**. TypeScript, ESLint, production build, and `git diff --check` passed. The Istria checked-in GPX evaluation is an automated/local deterministic result, not Production verification. These are point-in-time results.
 
 For Phase 3D4 commit `ec03081be1bcee9a4a4736d3af6e3485edd6093e` (`feat: add evidence-safe course brief geographic rendering`), the reported full Node suite was **501 passed, 0 failed**; TypeScript, ESLint, and production build passed. These checks validate repository code; they do not constitute live Production verification of geographic rendering.
+
+For Course Brief structural composition, Race Mode/Route Mode UI integration, and V2 renderer wording commit `40b4e71c9d496cd7d785fb732db3ee16db2aa82f` (`feat: integrate course brief and improve narrative wording`), local verification reported **25 focused renderer tests passed** and **517 full Node tests passed, 0 failed**. TypeScript, ESLint, production build, and `git diff --check` passed. The Istria four-observation text and route/extrema anchors were checked by deterministic tests. These are local checks, not live Production verification of the V2 UI or geographic layer.
 
 ## 12. Architectural invariants
 
@@ -301,7 +312,7 @@ For Phase 3D4 commit `ec03081be1bcee9a4a4736d3af6e3485edd6093e` (`feat: add evid
 - Course Brief input is caller-submitted and is not independently derived server-side. It must not be trusted as shared persistent/cache data without a trusted derivation and identity path.
 - Course Brief generation is ephemeral and is not persisted or cached.
 - The Course Brief API has no durable authentication/rate-limit protection suitable for unrestricted public exposure; do not broadly expose generation before abuse and cost controls are designed.
-- Course Brief V2 is a separate deterministic engine and is not integrated into the V1 API or Production. Its current deterministic wording is not final product copy.
+- Course Brief V2 is a separate deterministic engine from the V1 API and is integrated into Race Mode and Route Mode through the fail-closed composition helper. It currently renders structural, elevation/profile-based observations only; the geographic layer is not enabled. The deterministic wording has improved but is not complete or fully natural, and the final Istria observation remains dense and technical. No Production verification of this UI integration is claimed.
 - Phase 3D1/3D2/3D3 provide implemented anchor schemas, validation, indexing, evidence matching, deterministic attachment, and diagnostics; they are not Production-verified. Current Istria data yields four context-only entries and zero position-safe anchors or geographic attachments. No geographic wording should be inferred from race labels or GPX extrema.
 - `CourseBriefInputV2` validation checks schema and internal consistency, not source authenticity. A caller-submitted V2 input can be fabricated; caller-supplied matching output, route identity, and same component bounds do not independently prove identical geometry. Persistent/shared canonical use requires trusted server derivation or trusted stored evidence. The current 3D3 attachment layer does not provide that trust attestation.
 
@@ -320,8 +331,9 @@ For Phase 3D4 commit `ec03081be1bcee9a4a4736d3af6e3485edd6093e` (`feat: add evid
 
 ## 14. Current priorities
 
-1. Integrate the Course Brief presentation engines into the application, then evaluate the actual user-facing result while preserving the separation between structural V2 output and geographic presentation.
-2. Keep external evidence coverage and provenance explicit as route and provider behavior evolves; do not infer terrain, imagery, or geographic position where evidence is absent.
+1. In the next session, assess Course Brief's product value and identify additional verifiable route information that could make its narrative more useful without adding unsupported claims or speculative features.
+2. Before enabling Phase 3D geographic presentation, establish trusted edition-GPX-to-RouteAnalysisData provenance during Race Mode's actual selected-edition GPX loading and analysis flow. Route Mode remains structural-only unless it gains an independent edition binding.
+3. Preserve the separation from the V1 OpenAI API/provider flow, and keep external evidence coverage and provenance explicit; do not infer terrain, imagery, or geographic position where evidence is absent.
 
 ## 15. Safe development workflow
 
