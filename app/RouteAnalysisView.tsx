@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import CourseAnalysis from "./CourseAnalysis";
 import CourseExplorer from "./CourseExplorer";
+import CourseBriefView from "./CourseBriefView";
 import KeyMoment from "./KeyMoment";
 import type { GeoEnrichmentData } from "./geoEnrichment";
 import { thinRouteForMatching } from "./geoEnrichment";
@@ -160,6 +161,7 @@ export default function RouteAnalysisView({
             <Metric label="Lowest point" value={`${Math.round(analysis.metrics.lowestPointM).toLocaleString("en-US")} m`} />
           </div>
           <CourseExplorer selectedMoment={selectedMoment} routeName={analysis.name} routeAnalysis={analysis} keyMoments={analysis.keyMoments} loading={false} error="" showExtendedMetrics />
+          <CourseBriefView routeAnalysis={analysis} routeKey={routeFingerprint?.routeFingerprint ?? analysis.name} />
         </div>
       </section>
 

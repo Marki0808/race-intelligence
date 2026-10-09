@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import CourseExplorer from "./CourseExplorer";
+import CourseBriefView from "./CourseBriefView";
 import KeyMoment from "./KeyMoment";
 import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis";
 import type { RouteAnalysisData } from "./gpxAnalysis";
@@ -12,10 +13,17 @@ export default function CourseSection({
 }: {
   raceRecord: RaceRecordData;
 }) {
+  const editionKey = JSON.stringify([raceRecord.race.id, raceRecord.edition.year, raceRecord.edition.gpxPath]);
   const [selectedMoment, setSelectedMoment] = useState<string | null>(null);
-  const [routeAnalysis, setRouteAnalysis] = useState<RouteAnalysisData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [loadState, setLoadState] = useState<
+    | { editionKey: string; status: "ready"; analysis: RouteAnalysisData }
+    | { editionKey: string; status: "error"; message: string }
+    | null
+  >(null);
+  const currentLoad = loadState?.editionKey === editionKey ? loadState : null;
+  const routeAnalysis = currentLoad?.status === "ready" ? currentLoad.analysis : null;
+  const currentError = currentLoad?.status === "error" ? currentLoad.message : "";
+  const isLoading = currentLoad === null;
 
   useEffect(() => {
     let cancelled = false;
@@ -30,13 +38,11 @@ export default function CourseSection({
           `${raceRecord.race.name} ${raceRecord.edition.year}`,
         );
         if (!cancelled) {
-          setRouteAnalysis(analysis);
-          setLoading(false);
+          setLoadState({ editionKey, status: "ready", analysis });
         }
       } catch {
         if (!cancelled) {
-          setError("Could not load or analyze this race GPX.");
-          setLoading(false);
+          setLoadState({ editionKey, status: "error", message: "Could not load or analyze this race GPX." });
         }
       }
     }
@@ -45,7 +51,7 @@ export default function CourseSection({
     return () => {
       cancelled = true;
     };
-  }, [raceRecord.edition.gpxPath, raceRecord.edition.year, raceRecord.race.name]);
+  }, [editionKey, raceRecord.edition.gpxPath, raceRecord.edition.year, raceRecord.race.name]);
 
   return (
     <div>
@@ -56,8 +62,14 @@ export default function CourseSection({
         finishLocation={raceRecord.edition.finishLocation}
         routeAnalysis={routeAnalysis}
         keyMoments={raceRecord.intelligence.keyMoments}
-        loading={loading}
-        error={error}
+        loading={isLoading}
+        error={currentError}
+      />
+      <CourseBriefView
+        key={editionKey}
+        routeKey={editionKey}
+        routeAnalysis={routeAnalysis}
+        loading={isLoading}
       />
       <p className="mt-4 text-sm text-black/50">
         Selected: {selectedMoment ?? "None"}

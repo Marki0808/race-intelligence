@@ -114,7 +114,7 @@ test("flat/simple low-vertical route creates one candidate and one deterministic
   assert.equal(selected.selectedCandidates.length, 1);
   assert.equal(generated.ok, true);
   assert.equal(generated.output.observations.length, 1);
-  assert.match(generated.output.observations[0].text, /low-vertical/);
+  assert.match(generated.output.observations[0].text, /relatively little climbing and descending per kilometre/);
 });
 
 test("sustained climb and its dual-role anchor render as one observation", () => {
@@ -141,7 +141,7 @@ test("repeated-vertical route remains one observation", () => {
   const { built, generated } = run(makeInput([rolling()]));
   assert.equal(built.candidates.length, 1);
   assert.equal(generated.output.observations.length, 1);
-  assert.match(generated.output.observations[0].text, /repeated-vertical/);
+  assert.match(generated.output.observations[0].text, /repeated climbs and descents/);
 });
 
 test("climb, descent and repeated-vertical produce three observations", () => {
@@ -161,7 +161,7 @@ test("evolving finish combines its internal transition and persistent finish fac
   assert.equal(candidate.renderPatternId, "EVOLVING_FINISH");
   assert.equal(candidate.supportingFactIds.filter((id) => id.includes("transition")).length, 1);
   assert.ok(candidate.supportingFactIds.some((id) => id.includes("finish")));
-  assert.match(generated.output.observations[0].text, /changes to low-vertical/);
+  assert.match(generated.output.observations[0].text, /gives way to a stretch with relatively little climbing and descending per kilometre/);
   assert.match(generated.output.observations[0].text, /component finish/);
 });
 
@@ -190,6 +190,20 @@ test("multiple anchors in one unit attach at most one, preferring the dual-role 
   assert.equal(built.candidates.length, 1);
   assert.equal(built.candidates[0].supportingFactIds.filter((id) => id.includes("anchor")).length, 1);
   assert.ok(built.candidates[0].supportingFactIds.some((id) => id.includes("dual-role")));
+});
+
+test("highest and lowest elevation anchors retain their measurements and route positions", () => {
+  const input = makeInput([
+    climb(10, { segmentIndex: 0 }),
+    low(10, { segmentIndex: 1 }),
+  ], { extrema: [
+    { phaseIndex: 0, kind: "highest", elevationM: 900 },
+    { phaseIndex: 1, kind: "lowest", elevationM: 80 },
+  ] });
+  const { generated } = run(input);
+  const text = generated.output.observations.map(({ text: value }) => value).join(" ");
+  assert.match(text, /highest point at 900 m near 0\.4 km/);
+  assert.match(text, /segment's lowest point is 80 m near 10\.4 km/);
 });
 
 test("incoming transition is not duplicated as a standalone story", () => {
@@ -221,7 +235,7 @@ test("transition attaches to the preceding unit only when the destination has no
   assert.equal(built.candidates.length, 1);
   assert.equal(built.candidates[0].renderPatternId, "STANDALONE_TRANSITION");
   assert.ok(built.candidates[0].supportingFactIds.some((id) => id.includes("transition")));
-  assert.match(generated.output.observations[0].text, /changes at 10\.0 km to descent-dominant/);
+  assert.match(generated.output.observations[0].text, /At 10\.0 km, climbing gives way to a descent-led stretch/);
 });
 
 test("unattached multi-phase evolution becomes a standalone evolution candidate", () => {
@@ -236,7 +250,8 @@ test("unattached multi-phase evolution becomes a standalone evolution candidate"
   const candidate = built.candidates.find(({ renderPatternId }) => renderPatternId === "EVOLUTION");
   assert.ok(candidate);
   assert.ok(candidate.partialCoverageAtomIds.length >= 2);
-  assert.match(generated.output.observations[0].text, /vertical intensity decreases/);
+  assert.match(generated.output.observations[0].text, /combined ascent and descent per kilometre falls across successive phases/);
+  assert.match(generated.output.observations[0].text, /100, 80, then 60 m\/km/);
 });
 
 test("five material stories stay within the five-observation safety ceiling", () => {
@@ -351,6 +366,46 @@ test("checked-in Istria produces a reviewable deterministic V2 candidate pool an
   assert.deepEqual(result.generated.output.observations.map(({ candidateId }) => candidateId),
     result.built.candidates.map(({ candidateId }) => candidateId));
   const evolvingText = result.generated.output.observations.at(-1).text;
-  assert.match(evolvingText, /; then at 100\.6 km,/);
-  assert.doesNotMatch(evolvingText, /; then At /);
+  assert.deepEqual(result.generated.output.observations.map(({ text }) => text), [
+    "From 0.0 to 30.5 km, climbing leads the course. It includes the longest and largest detected climb (2.1–9.1 km, 526 m ascent).",
+    "At 30.5 km, climbing gives way to a descent-led stretch, which continues to 42.8 km. It includes the longest and largest detected descent (31.4–36.1 km, 482 m descent).",
+    "At 42.8 km, descending gives way to a stretch of repeated climbs and descents, which continues to 86.3 km.",
+    "At 86.3 km, the pattern of repeated climbs and descents gives way to a descent-led stretch. At 100.6 km, descending gives way to a stretch with relatively little climbing and descending per kilometre. The closing stretch remains marked by relatively little climbing and descending per kilometre through the 110.7 km component finish. Across 30.5–110.7 km, combined ascent and descent per kilometre falls across successive phases: 82.1, 75.8, 26.4, then 8.2 m/km. The segment's lowest point is 3 m near 110.4 km.",
+  ]);
+  assert.doesNotMatch(evolvingText, /climb-dominant|descent-dominant|repeated-vertical|low-vertical/);
+  assert.match(evolvingText, /82\.1, 75\.8, 26\.4, then 8\.2 m\/km/);
+});
+
+test("all phase labels render as runner-readable wording and all distinct transitions are natural", () => {
+  const cases = [
+    [climb(), "climbing leads the course"],
+    [descent(), "descending leads the course"],
+    [rolling(), "repeated climbs and descents"],
+    [low(), "relatively little climbing and descending per kilometre"],
+    [{ character: "mixed", intensity: 40, distanceKm: 10, ascentM: 200, descentM: 200 }, "climbing and descending are mixed"],
+  ];
+  const internalLabels = /climb-dominant|descent-dominant|repeated-vertical|low-vertical/;
+  for (const [phase, expected] of cases) {
+    const { generated } = run(makeInput([phase]));
+    const text = generated.output.observations[0].text;
+    assert.match(text, new RegExp(expected));
+    assert.doesNotMatch(text, internalLabels);
+  }
+
+  const phaseSpecs = [
+    { character: "climb-dominant", intensity: 80, distanceKm: 5, ascentM: 400, descentM: 0 },
+    { character: "descent-dominant", intensity: 75, distanceKm: 5, ascentM: 0, descentM: 375 },
+    { character: "repeated-vertical", intensity: 70, distanceKm: 5, ascentM: 175, descentM: 175 },
+    { character: "low-vertical", intensity: 8, distanceKm: 5, ascentM: 20, descentM: 20 },
+    { character: "mixed", intensity: 40, distanceKm: 5, ascentM: 100, descentM: 100 },
+  ];
+  for (const from of phaseSpecs) {
+    for (const to of phaseSpecs) {
+      if (from.character === to.character) continue;
+      const { generated } = run(makeInput([from, to]));
+      const text = generated.output.observations.map(({ text: item }) => item).join(" ");
+      assert.match(text, /At 5\.0 km, .* gives way to /, `${from.character} -> ${to.character}`);
+      assert.doesNotMatch(text, internalLabels, `${from.character} -> ${to.character}`);
+    }
+  }
 });
