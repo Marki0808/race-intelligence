@@ -249,7 +249,12 @@ export function renderCourseBriefV2(
   }
   const index = buildCourseBriefNarrativeFactIndex(pool.input);
   if (!index) throw new TypeError("CourseBriefOutputV2 requires validated narrative facts.");
-  const observations = [...selection.selectedCandidates].sort(compareCandidates).map((candidate) => {
+  const selectedCandidates = [...selection.selectedCandidates].sort(compareCandidates);
+  const redundantEvolutionFactIds = new Set(pool.input.facts
+    .filter((fact): fact is Extract<NarrativeFact, { type: "VERTICAL_INTENSITY_EVOLUTION" }> =>
+      fact.type === "VERTICAL_INTENSITY_EVOLUTION" && isEvolutionAlreadyNarrated(fact, selectedCandidates, pool.input, index.byId))
+    .map(({ factId }) => factId));
+  const observations = selectedCandidates.map((candidate) => {
     const primary = index.byId.get(candidate.primaryFactId);
     if (!primary) throw new TypeError("CourseBriefOutputV2 candidate primary fact is missing.");
     const factIds = [candidate.primaryFactId, ...candidate.supportingFactIds];
@@ -262,7 +267,7 @@ export function renderCourseBriefV2(
       startKm: candidateRange(candidate, index.byId).startKm,
       endKm: candidateRange(candidate, index.byId).endKm,
       displayOrderKey: candidate.displayOrderKey,
-      text: renderCandidate(candidate, facts as NarrativeFact[], pool.input),
+      text: renderCandidate(candidate, facts as NarrativeFact[], pool.input, redundantEvolutionFactIds),
     };
   });
   const result: CourseBriefOutputV2 = {
@@ -656,7 +661,36 @@ function candidateRange(candidate: CourseBriefCandidate, facts: ReadonlyMap<stri
   return { startKm: Math.min(...members.map(({ startKm }) => startKm)), endKm: Math.max(...members.map(({ endKm }) => endKm)) };
 }
 
-function renderCandidate(candidate: CourseBriefCandidate, facts: NarrativeFact[], input: CourseBriefInputV2): string {
+/** Suppress a trend only when the selected structural narrative already covers every fact it summarizes. */
+function isEvolutionAlreadyNarrated(
+  evolution: Extract<NarrativeFact, { type: "VERTICAL_INTENSITY_EVOLUTION" }>,
+  selectedCandidates: readonly CourseBriefCandidate[],
+  input: CourseBriefInputV2,
+  facts: ReadonlyMap<string, NarrativeFact>,
+): boolean {
+  const phases = evolution.phaseIds.map((phaseId) => input.phases.find((phase) => phase.phaseId === phaseId));
+  if (phases.length < 3 || phases.some((phase) => !phase) || phases.at(-1)?.character !== "low-vertical") return false;
+  const phaseIds = new Set(evolution.phaseIds);
+  const relevantTransitions = [...facts.values()].filter((fact): fact is Extract<NarrativeFact, { type: "STRUCTURAL_TRANSITION" }> =>
+    fact.type === "STRUCTURAL_TRANSITION" && fact.segmentIndex === evolution.segmentIndex &&
+    phaseIds.has(fact.fromPhaseId) && phaseIds.has(fact.toPhaseId));
+  if (relevantTransitions.length < 2) return false;
+  const selectedFactIds = new Set(selectedCandidates.flatMap(({ primaryFactId, supportingFactIds }) => [primaryFactId, ...supportingFactIds]));
+  if (relevantTransitions.some(({ factId }) => !selectedFactIds.has(factId))) return false;
+
+  const selectedUnits = new Set([...facts.values()]
+    .filter((fact): fact is Extract<NarrativeFact, { type: "UNIT_CHARACTER" }> =>
+      fact.type === "UNIT_CHARACTER" && selectedFactIds.has(fact.factId))
+    .map(({ unitId }) => unitId));
+  return evolution.unitIds.every((unitId) => selectedUnits.has(unitId));
+}
+
+function renderCandidate(
+  candidate: CourseBriefCandidate,
+  facts: NarrativeFact[],
+  input: CourseBriefInputV2,
+  redundantEvolutionFactIds: ReadonlySet<string>,
+): string {
   const primary = facts.find((fact) => fact.factId === candidate.primaryFactId)!;
   const unit = primary.type === "UNIT_CHARACTER" ? primary : null;
   const support = facts.filter((fact) => fact.factId !== primary.factId);
@@ -665,24 +699,37 @@ function renderCandidate(candidate: CourseBriefCandidate, facts: NarrativeFact[]
     .filter((fact): fact is Extract<NarrativeFact, { type: "UNIT_CHARACTER" }> => fact !== null);
   const unitStartKm = groupedUnits.length ? Math.min(...groupedUnits.map(({ startKm }) => startKm)) : primary.startKm;
   const unitEndKm = groupedUnits.length ? Math.max(...groupedUnits.map(({ endKm }) => endKm)) : primary.endKm;
-  const segmentPrefix = input.route.components.filter((component) => component.traversedDistanceKm > 0).length > 1
-    ? `On track segment ${candidate.componentIndex + 1}, ` : "";
+  const component = input.route.components.find((item) => item.segmentIndex === candidate.componentIndex);
+  if (!component) throw new TypeError("CourseBrief candidate refers to an unknown route component.");
+  const firstComponent = input.route.components.find((item) => item.traversedDistanceKm > 0);
+  const componentOpening = Math.abs(unitStartKm - component.startKm) <= 0.0051;
+  const hasMultipleComponents = input.route.components.filter((item) => item.traversedDistanceKm > 0).length > 1;
+  const isFirstComponent = component.segmentIndex === firstComponent?.segmentIndex;
+  const withComponentContext = (text: string) => hasMultipleComponents
+    ? `${isFirstComponent ? "In" : "Within"} track segment ${candidate.componentIndex + 1}, ${text[0].toLowerCase()}${text.slice(1)}`
+    : text;
   switch (candidate.renderPatternId) {
     case "UNIT":
       if (!unit || !unitRecord) throw new TypeError("UNIT candidate facts do not match its render pattern.");
-      return `${segmentPrefix}${renderUnitProgression(unit.character, unitStartKm, unitEndKm)}.`;
+      return withComponentContext(`${componentOpening && isFirstComponent
+        ? renderOpening(unit.character, unitEndKm, true)
+        : renderUnitProgression(unit.character, unitStartKm, unitEndKm)}.`);
     case "UNIT_WITH_ANCHOR": {
       const anchor = support.find((fact): fact is Extract<NarrativeFact, { type: "ANCHOR_WITHIN_UNIT" }> => fact.type === "ANCHOR_WITHIN_UNIT");
       if (!unit || !unitRecord || !anchor) throw new TypeError("UNIT_WITH_ANCHOR candidate facts do not match its render pattern.");
-      return `${segmentPrefix}${renderUnitProgression(unit.character, unitStartKm, unitEndKm)}. It includes ${renderAnchor(anchor)}.`;
+      const progression = componentOpening && isFirstComponent
+        ? renderOpening(unit.character, unitEndKm, true)
+        : renderUnitProgression(unit.character, unitStartKm, unitEndKm);
+      const anchorText = isUninformativeEndpointExtreme(anchor, component) ? "" : ` ${componentOpening ? "The section includes" : "It includes"} ${renderAnchor(anchor)}.`;
+      return withComponentContext(`${progression}.${anchorText}`);
     }
     case "TRANSITION_TO_UNIT": {
       const transition = support.find((fact): fact is Extract<NarrativeFact, { type: "STRUCTURAL_TRANSITION" }> =>
         fact.type === "STRUCTURAL_TRANSITION" && fact.toUnitId === unit?.unitId && fact.fromUnitId !== fact.toUnitId);
       const anchor = support.find((fact): fact is Extract<NarrativeFact, { type: "ANCHOR_WITHIN_UNIT" }> => fact.type === "ANCHOR_WITHIN_UNIT");
       if (!unit || !unitRecord || !transition) throw new TypeError("TRANSITION_TO_UNIT candidate facts do not match its render pattern.");
-      const anchorText = anchor ? ` It includes ${renderAnchor(anchor)}.` : "";
-      return `${segmentPrefix}${renderTransition(transition.fromCharacter, transition.toCharacter, transition.boundaryKm, unitEndKm)}.${anchorText}`;
+      const anchorText = anchor && !isUninformativeEndpointExtreme(anchor, component) ? ` ${renderAnchorSentence(anchor)}` : "";
+      return withComponentContext(`${renderTransition(transition.fromCharacter, transition.toCharacter, transition.boundaryKm, unitEndKm)}.${anchorText}`);
     }
     case "EVOLVING_FINISH": {
       if (!unit || !unitRecord || !support.some((fact) => fact.type === "PERSISTENT_FINISH_CHARACTER")) {
@@ -690,31 +737,30 @@ function renderCandidate(candidate: CourseBriefCandidate, facts: NarrativeFact[]
       }
       const transitions = support.filter((fact): fact is Extract<NarrativeFact, { type: "STRUCTURAL_TRANSITION" }> => fact.type === "STRUCTURAL_TRANSITION")
         .sort((a, b) => a.boundaryKm - b.boundaryKm || a.factId.localeCompare(b.factId));
-      const transitionText = transitions.map((fact) =>
-        `${renderTransition(fact.fromCharacter, fact.toCharacter, fact.boundaryKm)}.`).join(" ");
       const finish = support.find((fact): fact is Extract<NarrativeFact, { type: "PERSISTENT_FINISH_CHARACTER" }> => fact.type === "PERSISTENT_FINISH_CHARACTER")!;
       const evolution = support.find((fact): fact is Extract<NarrativeFact, { type: "VERTICAL_INTENSITY_EVOLUTION" }> => fact.type === "VERTICAL_INTENSITY_EVOLUTION");
       const anchor = support.find((fact): fact is Extract<NarrativeFact, { type: "ANCHOR_WITHIN_UNIT" }> => fact.type === "ANCHOR_WITHIN_UNIT");
-      const evolutionText = evolution
-        ? ` ${renderIntensityEvolution(evolution.startKm, evolution.endKm, evolution.valuesMPerKm)}.`
+      const transitionText = renderClosingTransitions(transitions, finish.character, finish.componentEndKm);
+      const evolutionText = evolution && !redundantEvolutionFactIds.has(evolution.factId)
+        ? ` ${renderIntensityEvolution()}.`
         : "";
-      const anchorText = anchor ? ` The segment's ${anchor.anchorKind} point is ${formatMeters(anchor.measurements.elevationM!)} m near ${formatKm(anchor.startKm)} km.` : "";
+      const anchorText = anchor && !isUninformativeEndpointExtreme(anchor, component) ? ` ${renderAnchorSentence(anchor)}` : "";
       if (transitionText) {
-        return `${segmentPrefix}${transitionText} The closing stretch remains ${phaseDescription(finish.character)} through the ${formatKm(finish.componentEndKm)} km component finish.${evolutionText}${anchorText}`;
+        return withComponentContext(`${transitionText}${evolutionText}${anchorText}`);
       }
-      return `${segmentPrefix}From ${formatKm(unitStartKm)} to ${formatKm(unitEndKm)} km, the route remains ${phaseDescription(finish.character)} through the ${formatKm(finish.componentEndKm)} km component finish.${evolutionText}${anchorText}`;
+      return withComponentContext(`From about ${formatKm(unitStartKm)} km to the ${formatKm(finish.componentEndKm)} km finish, ${finishDescription(finish.character)}.${evolutionText}${anchorText}`);
     }
     case "EVOLUTION": {
       if (primary.type !== "VERTICAL_INTENSITY_EVOLUTION") throw new TypeError("EVOLUTION candidate facts do not match its render pattern.");
-      return `${segmentPrefix}${renderIntensityEvolution(primary.startKm, primary.endKm, primary.valuesMPerKm)}.`;
+      return withComponentContext(`${renderIntensityEvolution()}.`);
     }
     case "STANDALONE_TRANSITION": {
       if (primary.type === "STRUCTURAL_TRANSITION") {
-        return `${segmentPrefix}${renderTransition(primary.fromCharacter, primary.toCharacter, primary.boundaryKm)}.`;
+        return withComponentContext(`${renderTransition(primary.fromCharacter, primary.toCharacter, primary.boundaryKm)}.`);
       }
       const transition = support.find((fact): fact is Extract<NarrativeFact, { type: "STRUCTURAL_TRANSITION" }> => fact.type === "STRUCTURAL_TRANSITION");
       if (primary.type !== "UNIT_CHARACTER" || !unitRecord || !transition) throw new TypeError("STANDALONE_TRANSITION candidate facts do not match its render pattern.");
-      return `${segmentPrefix}${renderUnitProgression(primary.character, unitStartKm, unitEndKm)}. ${renderTransition(transition.fromCharacter, transition.toCharacter, transition.boundaryKm)}.`;
+      return withComponentContext(`${renderUnitProgression(primary.character, unitStartKm, unitEndKm)}. ${renderTransition(transition.fromCharacter, transition.toCharacter, transition.boundaryKm)}.`);
     }
     case "RHYTHM_SEQUENCE": {
       const sequenceUnits = groupedUnits.sort((left, right) => left.startKm - right.startKm || left.endKm - right.endKm);
@@ -733,11 +779,10 @@ function renderCandidate(candidate: CourseBriefCandidate, facts: NarrativeFact[]
       const incoming = support.find((fact): fact is Extract<NarrativeFact, { type: "STRUCTURAL_TRANSITION" }> =>
         fact.type === "STRUCTURAL_TRANSITION" && fact.toUnitId === sequenceUnits[0].unitId &&
         fact.fromUnitId !== sequenceUnits[0].unitId);
-      const lead = incoming ? `${renderTransition(incoming.fromCharacter, incoming.toCharacter, incoming.boundaryKm)}. ` : "";
-      const text = `${lead}From ${formatKm(sequenceUnits[0].startKm)} to ${formatKm(sequenceUnits.at(-1)!.endKm)} km, the route alternates between climb-led and descent-led stretches.`;
+      const text = renderRhythmSequence(sequenceUnits, incoming);
       const anchor = chooseAnchor(support.filter((fact): fact is Extract<NarrativeFact, { type: "ANCHOR_WITHIN_UNIT" }> =>
         fact.type === "ANCHOR_WITHIN_UNIT" && fact.anchorKind === "key-moment"));
-      return anchor ? `${segmentPrefix}${text} The sequence includes ${renderAnchor(anchor)}.` : `${segmentPrefix}${text}`;
+      return withComponentContext(anchor ? `${text}. ${renderAnchorSentence(anchor, "This sequence")}` : `${text}.`);
     }
   }
 }
@@ -752,65 +797,115 @@ function renderAnchor(anchor: Extract<NarrativeFact, { type: "ANCHOR_WITHIN_UNIT
   return `the ${anchor.anchorKind} point at ${formatMeters(anchor.measurements.elevationM!)} m near ${formatKm(anchor.startKm)} km`;
 }
 
+function renderAnchorSentence(anchor: Extract<NarrativeFact, { type: "ANCHOR_WITHIN_UNIT" }>, subject = "The section"): string {
+  return `${subject} includes ${renderAnchor(anchor)}.`;
+}
+
+function isUninformativeEndpointExtreme(
+  anchor: Extract<NarrativeFact, { type: "ANCHOR_WITHIN_UNIT" }>,
+  component: CourseBriefInputV2["route"]["components"][number],
+): boolean {
+  if (anchor.anchorKind === "key-moment") return false;
+  const endpointToleranceKm = 0.0051;
+  return Math.min(anchor.startKm - component.startKm, component.endKm - anchor.startKm) <= endpointToleranceKm;
+}
+
 type CourseCharacter = Extract<NarrativeFact, { type: "UNIT_CHARACTER" }>['character'];
 
-function phaseDescription(character: CourseCharacter): string {
-  switch (character) {
-    case "climb-dominant": return "climb-led";
-    case "descent-dominant": return "descent-led";
-    case "repeated-vertical": return "defined by repeated climbs and descents";
-    case "low-vertical": return "marked by relatively little climbing and descending per kilometre";
-    case "mixed": return "characterized by a mix of climbing and descending";
-    case "evolving": return "marked by a changing pattern of climbing and descending";
-  }
-}
-
-function transitionDestination(character: CourseCharacter): string {
-  switch (character) {
-    case "climb-dominant": return "a climb-led stretch";
-    case "descent-dominant": return "a descent-led stretch";
-    case "repeated-vertical": return "a stretch of repeated climbs and descents";
-    case "low-vertical": return "a stretch with relatively little climbing and descending per kilometre";
-    case "mixed": return "a stretch with a mix of climbing and descending";
-    case "evolving": return "a stretch with a changing elevation pattern";
-  }
-}
-
-function transitionSource(character: CourseCharacter): string {
+function characterAsActivity(character: CourseCharacter): string {
   switch (character) {
     case "climb-dominant": return "climbing";
     case "descent-dominant": return "descending";
-    case "repeated-vertical": return "the pattern of repeated climbs and descents";
-    case "low-vertical": return "a stretch with relatively little climbing and descending per kilometre";
+    case "repeated-vertical": return "repeated climbs and descents";
+    case "low-vertical": return "a profile with relatively little climbing and descending per kilometre";
     case "mixed": return "a mix of climbing and descending";
     case "evolving": return "a changing pattern of climbing and descending";
   }
 }
 
-function renderUnitProgression(character: CourseCharacter, startKm: number, endKm: number): string {
-  const range = `From ${formatKm(startKm)} to ${formatKm(endKm)} km`;
+function openingCharacter(character: CourseCharacter): string {
   switch (character) {
-    case "climb-dominant": return `${range}, climbing leads the course`;
-    case "descent-dominant": return `${range}, descending leads the course`;
-    case "repeated-vertical": return `${range}, the route features repeated climbs and descents`;
-    case "low-vertical": return `${range}, there is relatively little climbing and descending per kilometre`;
-    case "mixed": return `${range}, climbing and descending are mixed`;
-    case "evolving": return `${range}, the pattern of climbing and descending evolves`;
+    case "climb-dominant": return "climbing";
+    case "descent-dominant": return "descending";
+    case "repeated-vertical": return "repeated climbs and descents";
+    case "low-vertical": return "little climbing and descending per kilometre";
+    case "mixed": return "a mix of climbing and descending";
+    case "evolving": return "a changing pattern of climbing and descending";
+  }
+}
+
+function finishDescription(character: CourseCharacter): string {
+  switch (character) {
+    case "climb-dominant": return "climbing defines the profile";
+    case "descent-dominant": return "descending defines the profile";
+    case "repeated-vertical": return "repeated climbs and descents define the profile";
+    case "low-vertical": return "the profile has relatively little climbing and descending per kilometre";
+    case "mixed": return "the profile mixes climbing and descending";
+    case "evolving": return "the pattern of climbing and descending keeps changing";
+  }
+}
+
+function renderOpening(character: CourseCharacter, endKm: number, routeOpening: boolean): string {
+  const subject = routeOpening ? "The route opens" : "This track segment opens";
+  return `${subject} with ${openingCharacter(character)} through about ${formatKm(endKm)} km`;
+}
+
+function renderUnitProgression(character: CourseCharacter, startKm: number, endKm: number): string {
+  const range = `From about ${formatKm(startKm)} to ${formatKm(endKm)} km`;
+  switch (character) {
+    case "climb-dominant": return `${range}, climbing defines this section`;
+    case "descent-dominant": return `${range}, descending defines this section`;
+    case "repeated-vertical": return `${range}, repeated climbs and descents define the profile`;
+    case "low-vertical": return `${range}, the profile has little climbing and descending per kilometre`;
+    case "mixed": return `${range}, the profile mixes climbing and descending`;
+    case "evolving": return `${range}, the pattern of climbing and descending changes`;
   }
 }
 
 function renderTransition(from: CourseCharacter, to: CourseCharacter, boundaryKm: number, continuesToKm?: number): string {
-  const continuation = continuesToKm === undefined ? "" : `, which continues to ${formatKm(continuesToKm)} km`;
-  return `At ${formatKm(boundaryKm)} km, ${transitionSource(from)} gives way to ${transitionDestination(to)}${continuation}`;
+  const continuation = continuesToKm === undefined ? "" : ` through about ${formatKm(continuesToKm)} km`;
+  return `Around ${formatKm(boundaryKm)} km, the profile shifts from ${characterAsActivity(from)} to ${characterAsActivity(to)}${continuation}`;
 }
 
-function renderIntensityEvolution(startKm: number, endKm: number, valuesMPerKm: number[]): string {
-  const values = valuesMPerKm.map(formatIntensity);
-  const series = values.length === 2
-    ? `${values[0]} then ${values[1]}`
-    : `${values.slice(0, -1).join(", ")}, then ${values.at(-1)}`;
-  return `Across ${formatKm(startKm)}–${formatKm(endKm)} km, combined ascent and descent per kilometre falls across successive phases: ${series} m/km`;
+function renderIntensityEvolution(): string {
+  return "Across successive phases, combined climbing and descending per kilometre decreases";
+}
+
+function renderRhythmSequence(
+  units: readonly Extract<NarrativeFact, { type: "UNIT_CHARACTER" }>[],
+  incoming: Extract<NarrativeFact, { type: "STRUCTURAL_TRANSITION" }> | undefined,
+): string {
+  const finalCharacter = units.at(-1)!.character;
+  const finish = finalCharacter === "climb-dominant" ? "ending with climbing in the final stretch" : "ending with descending in the final stretch";
+  const endKm = formatKm(units.at(-1)!.endKm);
+  if (incoming) {
+    return `After the shift from ${characterAsActivity(incoming.fromCharacter)} to ${characterAsActivity(incoming.toCharacter)}, the profile keeps alternating between climbing and descending through about ${endKm} km, ${finish}`;
+  }
+  return `Climbing and descending alternate through about ${endKm} km, ${finish}`;
+}
+
+function renderClosingTransitions(
+  transitions: readonly Extract<NarrativeFact, { type: "STRUCTURAL_TRANSITION" }>[],
+  finishCharacter: CourseCharacter,
+  componentEndKm: number,
+): string {
+  if (transitions.length === 0) return "";
+  return transitions.map((transition, index) => {
+    const boundary = formatKm(transition.boundaryKm);
+    if (index === transitions.length - 1 && transition.toCharacter === finishCharacter) {
+      const lead = index > 0 ? "From there" : `Around ${boundary} km`;
+      if (transition.toCharacter === "low-vertical") {
+        return `${lead}, ${characterAsActivity(transition.fromCharacter)} gives way to a final section with relatively little climbing and descending per kilometre, through the ${formatKm(componentEndKm)} km finish.`;
+      }
+      return `${lead}, ${characterAsActivity(transition.fromCharacter)} gives way to ${characterAsActivity(transition.toCharacter)} through the ${formatKm(componentEndKm)} km finish.`;
+    }
+    const prefix = index === 0 ? `Around ${boundary} km` : "From there";
+    if (index === 0 && transitions.length > 1) {
+      const nextBoundary = formatKm(transitions[index + 1].boundaryKm);
+      return `After ${characterAsActivity(transition.fromCharacter)}, ${characterAsActivity(transition.toCharacter)} defines the profile from about ${boundary} to ${nextBoundary} km.`;
+    }
+    return `${prefix}, the profile shifts from ${characterAsActivity(transition.fromCharacter)} to ${characterAsActivity(transition.toCharacter)}.`;
+  }).join(" ");
 }
 function formatKm(value: number): string { return (Math.round((value + Number.EPSILON) * 10) / 10).toFixed(1); }
 function formatMeters(value: number): string { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value); }
-function formatIntensity(value: number): string { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(value); }

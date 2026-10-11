@@ -104,17 +104,26 @@ function run(input) {
   assert.equal(built.ok, true, JSON.stringify(built));
   const selected = selectCourseBriefCandidates(built.input, built.candidates);
   assert.equal(selected.ok, true, JSON.stringify(selected));
-  return { built, selected, generated: generateDeterministicCourseBriefV2(input) };
+  const generated = generateDeterministicCourseBriefV2(input);
+  assert.equal(generated.ok, true, JSON.stringify(generated));
+  assert.deepEqual(generated.output.observations.map(({ candidateId }) => candidateId),
+    selected.selectedCandidates.map(({ candidateId }) => candidateId));
+  generated.output.observations.forEach((observation, index) => {
+    const candidate = selected.selectedCandidates[index];
+    assert.deepEqual(observation.sourceFactIds, [candidate.primaryFactId, ...candidate.supportingFactIds]);
+  });
+  return { built, selected, generated };
 }
 
-function profileRuns(runs, { pointsPerRun = 81, longitude = 0 } = {}) {
+function profileRuns(runs, { pointsPerRun = 81, longitude = 0, climbSlopeByRun = {} } = {}) {
   const points = [];
   let elevation = 100;
   let pointLongitude = longitude;
-  for (const run of runs) {
+  for (const [runIndex, run] of runs.entries()) {
     const stageStart = elevation;
     for (let index = 0; index < pointsPerRun; index += 1) {
-      const offset = run === "climb" ? index * 5 : run === "descent" ? -index * 5 :
+      const climbStep = climbSlopeByRun[runIndex] ?? 5;
+      const offset = run === "climb" ? index * climbStep : run === "descent" ? -index * 5 :
         run === "rolling" ? (Math.floor(index / 8) % 2 === 0 ? index % 8 * 2 : 16 - index % 8 * 2) : 0;
       elevation = stageStart + offset;
       points.push({ latitude: 0, longitude: pointLongitude, elevationM: elevation });
@@ -133,6 +142,12 @@ function analyzeProfile(segments, name) {
   assert.equal(selected.ok, true, JSON.stringify(selected));
   const generated = generateDeterministicCourseBriefV2(input);
   assert.equal(generated.ok, true, JSON.stringify(generated));
+  assert.deepEqual(generated.output.observations.map(({ candidateId }) => candidateId),
+    selected.selectedCandidates.map(({ candidateId }) => candidateId));
+  generated.output.observations.forEach((observation, index) => {
+    const candidate = selected.selectedCandidates[index];
+    assert.deepEqual(observation.sourceFactIds, [candidate.primaryFactId, ...candidate.supportingFactIds]);
+  });
   return { routeAnalysis, input, built, selected, output: generated.output };
 }
 
@@ -142,7 +157,7 @@ test("flat/simple low-vertical route creates one candidate and one deterministic
   assert.equal(selected.selectedCandidates.length, 1);
   assert.equal(generated.ok, true);
   assert.equal(generated.output.observations.length, 1);
-  assert.match(generated.output.observations[0].text, /relatively little climbing and descending per kilometre/);
+  assert.match(generated.output.observations[0].text, /little climbing and descending per kilometre/);
 });
 
 test("sustained climb and its dual-role anchor render as one observation", () => {
@@ -189,8 +204,8 @@ test("evolving finish combines its internal transition and persistent finish fac
   assert.equal(candidate.renderPatternId, "EVOLVING_FINISH");
   assert.equal(candidate.supportingFactIds.filter((id) => id.includes("transition")).length, 1);
   assert.ok(candidate.supportingFactIds.some((id) => id.includes("finish")));
-  assert.match(generated.output.observations[0].text, /gives way to a stretch with relatively little climbing and descending per kilometre/);
-  assert.match(generated.output.observations[0].text, /component finish/);
+  assert.match(generated.output.observations[0].text, /gives way to a final section with relatively little climbing and descending per kilometre/);
+  assert.match(generated.output.observations[0].text, /finish/);
 });
 
 test("broad intensity evolution does not suppress distinct descent and repeated-vertical stories", () => {
@@ -231,7 +246,7 @@ test("highest and lowest elevation anchors retain their measurements and route p
   const { generated } = run(input);
   const text = generated.output.observations.map(({ text: value }) => value).join(" ");
   assert.match(text, /highest point at 900 m near 0\.4 km/);
-  assert.match(text, /segment's lowest point is 80 m near 10\.4 km/);
+  assert.match(text, /lowest point at 80 m near 10\.4 km/);
 });
 
 test("incoming transition is not duplicated as a standalone story", () => {
@@ -263,7 +278,7 @@ test("transition attaches to the preceding unit only when the destination has no
   assert.equal(built.candidates.length, 1);
   assert.equal(built.candidates[0].renderPatternId, "STANDALONE_TRANSITION");
   assert.ok(built.candidates[0].supportingFactIds.some((id) => id.includes("transition")));
-  assert.match(generated.output.observations[0].text, /At 10\.0 km, climbing gives way to a descent-led stretch/);
+  assert.match(generated.output.observations[0].text, /Around 10\.0 km, the profile shifts from climbing to descending/);
 });
 
 test("unattached multi-phase evolution becomes a standalone evolution candidate", () => {
@@ -278,8 +293,9 @@ test("unattached multi-phase evolution becomes a standalone evolution candidate"
   const candidate = built.candidates.find(({ renderPatternId }) => renderPatternId === "EVOLUTION");
   assert.ok(candidate);
   assert.ok(candidate.partialCoverageAtomIds.length >= 2);
-  assert.match(generated.output.observations[0].text, /combined ascent and descent per kilometre falls across successive phases/);
-  assert.match(generated.output.observations[0].text, /100, 80, then 60 m\/km/);
+  assert.equal(generated.output.observations[0].text,
+    "Across successive phases, combined climbing and descending per kilometre decreases.");
+  assert.doesNotMatch(generated.output.observations[0].text, /100, 80, then 60 m\/km/);
 });
 
 test("five material stories retain their distinct chronological passages", () => {
@@ -313,7 +329,7 @@ test("repeated alternating climb/descent units form one traceable rhythm passage
   assert.equal(built.candidates.length, 1);
   assert.equal(built.candidates[0].renderPatternId, "RHYTHM_SEQUENCE");
   assert.equal(selected.selectedCandidates.length, 1);
-  assert.match(generated.output.observations[0].text, /alternates between climb-led and descent-led stretches/);
+  assert.match(generated.output.observations[0].text, /Climbing and descending alternate/);
   assert.equal(generated.output.observations[0].sourceFactIds.filter((id) => id.includes("narrative-fact.unit.")).length, 5);
   assert.equal(generated.output.observations[0].sourceFactIds.filter((id) => id.includes("narrative-fact.transition.")).length, 4);
 });
@@ -351,7 +367,7 @@ test("comparable short alternating units stay one visible rolling passage", () =
   assert.equal(result.built.candidates.length, 1);
   assert.equal(result.built.candidates[0].renderPatternId, "RHYTHM_SEQUENCE");
   assert.equal(observations.length, 1);
-  assert.match(observations[0].text, /alternates between climb-led and descent-led stretches/);
+  assert.match(observations[0].text, /Climbing and descending alternate/);
 });
 
 test("dominant long climb inside alternation remains a distinct rendered passage", () => {
@@ -364,7 +380,7 @@ test("dominant long climb inside alternation remains a distinct rendered passage
   assert.ok(result.built.candidates.every(({ renderPatternId }) => renderPatternId !== "RHYTHM_SEQUENCE"));
   const defining = observations.find(({ startKm, endKm }) => startKm === 4 && endKm === 20);
   assert.ok(defining);
-  assert.match(defining.text, /At 4\.0 km, descending gives way to a climb-led stretch, which continues to 20\.0 km/);
+  assert.match(defining.text, /Around 4\.0 km, the profile shifts from descending to climbing through about 20\.0 km/);
   assert.deepEqual(observations.map(({ startKm }) => startKm), [0, 2, 4, 20, 22]);
 });
 
@@ -380,7 +396,7 @@ test("dominant sustained descent inside alternation remains a distinct rendered 
   ]);
   const defining = observations.find(({ startKm, endKm }) => startKm === 6 && endKm === 22);
   assert.ok(defining);
-  assert.match(defining.text, /At 6\.0 km, climbing gives way to a descent-led stretch, which continues to 22\.0 km/);
+  assert.match(defining.text, /Around 6\.0 km, the profile shifts from climbing to descending through about 22\.0 km/);
   assert.deepEqual(observations.map(({ startKm }) => startKm), [0, 6, 22]);
 });
 
@@ -395,7 +411,7 @@ test("dominant vertical contribution is protected without being the longest unit
   assert.equal(result.built.candidates.length, 5);
   const defining = observations.find(({ startKm, endKm }) => startKm === 4 && endKm === 6);
   assert.ok(defining);
-  assert.match(defining.text, /At 4\.0 km, descending gives way to a climb-led stretch, which continues to 6\.0 km/);
+  assert.match(defining.text, /Around 4\.0 km, the profile shifts from descending to climbing through about 6\.0 km/);
 });
 
 test("multiple defining alternating members remain separate and in course order", () => {
@@ -407,8 +423,8 @@ test("multiple defining alternating members remain separate and in course order"
   const observations = assertVisibleRhythmTrace(result, 7, 6);
   assert.equal(result.built.candidates.length, 7);
   assert.deepEqual(observations.map(({ startKm }) => startKm), [0, 2, 4, 6, 8, 10, 12]);
-  assert.match(observations[1].text, /descent-led stretch, which continues to 4\.0 km/);
-  assert.match(observations[4].text, /climb-led stretch, which continues to 10\.0 km/);
+  assert.match(observations[1].text, /profile shifts from climbing to descending through about 4\.0 km/);
+  assert.match(observations[4].text, /profile shifts from descending to climbing through about 10\.0 km/);
 });
 
 test("rhythm dominance uses strict twice-neighbor-mean boundaries for distance and vertical work", () => {
@@ -418,7 +434,7 @@ test("rhythm dominance uses strict twice-neighbor-mean boundaries for distance a
   const exactDistanceResult = run(makeInput(exactDistance));
   assert.equal(exactDistanceResult.built.candidates.length, 1);
   assert.equal(exactDistanceResult.built.candidates[0].renderPatternId, "RHYTHM_SEQUENCE");
-  assert.match(exactDistanceResult.generated.output.observations[0].text, /alternates between climb-led and descent-led stretches/);
+  assert.match(exactDistanceResult.generated.output.observations[0].text, /Climbing and descending alternate/);
   assert.equal(exactDistanceResult.generated.output.observations[0].sourceFactIds.filter((id) => id.includes("narrative-fact.unit.")).length, 5);
 
   const aboveDistance = alternatingWorkSpecs(["climb", "descent", "climb", "descent", "climb"], {
@@ -428,14 +444,14 @@ test("rhythm dominance uses strict twice-neighbor-mean boundaries for distance a
   assert.equal(aboveDistanceResult.built.candidates.length, 5);
   assert.ok(aboveDistanceResult.built.candidates.every(({ renderPatternId }) => renderPatternId !== "RHYTHM_SEQUENCE"));
   assert.match(aboveDistanceResult.generated.output.observations.find(({ startKm, endKm }) => startKm === 4 && endKm > 8).text,
-    /climb-led stretch/);
+    /shifts from descending to climbing/);
 
   const exactWork = alternatingWorkSpecs(["climb", "descent", "climb", "descent", "climb"], {
     2: { ascentM: 360, intensity: 190 },
   });
   const exactWorkResult = run(makeInput(exactWork));
   assert.equal(exactWorkResult.built.candidates.length, 1);
-  assert.match(exactWorkResult.generated.output.observations[0].text, /alternates between climb-led and descent-led stretches/);
+  assert.match(exactWorkResult.generated.output.observations[0].text, /Climbing and descending alternate/);
 
   const aboveWork = alternatingWorkSpecs(["climb", "descent", "climb", "descent", "climb"], {
     2: { ascentM: 361, intensity: 190.5 },
@@ -444,7 +460,7 @@ test("rhythm dominance uses strict twice-neighbor-mean boundaries for distance a
   assert.equal(aboveWorkResult.built.candidates.length, 5);
   const defining = aboveWorkResult.generated.output.observations.find(({ startKm, endKm }) => startKm === 4 && endKm === 6);
   assert.ok(defining);
-  assert.match(defining.text, /climb-led stretch/);
+  assert.match(defining.text, /shifts from descending to climbing/);
 });
 
 test("a selected longest/largest event protects its host phase from rhythm grouping", () => {
@@ -484,7 +500,8 @@ test("disconnected components are separate stories with no synthetic transition"
   assert.deepEqual(built.candidates.map(({ componentIndex }) => componentIndex), [0, 1]);
   assert.equal(built.input.facts.some((fact) => fact.type === "STRUCTURAL_TRANSITION"), false);
   assert.deepEqual(generated.output.observations.map(({ componentIndex }) => componentIndex), [0, 1]);
-  assert.ok(generated.output.observations[1].text.startsWith("On track segment 2,"));
+  assert.match(generated.output.observations[0].text, /^In track segment 1, the route opens with climbing/);
+  assert.match(generated.output.observations[1].text, /^Within track segment 2, from about 5\.0 to 10\.0 km, descending defines this section/);
 });
 
 test("more than five useful disconnected components remain ordered and fully represented", () => {
@@ -517,13 +534,33 @@ test("RouteAnalysisData baselines record phases, units, candidates, and selectio
   assert.equal(alternating.output.observations.flatMap(({ sourceFactIds }) => sourceFactIds)
     .filter((id) => id.includes("narrative-fact.transition.")).length, 6);
   assert.match(alternating.output.observations[0].text, /detected climb/);
-  assert.match(alternating.output.observations[1].text, /alternates between climb-led and descent-led stretches/);
+  assert.match(alternating.output.observations[1].text, /keeps alternating between climbing and descending/);
+
+  const dominant = analyzeProfile([profileRuns(
+    ["climb", "descent", "climb", "descent", "climb", "descent", "climb"],
+    { pointsPerRun: 41, climbSlopeByRun: { 2: 8 } },
+  )], "alternating profile with one protected dominant climb");
+  assert.equal(dominant.input.phases.length, 7);
+  assert.equal(dominant.input.units.length, 7);
+  assert.equal(dominant.built.candidates.length, 6);
+  assert.equal(dominant.selected.selectedCandidates.length, 6);
+  assert.equal(dominant.output.diagnostics.componentCoverageComplete, true);
+  assert.equal(dominant.output.diagnostics.omittedCount, 0);
+  assert.equal(dominant.output.observations[2].startKm, 7.45);
+  assert.match(dominant.output.observations[2].text, /longest and largest detected climb/);
+  assert.equal(dominant.output.observations.at(-1).startKm, 15.95);
+  assert.match(dominant.output.observations.at(-1).text, /keeps alternating between climbing and descending/);
+  assert.equal(dominant.output.observations.find(({ candidateId }) => candidateId.startsWith("candidate:evolution:" )).text,
+    "Across successive phases, combined climbing and descending per kilometre decreases.");
 
   const lowVertical = analyzeProfile([profileRuns(["flat"], { pointsPerRun: 201 })], "low-vertical route");
   assert.deepEqual(lowVertical.input.phases.map(({ character }) => character), ["low-vertical"]);
   assert.deepEqual(lowVertical.input.units.map(({ character }) => character), ["low-vertical"]);
   assert.deepEqual(lowVertical.built.candidates.map(({ renderPatternId }) => renderPatternId), ["EVOLVING_FINISH"]);
   assert.equal(lowVertical.output.observations.length, 1);
+  assert.doesNotMatch(lowVertical.output.observations[0].text, /highest point|lowest point/);
+  assert.ok(lowVertical.output.observations[0].sourceFactIds.some((id) => id.includes("anchor.extreme.highest")),
+    "the endpoint extreme remains traceable in structured evidence");
 
   const disconnected = analyzeProfile([
     profileRuns(["climb"], { longitude: 0 }),
@@ -536,6 +573,7 @@ test("RouteAnalysisData baselines record phases, units, candidates, and selectio
   assert.equal(disconnected.input.facts.some((fact) => fact.type === "STRUCTURAL_TRANSITION" && fact.fromUnitId !== fact.toUnitId), false);
   assert.deepEqual(disconnected.built.candidates.map(({ componentIndex }) => componentIndex), [0, 1]);
   assert.deepEqual(disconnected.output.observations.map(({ componentIndex }) => componentIndex), [0, 1]);
+  assert.equal(disconnected.output.observations.some(({ text }) => /shifts from climbing to descending|shifts from descending to climbing/.test(text)), false);
 });
 
 test("valid input with no selectable structural facts returns typed insufficient-facts", () => {
@@ -571,7 +609,7 @@ test("renderer is repeatable and contains no forbidden runner-advice language", 
   const second = generateDeterministicCourseBriefV2(input);
   assert.deepEqual(first, second);
   const text = first.output.observations.map(({ text: value }) => value).join(" ").toLowerCase();
-  for (const forbidden of ["easier", "harder", "runnable", "technical", "mountainous", "recovery", "demanding", "controlled", "pace", "nutrition", "readiness"]) {
+  for (const forbidden of ["easier", "harder", "runnable", "technical", "mountainous", "recovery", "demanding", "controlled", "pace", "nutrition", "readiness", "surface", "weather", "village", "town"]) {
     assert.equal(text.includes(forbidden), false, `forbidden word: ${forbidden}`);
   }
 });
@@ -611,23 +649,32 @@ test("checked-in Istria produces a reviewable deterministic V2 candidate pool an
   assert.deepEqual(result.generated.output.observations.map(({ candidateId }) => candidateId),
     result.built.candidates.map(({ candidateId }) => candidateId));
   const evolvingText = result.generated.output.observations.at(-1).text;
-  assert.deepEqual(result.generated.output.observations.map(({ text }) => text), [
-    "From 0.0 to 30.5 km, climbing leads the course. It includes the longest and largest detected climb (2.1–9.1 km, 526 m ascent).",
-    "At 30.5 km, climbing gives way to a descent-led stretch, which continues to 42.8 km. It includes the longest and largest detected descent (31.4–36.1 km, 482 m descent).",
-    "At 42.8 km, descending gives way to a stretch of repeated climbs and descents, which continues to 86.3 km.",
-    "At 86.3 km, the pattern of repeated climbs and descents gives way to a descent-led stretch. At 100.6 km, descending gives way to a stretch with relatively little climbing and descending per kilometre. The closing stretch remains marked by relatively little climbing and descending per kilometre through the 110.7 km component finish. Across 30.5–110.7 km, combined ascent and descent per kilometre falls across successive phases: 82.1, 75.8, 26.4, then 8.2 m/km. The segment's lowest point is 3 m near 110.4 km.",
-  ]);
+  const [opening, firstChange, middle, finish] = result.generated.output.observations.map(({ text }) => text);
+  assert.match(opening, /route opens with climbing through about 30\.5 km/);
+  assert.match(opening, /longest and largest detected climb.*526 m ascent/);
+  assert.match(firstChange, /shifts from climbing to descending through about 42\.8 km/);
+  assert.match(firstChange, /longest and largest detected descent.*482 m descent/);
+  assert.match(middle, /repeated climbs and descents/);
+  assert.match(finish, /about 86\.3 to 100\.6 km/);
+  assert.equal(finish.match(/100\.6 km/g)?.length, 1, "the transition boundary is not repeated in adjacent sentences");
+  assert.match(finish, /110\.7 km finish/);
+  assert.doesNotMatch(finish, /combined climbing and descending per kilometre decreases/,
+    "the selected evolution remains structured but is omitted when the selected transitions already narrate it");
+  assert.ok(result.generated.output.observations.at(-1).sourceFactIds.some((id) => id.includes("evolution.decreasing")));
+  assert.doesNotMatch(finish, /82\.1|75\.8|26\.4|8\.2/);
+  assert.match(finish, /lowest point at 3 m near 110\.4 km/,
+    "a measured low point near, but not at, the component endpoint remains visible");
+  assert.ok(finish.length < 500, "the final observation should not become a statistical paragraph");
   assert.doesNotMatch(evolvingText, /climb-dominant|descent-dominant|repeated-vertical|low-vertical/);
-  assert.match(evolvingText, /82\.1, 75\.8, 26\.4, then 8\.2 m\/km/);
 });
 
 test("all phase labels render as runner-readable wording and all distinct transitions are natural", () => {
   const cases = [
-    [climb(), "climbing leads the course"],
-    [descent(), "descending leads the course"],
+    [climb(), "route opens with climbing"],
+    [descent(), "route opens with descending"],
     [rolling(), "repeated climbs and descents"],
-    [low(), "relatively little climbing and descending per kilometre"],
-    [{ character: "mixed", intensity: 40, distanceKm: 10, ascentM: 200, descentM: 200 }, "climbing and descending are mixed"],
+    [low(), "little climbing and descending per kilometre"],
+    [{ character: "mixed", intensity: 40, distanceKm: 10, ascentM: 200, descentM: 200 }, "mix of climbing and descending"],
   ];
   const internalLabels = /climb-dominant|descent-dominant|repeated-vertical|low-vertical/;
   for (const [phase, expected] of cases) {
@@ -649,7 +696,7 @@ test("all phase labels render as runner-readable wording and all distinct transi
       if (from.character === to.character) continue;
       const { generated } = run(makeInput([from, to]));
       const text = generated.output.observations.map(({ text: item }) => item).join(" ");
-      assert.match(text, /At 5\.0 km, .* gives way to /, `${from.character} -> ${to.character}`);
+      assert.match(text, /Around 5\.0 km, .* (?:shifts from .* to |gives way to )/, `${from.character} -> ${to.character}`);
       assert.doesNotMatch(text, internalLabels, `${from.character} -> ${to.character}`);
     }
   }
