@@ -4,7 +4,7 @@ import test from "node:test";
 import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis.ts";
 import { composeCourseBrief } from "./courseBriefComposition.ts";
 import { buildCourseBriefCandidates, renderCourseBriefV2, selectCourseBriefCandidates } from "./courseBriefCandidates.ts";
-import { buildCourseBriefInputV2 } from "./courseBriefNarrativeFacts.ts";
+import { buildCourseBriefInputV2, validateCourseBriefInputV2 } from "./courseBriefNarrativeFacts.ts";
 import { istria110kRaceRecord } from "./istria110kData.ts";
 import { createIstria110kAnchorEvidenceFixture } from "./istria110kAnchorEvidence.ts";
 
@@ -67,6 +67,52 @@ function expectedStructuralOutput(routeAnalysis) {
   assert.equal(selection.ok, true);
   return { input, candidates: built.candidates, selection, structuralOutput: renderCourseBriefV2(input, built.candidates, selection) };
 }
+
+function componentProfile(startElevationM, startLongitude) {
+  return Array.from({ length: 81 }, (_, index) => ({
+    latitude: 0,
+    longitude: startLongitude + index * 0.0009,
+    elevationM: startElevationM + (index <= 40 ? index * 8 : (80 - index) * 8),
+  }));
+}
+
+test("RouteAnalysisData with cumulative boundaries that round inconsistently composes successfully", async () => {
+  const multiComponentAnalysis = analyzeGpxRoute({
+    segments: [componentProfile(100, 0), componentProfile(900, 20)],
+    name: "Two component rounding fixture",
+  });
+  const [first, second] = multiComponentAnalysis.segments;
+  assert.ok(second.points[0].longitude - first.points.at(-1).longitude > 19);
+  assert.ok(multiComponentAnalysis.metrics.distanceKm < 20);
+  const independentlyRoundedStart = Number((second.startDistanceM / 1000).toFixed(2));
+  const independentlyRoundedEnd = Number((second.endDistanceM / 1000).toFixed(2));
+  const independentlyRoundedDistance = Number(((second.endDistanceM - second.startDistanceM) / 1000).toFixed(2));
+
+  assert.notEqual(independentlyRoundedEnd - independentlyRoundedStart, independentlyRoundedDistance);
+  const result = await composeCourseBrief(multiComponentAnalysis);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.kind, "structural");
+  assert.deepEqual(result.input.route.components.map(({ segmentIndex }) => segmentIndex), [0, 1]);
+  assert.equal(result.input.route.components[0].startKm, first.startDistanceM / 1000);
+  assert.equal(result.input.route.components[1].startKm, second.startDistanceM / 1000);
+  assert.equal(result.input.route.components[0].endKm, result.input.route.components[1].startKm);
+  assert.ok(Math.abs(result.input.route.components[1].endKm - result.input.route.components[1].startKm -
+    result.input.route.components[1].traversedDistanceKm) < 1e-12);
+  assert.equal(result.selection.componentCoverageComplete, true);
+  assert.deepEqual([...new Set(result.structuralOutput.observations.map(({ componentIndex }) => componentIndex))], [0, 1]);
+
+  const componentByUnitId = new Map(result.input.units.map(({ unitId, segmentIndex }) => [unitId, segmentIndex]));
+  const transitions = result.input.facts.filter((fact) => fact.type === "STRUCTURAL_TRANSITION");
+  assert.ok(transitions.length > 0);
+  assert.deepEqual([...new Set(transitions.map(({ segmentIndex }) => segmentIndex))], [0, 1]);
+  assert.ok(transitions.every((fact) => componentByUnitId.get(fact.fromUnitId) === fact.segmentIndex &&
+    componentByUnitId.get(fact.toUnitId) === fact.segmentIndex));
+  assert.ok(result.structuralOutput.observations.every((observation) => observation.startKm <= observation.endKm));
+
+  const inconsistent = structuredClone(result.input);
+  inconsistent.route.components[1].traversedDistanceKm += 0.01;
+  assert.deepEqual(validateCourseBriefInputV2(inconsistent), { ok: false, error: "inconsistent_input" });
+});
 
 test("composes structural V2 from the supplied analysis and returns unchanged output without evidence", async () => {
   const result = await composeCourseBrief(analysis);

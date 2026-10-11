@@ -12,6 +12,10 @@ export const MINIMUM_EVOLUTION_PHASE_COUNT = 3 as const;
 export const MINIMUM_EVOLUTION_REDUCTION_RATIO = 0.25 as const;
 /** CoursePhase intensity is rounded to tenths, so smaller step differences are below its measurement resolution. */
 export const MINIMUM_EVOLUTION_STEP_M_PER_KM = 0.1 as const;
+// RouteSection boundaries are presented at 0.01 km precision, while RouteAnalysisData
+// component distances retain full precision. Allow only the resulting half-unit rounding
+// difference when deciding whether a rounded phase reaches its actual component finish.
+const COMPONENT_FINISH_BOUNDARY_TOLERANCE_KM = 0.0051;
 
 export type NarrativeFactCategory = "direct-structural" | "bounded-interpretation";
 export type NarrativeFactEligibilityReason = "eligible-structural-fact" | "eligible-anchor-support" | "brief-interruption-policy-conservative";
@@ -168,8 +172,11 @@ export function buildCourseBriefInputV2(analysis: CourseBriefNarrativeSource, an
     ],
   });
   const components = analysis.segments.map((segment) => ({
-    segmentIndex: segment.segmentIndex, startKm: roundKm(segment.startDistanceM / 1000), endKm: roundKm(segment.endDistanceM / 1000),
-    traversedDistanceKm: roundKm((segment.endDistanceM - segment.startDistanceM) / 1000),
+    // Keep cumulative component bounds and their local distance at the same precision.
+    // Rounding each independently can make (endKm - startKm) differ from the rounded
+    // traversed distance by 0.01 km, which correctly fails the input consistency check.
+    segmentIndex: segment.segmentIndex, startKm: segment.startDistanceM / 1000, endKm: segment.endDistanceM / 1000,
+    traversedDistanceKm: (segment.endDistanceM - segment.startDistanceM) / 1000,
   }));
   return projectCourseBriefInputV2(analysis.metrics.distanceKm, components, phaseAnalysis.phases, narrative, analysisVersion);
 }
@@ -237,7 +244,7 @@ export function projectCourseBriefInputV2(
     const unitId = phaseToUnit.get(evolution.phaseIds[0]);
     if (!phase || !unitId || phase.character !== "low-vertical") continue;
     const component = components.find((item) => item.segmentIndex === phase.segmentIndex);
-    if (!component || !close(phase.endKm, component.endKm)) continue;
+    if (!component || !close(phase.endKm, component.endKm, COMPONENT_FINISH_BOUNDARY_TOLERANCE_KM)) continue;
     facts.push(makeBase({
       factId: `narrative-fact.finish.${phase.id}`, type: "PERSISTENT_FINISH_CHARACTER", category: "direct-structural",
       segmentIndex: phase.segmentIndex, startKm: phase.startKm, endKm: phase.endKm,
@@ -408,7 +415,7 @@ function validateV2Relationships(input: CourseBriefInputV2): boolean {
       const phase = phaseById.get(fact.phaseId);
       if (!phase || phase.segmentIndex !== fact.segmentIndex || !unitFact?.phaseIds.includes(fact.phaseId) || phase.character !== fact.character ||
         fact.factId !== `narrative-fact.finish.${fact.phaseId}` ||
-        fact.character !== "low-vertical" || !close(phase.endKm, component.endKm) || !close(fact.componentEndKm, component.endKm) ||
+        fact.character !== "low-vertical" || !close(phase.endKm, component.endKm, COMPONENT_FINISH_BOUNDARY_TOLERANCE_KM) || !close(fact.componentEndKm, component.endKm) ||
         fact.category !== "direct-structural" || fact.redundancyFamily !== "finish-character" || fact.groupRole !== "supporting" ||
         fact.narrativeGroupId !== `narrative-group.${fact.unitId}` || fact.eligibility.selectable !== true) return false;
     }
@@ -498,4 +505,3 @@ function sameOrderedMembers(a: readonly string[], b: readonly string[]): boolean
 function unique<T>(items: readonly T[]): T[] { return [...new Set(items)]; }
 function roleOrder(a: "longest" | "largest", b: "longest" | "largest"): number { return a === b ? 0 : a === "longest" ? -1 : 1; }
 function numberToken(value: number): string { return (Object.is(value, -0) ? "0" : String(value)).replaceAll(".", "p"); }
-function roundKm(value: number): number { return Number(value.toFixed(2)); }
