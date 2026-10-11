@@ -8,7 +8,6 @@ import {
   generateDeterministicCourseBriefV2,
   selectCourseBriefCandidates,
   validateCourseBriefCandidatePool,
-  COURSE_BRIEF_MAX_OBSERVATIONS_V2,
 } from "./courseBriefCandidates.ts";
 
 function makeInput(specs, { anchors = [], extrema = [] } = {}) {
@@ -106,6 +105,35 @@ function run(input) {
   const selected = selectCourseBriefCandidates(built.input, built.candidates);
   assert.equal(selected.ok, true, JSON.stringify(selected));
   return { built, selected, generated: generateDeterministicCourseBriefV2(input) };
+}
+
+function profileRuns(runs, { pointsPerRun = 81, longitude = 0 } = {}) {
+  const points = [];
+  let elevation = 100;
+  let pointLongitude = longitude;
+  for (const run of runs) {
+    const stageStart = elevation;
+    for (let index = 0; index < pointsPerRun; index += 1) {
+      const offset = run === "climb" ? index * 5 : run === "descent" ? -index * 5 :
+        run === "rolling" ? (Math.floor(index / 8) % 2 === 0 ? index % 8 * 2 : 16 - index % 8 * 2) : 0;
+      elevation = stageStart + offset;
+      points.push({ latitude: 0, longitude: pointLongitude, elevationM: elevation });
+      pointLongitude += 0.0009;
+    }
+  }
+  return points;
+}
+
+function analyzeProfile(segments, name) {
+  const routeAnalysis = analyzeGpxRoute({ segments, name });
+  const input = buildCourseBriefInputV2(routeAnalysis);
+  const built = buildCourseBriefCandidates(input);
+  assert.equal(built.ok, true, JSON.stringify(built));
+  const selected = selectCourseBriefCandidates(input, built.candidates);
+  assert.equal(selected.ok, true, JSON.stringify(selected));
+  const generated = generateDeterministicCourseBriefV2(input);
+  assert.equal(generated.ok, true, JSON.stringify(generated));
+  return { routeAnalysis, input, built, selected, output: generated.output };
 }
 
 test("flat/simple low-vertical route creates one candidate and one deterministic observation", () => {
@@ -254,21 +282,186 @@ test("unattached multi-phase evolution becomes a standalone evolution candidate"
   assert.match(generated.output.observations[0].text, /100, 80, then 60 m\/km/);
 });
 
-test("five material stories stay within the five-observation safety ceiling", () => {
+test("five material stories retain their distinct chronological passages", () => {
   const { built, selected } = run(makeInput([climb(5), descent(5), rolling(5), low(5), climb(5)]));
   assert.ok(built.candidates.length >= 5);
-  assert.equal(selected.selectedCandidates.length, 5);
-  assert.equal(COURSE_BRIEF_MAX_OBSERVATIONS_V2, 5);
+  assert.equal(selected.selectedCandidates.length, built.candidates.length);
+  assert.equal(selected.omittedCandidateIds.length, 0);
 });
 
-test("seven material stories select five and report omitted candidates", () => {
+test("complex structural overflow retains all nonredundant stories instead of truncating at five", () => {
   const specs = [climb(2), descent(2), rolling(2), low(2), climb(2), descent(2), rolling(2)];
-  const { built, selected, generated } = run(makeInput(specs));
+  const input = makeInput(specs);
+  const { built, selected, generated } = run(input);
+  assert.deepEqual(input.phases.map(({ character }) => character), specs.map(({ character }) => character));
+  assert.deepEqual(input.units.map(({ character }) => character), specs.map(({ character }) => character));
   assert.ok(built.candidates.length >= 7);
-  assert.equal(selected.selectedCandidates.length, 5);
-  assert.equal(selected.omittedCandidateIds.length, built.candidates.length - 5);
-  assert.equal(generated.output.diagnostics.omittedCount, built.candidates.length - 5);
+  assert.equal(selected.selectedCandidates.length, built.candidates.length);
+  assert.deepEqual(selected.selectedCandidates.map(({ candidateId }) => candidateId), built.candidates.map(({ candidateId }) => candidateId));
+  assert.equal(selected.omittedCandidateIds.length, 0);
+  assert.equal(generated.output.observations.length, built.candidates.length);
+  assert.equal(generated.output.diagnostics.omittedCount, 0);
+  assert.ok(generated.output.diagnostics.selectionReasons.every(({ codes }) => codes.includes("safe_structural_overflow")));
   assert.equal(generated.output.diagnostics.componentCoverageComplete, true);
+});
+
+test("repeated alternating climb/descent units form one traceable rhythm passage", () => {
+  const input = makeInput([climb(3), descent(3), climb(3), descent(3), climb(3)]);
+  const { built, selected, generated } = run(input);
+  assert.equal(input.phases.length, 5);
+  assert.equal(input.units.length, 5);
+  assert.equal(built.candidates.length, 1);
+  assert.equal(built.candidates[0].renderPatternId, "RHYTHM_SEQUENCE");
+  assert.equal(selected.selectedCandidates.length, 1);
+  assert.match(generated.output.observations[0].text, /alternates between climb-led and descent-led stretches/);
+  assert.equal(generated.output.observations[0].sourceFactIds.filter((id) => id.includes("narrative-fact.unit.")).length, 5);
+  assert.equal(generated.output.observations[0].sourceFactIds.filter((id) => id.includes("narrative-fact.transition.")).length, 4);
+});
+
+function alternatingWorkSpecs(kinds, overrides = {}) {
+  return kinds.map((kind, index) => {
+    const isClimb = kind === "climb";
+    const base = isClimb
+      ? { character: "climb-dominant", intensity: 100, distanceKm: 2, ascentM: 180, descentM: 20 }
+      : { character: "descent-dominant", intensity: 100, distanceKm: 2, ascentM: 20, descentM: 180 };
+    return { ...base, ...overrides[index] };
+  });
+}
+
+function assertVisibleRhythmTrace(result, expectedUnitCount, expectedTransitionCount) {
+  const { built, selected, generated } = result;
+  assert.equal(selected.selectedCandidates.length, generated.output.observations.length);
+  assert.deepEqual(generated.output.observations.map(({ startKm }) => startKm),
+    [...generated.output.observations].map(({ startKm }) => startKm).sort((a, b) => a - b));
+  assert.deepEqual(generated.output.observations.map(({ componentIndex }) => componentIndex),
+    Array.from({ length: generated.output.observations.length }, () => 0));
+  assert.deepEqual(selected.selectedCandidates.map(({ candidateId }) => candidateId),
+    built.candidates.map(({ candidateId }) => candidateId));
+  const sourceIds = generated.output.observations.flatMap(({ sourceFactIds }) => sourceFactIds);
+  assert.equal(sourceIds.filter((id) => id.includes("narrative-fact.unit.")).length, expectedUnitCount);
+  assert.equal(sourceIds.filter((id) => id.includes("narrative-fact.transition.")).length, expectedTransitionCount);
+  assert.equal(new Set(sourceIds).size, sourceIds.length);
+  assert.equal(built.candidates.length, selected.selectedCandidates.length);
+  return generated.output.observations;
+}
+
+test("comparable short alternating units stay one visible rolling passage", () => {
+  const result = run(makeInput(alternatingWorkSpecs(["climb", "descent", "climb", "descent", "climb"])));
+  const observations = assertVisibleRhythmTrace(result, 5, 4);
+  assert.equal(result.built.candidates.length, 1);
+  assert.equal(result.built.candidates[0].renderPatternId, "RHYTHM_SEQUENCE");
+  assert.equal(observations.length, 1);
+  assert.match(observations[0].text, /alternates between climb-led and descent-led stretches/);
+});
+
+test("dominant long climb inside alternation remains a distinct rendered passage", () => {
+  const specs = alternatingWorkSpecs(["climb", "descent", "climb", "descent", "climb"], {
+    2: { distanceKm: 16, ascentM: 1600, descentM: 30, intensity: 101.9 },
+  });
+  const result = run(makeInput(specs));
+  const observations = assertVisibleRhythmTrace(result, 5, 4);
+  assert.equal(result.built.candidates.length, 5);
+  assert.ok(result.built.candidates.every(({ renderPatternId }) => renderPatternId !== "RHYTHM_SEQUENCE"));
+  const defining = observations.find(({ startKm, endKm }) => startKm === 4 && endKm === 20);
+  assert.ok(defining);
+  assert.match(defining.text, /At 4\.0 km, descending gives way to a climb-led stretch, which continues to 20\.0 km/);
+  assert.deepEqual(observations.map(({ startKm }) => startKm), [0, 2, 4, 20, 22]);
+});
+
+test("dominant sustained descent inside alternation remains a distinct rendered passage", () => {
+  const specs = alternatingWorkSpecs(["climb", "descent", "climb", "descent", "climb"], {
+    3: { distanceKm: 16, ascentM: 30, descentM: 1600, intensity: 101.9 },
+  });
+  const result = run(makeInput(specs));
+  const observations = assertVisibleRhythmTrace(result, 5, 4);
+  assert.equal(result.built.candidates.length, 3);
+  assert.deepEqual(result.built.candidates.map(({ renderPatternId }) => renderPatternId), [
+    "RHYTHM_SEQUENCE", "TRANSITION_TO_UNIT", "TRANSITION_TO_UNIT",
+  ]);
+  const defining = observations.find(({ startKm, endKm }) => startKm === 6 && endKm === 22);
+  assert.ok(defining);
+  assert.match(defining.text, /At 6\.0 km, climbing gives way to a descent-led stretch, which continues to 22\.0 km/);
+  assert.deepEqual(observations.map(({ startKm }) => startKm), [0, 6, 22]);
+});
+
+test("dominant vertical contribution is protected without being the longest unit", () => {
+  const specs = alternatingWorkSpecs(["climb", "descent", "climb", "descent", "climb"], {
+    2: { ascentM: 600, descentM: 20, intensity: 310 },
+  });
+  const result = run(makeInput(specs));
+  const observations = assertVisibleRhythmTrace(result, 5, 4);
+  assert.equal(specs[2].distanceKm, 2);
+  assert.equal(Math.max(...specs.map(({ distanceKm }) => distanceKm)), 2);
+  assert.equal(result.built.candidates.length, 5);
+  const defining = observations.find(({ startKm, endKm }) => startKm === 4 && endKm === 6);
+  assert.ok(defining);
+  assert.match(defining.text, /At 4\.0 km, descending gives way to a climb-led stretch, which continues to 6\.0 km/);
+});
+
+test("multiple defining alternating members remain separate and in course order", () => {
+  const specs = alternatingWorkSpecs(["climb", "descent", "climb", "descent", "climb", "descent", "climb"], {
+    1: { descentM: 700, intensity: 360 },
+    4: { ascentM: 700, intensity: 360 },
+  });
+  const result = run(makeInput(specs));
+  const observations = assertVisibleRhythmTrace(result, 7, 6);
+  assert.equal(result.built.candidates.length, 7);
+  assert.deepEqual(observations.map(({ startKm }) => startKm), [0, 2, 4, 6, 8, 10, 12]);
+  assert.match(observations[1].text, /descent-led stretch, which continues to 4\.0 km/);
+  assert.match(observations[4].text, /climb-led stretch, which continues to 10\.0 km/);
+});
+
+test("rhythm dominance uses strict twice-neighbor-mean boundaries for distance and vertical work", () => {
+  const exactDistance = alternatingWorkSpecs(["climb", "descent", "climb", "descent", "climb"], {
+    2: { distanceKm: 4 },
+  });
+  const exactDistanceResult = run(makeInput(exactDistance));
+  assert.equal(exactDistanceResult.built.candidates.length, 1);
+  assert.equal(exactDistanceResult.built.candidates[0].renderPatternId, "RHYTHM_SEQUENCE");
+  assert.match(exactDistanceResult.generated.output.observations[0].text, /alternates between climb-led and descent-led stretches/);
+  assert.equal(exactDistanceResult.generated.output.observations[0].sourceFactIds.filter((id) => id.includes("narrative-fact.unit.")).length, 5);
+
+  const aboveDistance = alternatingWorkSpecs(["climb", "descent", "climb", "descent", "climb"], {
+    2: { distanceKm: 4.01 },
+  });
+  const aboveDistanceResult = run(makeInput(aboveDistance));
+  assert.equal(aboveDistanceResult.built.candidates.length, 5);
+  assert.ok(aboveDistanceResult.built.candidates.every(({ renderPatternId }) => renderPatternId !== "RHYTHM_SEQUENCE"));
+  assert.match(aboveDistanceResult.generated.output.observations.find(({ startKm, endKm }) => startKm === 4 && endKm > 8).text,
+    /climb-led stretch/);
+
+  const exactWork = alternatingWorkSpecs(["climb", "descent", "climb", "descent", "climb"], {
+    2: { ascentM: 360, intensity: 190 },
+  });
+  const exactWorkResult = run(makeInput(exactWork));
+  assert.equal(exactWorkResult.built.candidates.length, 1);
+  assert.match(exactWorkResult.generated.output.observations[0].text, /alternates between climb-led and descent-led stretches/);
+
+  const aboveWork = alternatingWorkSpecs(["climb", "descent", "climb", "descent", "climb"], {
+    2: { ascentM: 361, intensity: 190.5 },
+  });
+  const aboveWorkResult = run(makeInput(aboveWork));
+  assert.equal(aboveWorkResult.built.candidates.length, 5);
+  const defining = aboveWorkResult.generated.output.observations.find(({ startKm, endKm }) => startKm === 4 && endKm === 6);
+  assert.ok(defining);
+  assert.match(defining.text, /climb-led stretch/);
+});
+
+test("a selected longest/largest event protects its host phase from rhythm grouping", () => {
+  const input = makeInput(alternatingWorkSpecs(["climb", "descent", "climb", "descent", "climb"]), {
+    anchors: [{ phaseIndex: 2, kind: "climb", roles: ["longest", "largest"], id: "defining-climb" }],
+  });
+  const result = run(input);
+  const observations = assertVisibleRhythmTrace(result, 5, 4);
+  assert.equal(result.built.candidates.length, 5);
+  const defining = observations.find(({ startKm }) => startKm === 4);
+  assert.ok(defining);
+  assert.match(defining.text, /longest and largest detected climb/);
+});
+
+test("directional changes separated by another character are not mislabeled as an alternating sequence", () => {
+  const { built } = run(makeInput([climb(3), descent(3), rolling(3), climb(3), descent(3)]));
+  assert.equal(built.candidates.some(({ renderPatternId }) => renderPatternId === "RHYTHM_SEQUENCE"), false);
 });
 
 test("adjacent same-character units coalesce, suppressing low-value repeated observations", () => {
@@ -294,12 +487,55 @@ test("disconnected components are separate stories with no synthetic transition"
   assert.ok(generated.output.observations[1].text.startsWith("On track segment 2,"));
 });
 
-test("more than five useful components report incomplete component coverage", () => {
+test("more than five useful disconnected components remain ordered and fully represented", () => {
   const specs = Array.from({ length: 6 }, (_, index) => ({ ...climb(2), segmentIndex: index }));
   const { built, generated } = run(makeInput(specs));
   assert.equal(built.candidates.length, 6);
-  assert.equal(generated.output.observations.length, 5);
-  assert.equal(generated.output.diagnostics.componentCoverageComplete, false);
+  assert.equal(generated.output.observations.length, 6);
+  assert.equal(generated.output.diagnostics.componentCoverageComplete, true);
+  assert.equal(generated.output.diagnostics.omittedCount, 0);
+  assert.deepEqual(generated.output.observations.map(({ componentIndex }) => componentIndex), [0, 1, 2, 3, 4, 5]);
+});
+
+test("RouteAnalysisData baselines record phases, units, candidates, and selections by route rhythm", () => {
+  const sustained = analyzeProfile([profileRuns(["climb", "descent"], { pointsPerRun: 101 })], "sustained climb then descent");
+  assert.deepEqual(sustained.input.phases.map(({ character }) => character), ["climb-dominant", "descent-dominant"]);
+  assert.deepEqual(sustained.input.units.map(({ character }) => character), ["climb-dominant", "descent-dominant"]);
+  assert.deepEqual(sustained.built.candidates.map(({ renderPatternId }) => renderPatternId), ["UNIT_WITH_ANCHOR", "TRANSITION_TO_UNIT"]);
+  assert.equal(sustained.selected.selectedCandidates.length, 2);
+
+  const alternating = analyzeProfile([profileRuns(["climb", "descent", "climb", "descent", "climb", "descent", "climb"], { pointsPerRun: 41 })],
+    "repeated short climb and descent alternations");
+  assert.deepEqual(alternating.input.phases.map(({ character }) => character), [
+    "climb-dominant", "descent-dominant", "climb-dominant", "descent-dominant", "climb-dominant", "descent-dominant", "climb-dominant",
+  ]);
+  assert.equal(alternating.input.units.length, 7);
+  assert.deepEqual(alternating.built.candidates.map(({ renderPatternId }) => renderPatternId), ["UNIT_WITH_ANCHOR", "RHYTHM_SEQUENCE"]);
+  assert.equal(alternating.selected.selectedCandidates.length, 2);
+  assert.equal(alternating.output.observations[0].sourceFactIds.filter((id) => id.includes("narrative-fact.unit.")).length, 1);
+  assert.equal(alternating.output.observations[1].sourceFactIds.filter((id) => id.includes("narrative-fact.unit.")).length, 6);
+  assert.equal(alternating.output.observations.flatMap(({ sourceFactIds }) => sourceFactIds)
+    .filter((id) => id.includes("narrative-fact.transition.")).length, 6);
+  assert.match(alternating.output.observations[0].text, /detected climb/);
+  assert.match(alternating.output.observations[1].text, /alternates between climb-led and descent-led stretches/);
+
+  const lowVertical = analyzeProfile([profileRuns(["flat"], { pointsPerRun: 201 })], "low-vertical route");
+  assert.deepEqual(lowVertical.input.phases.map(({ character }) => character), ["low-vertical"]);
+  assert.deepEqual(lowVertical.input.units.map(({ character }) => character), ["low-vertical"]);
+  assert.deepEqual(lowVertical.built.candidates.map(({ renderPatternId }) => renderPatternId), ["EVOLVING_FINISH"]);
+  assert.equal(lowVertical.output.observations.length, 1);
+
+  const disconnected = analyzeProfile([
+    profileRuns(["climb"], { longitude: 0 }),
+    profileRuns(["descent"], { longitude: 20 }),
+  ], "disconnected components");
+  assert.deepEqual(disconnected.input.phases.map(({ segmentIndex, character }) => [segmentIndex, character]), [
+    [0, "climb-dominant"], [1, "descent-dominant"],
+  ]);
+  assert.deepEqual(disconnected.input.units.map(({ segmentIndex }) => segmentIndex), [0, 1]);
+  assert.equal(disconnected.input.facts.some((fact) => fact.type === "STRUCTURAL_TRANSITION" && fact.fromUnitId !== fact.toUnitId), false);
+  assert.deepEqual(disconnected.built.candidates.map(({ componentIndex }) => componentIndex), [0, 1]);
+  assert.deepEqual(disconnected.output.observations.map(({ componentIndex }) => componentIndex), [0, 1]);
 });
 
 test("valid input with no selectable structural facts returns typed insufficient-facts", () => {
@@ -358,9 +594,18 @@ test("checked-in Istria produces a reviewable deterministic V2 candidate pool an
   assert.equal(input.route.distanceKm, 110.73);
   assert.equal(input.phases.length, 5);
   assert.equal(input.units.length, 4);
+  assert.deepEqual(input.phases.map(({ character }) => character), [
+    "climb-dominant", "descent-dominant", "repeated-vertical", "descent-dominant", "low-vertical",
+  ]);
+  assert.deepEqual(input.units.map(({ character }) => character), [
+    "climb-dominant", "descent-dominant", "repeated-vertical", "evolving",
+  ]);
   assert.equal(input.facts.length, 25);
   assert.equal(input.facts.filter((fact) => fact.eligibility.selectable).length, 14);
   assert.equal(result.built.candidates.length, 4);
+  assert.deepEqual(result.built.candidates.map(({ renderPatternId }) => renderPatternId), [
+    "UNIT_WITH_ANCHOR", "TRANSITION_TO_UNIT", "TRANSITION_TO_UNIT", "EVOLVING_FINISH",
+  ]);
   assert.equal(result.selected.selectedCandidates.length, 4);
   assert.equal(result.generated.output.diagnostics.omittedCount, 0);
   assert.deepEqual(result.generated.output.observations.map(({ candidateId }) => candidateId),

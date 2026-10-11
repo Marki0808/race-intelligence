@@ -6,9 +6,9 @@ import {
   type NarrativeFact,
 } from "./courseBriefNarrativeFacts.ts";
 
-export const COURSE_BRIEF_CANDIDATE_ALGORITHM_VERSION = 1 as const;
+export const COURSE_BRIEF_CANDIDATE_ALGORITHM_VERSION = 2 as const;
 export const COURSE_BRIEF_OUTPUT_V2_SCHEMA_VERSION = 2 as const;
-export const COURSE_BRIEF_MAX_OBSERVATIONS_V2 = 5 as const;
+const MAX_VALIDATED_COURSE_BRIEF_ITEMS_V2 = 10_000 as const;
 
 export const COURSE_BRIEF_RENDER_PATTERNS = [
   "UNIT",
@@ -17,6 +17,7 @@ export const COURSE_BRIEF_RENDER_PATTERNS = [
   "EVOLVING_FINISH",
   "EVOLUTION",
   "STANDALONE_TRANSITION",
+  "RHYTHM_SEQUENCE",
 ] as const;
 
 export type CourseBriefRenderPattern = (typeof COURSE_BRIEF_RENDER_PATTERNS)[number];
@@ -50,7 +51,7 @@ export type CourseBriefSelectionResult =
       omittedCandidateIds: string[];
       componentCoverageComplete: boolean;
       selectionReasons: Array<{ candidateId: string; codes: string[] }>;
-      omissionReasons: Array<{ candidateId: string; code: "safety_ceiling" | "redundant_coverage" }>;
+      omissionReasons: Array<{ candidateId: string; code: "redundant_coverage" }>;
     }
   | { ok: false; error: "invalid_input" | "invalid_candidate_pool" | "insufficient_route_facts" };
 
@@ -75,7 +76,7 @@ export type CourseBriefOutputV2 = {
     componentCoverageComplete: boolean;
     selectionMode: "deterministic";
     selectionReasons: Array<{ candidateId: string; codes: string[] }>;
-    omissionReasons: Array<{ candidateId: string; code: "safety_ceiling" | "redundant_coverage" }>;
+    omissionReasons: Array<{ candidateId: string; code: "redundant_coverage" }>;
   };
 };
 
@@ -88,12 +89,12 @@ const candidateSchema = z.object({
   candidateId: z.string().min(1).max(600),
   componentIndex: z.number().int().min(0).max(127),
   displayOrderKey: z.number().finite().min(0).max(100_000),
-  narrativeGroupIds: z.array(factIdSchema).max(100),
+  narrativeGroupIds: z.array(factIdSchema).max(3000),
   primaryFactId: factIdSchema,
-  supportingFactIds: z.array(factIdSchema).max(100),
-  coverageAtomIds: z.array(factIdSchema).max(300),
-  partialCoverageAtomIds: z.array(factIdSchema).max(300),
-  redundancyKeys: z.array(factIdSchema).max(300),
+  supportingFactIds: z.array(factIdSchema).max(3000),
+  coverageAtomIds: z.array(factIdSchema).max(3000),
+  partialCoverageAtomIds: z.array(factIdSchema).max(3000),
+  redundancyKeys: z.array(factIdSchema).max(3000),
   renderPatternId: z.enum(COURSE_BRIEF_RENDER_PATTERNS),
 }).strict();
 
@@ -101,22 +102,22 @@ const outputSchema = z.object({
   schemaVersion: z.literal(COURSE_BRIEF_OUTPUT_V2_SCHEMA_VERSION),
   observations: z.array(z.object({
     candidateId: z.string().min(1).max(600),
-    sourceFactIds: z.array(factIdSchema).min(1).max(100),
+    sourceFactIds: z.array(factIdSchema).min(1).max(3000),
     componentIndex: z.number().int().min(0).max(127),
     startKm: z.number().finite().min(0),
     endKm: z.number().finite().min(0),
     displayOrderKey: z.number().finite().min(0),
     text: z.string().min(1).max(4000),
-  }).strict()).min(1).max(COURSE_BRIEF_MAX_OBSERVATIONS_V2),
+  }).strict()).min(1).max(MAX_VALIDATED_COURSE_BRIEF_ITEMS_V2),
   diagnostics: z.object({
     candidateCount: z.number().int().nonnegative(),
-    selectedCount: z.number().int().min(1).max(COURSE_BRIEF_MAX_OBSERVATIONS_V2),
+    selectedCount: z.number().int().min(1).max(MAX_VALIDATED_COURSE_BRIEF_ITEMS_V2),
     omittedCount: z.number().int().nonnegative(),
     omittedCandidateIds: z.array(z.string().min(1).max(600)).max(10_000),
     componentCoverageComplete: z.boolean(),
     selectionMode: z.literal("deterministic"),
-    selectionReasons: z.array(z.object({ candidateId: z.string().min(1).max(600), codes: z.array(z.string().min(1).max(80)).min(1).max(10) }).strict()).max(COURSE_BRIEF_MAX_OBSERVATIONS_V2),
-    omissionReasons: z.array(z.object({ candidateId: z.string().min(1).max(600), code: z.enum(["safety_ceiling", "redundant_coverage"]) }).strict()).max(10_000),
+    selectionReasons: z.array(z.object({ candidateId: z.string().min(1).max(600), codes: z.array(z.string().min(1).max(80)).min(1).max(10) }).strict()).max(MAX_VALIDATED_COURSE_BRIEF_ITEMS_V2),
+    omissionReasons: z.array(z.object({ candidateId: z.string().min(1).max(600), code: z.literal("redundant_coverage") }).strict()).max(MAX_VALIDATED_COURSE_BRIEF_ITEMS_V2),
   }).strict(),
 }).strict();
 
@@ -141,7 +142,7 @@ export function validateCourseBriefCandidatePool(
   return { ok: true, input: validation.input, candidates: canonical };
 }
 
-/** Selects with explicit component, endpoint, structural-diversity, and spread rules. */
+/** Selects canonical stories; recurring directional rhythm is grouped before selection. */
 export function selectCourseBriefCandidates(
   inputValue: unknown,
   candidateValue: unknown,
@@ -151,55 +152,63 @@ export function selectCourseBriefCandidates(
   const ordered = [...pool.candidates].sort(compareCandidates);
   if (ordered.length === 0) return { ok: false, error: "insufficient_route_facts" };
 
-  const target = Math.min(COURSE_BRIEF_MAX_OBSERVATIONS_V2, ordered.length);
+  const safeOverflow = ordered.length > 5;
+  const target = ordered.length;
   const selected: CourseBriefCandidate[] = [];
   const reasons = new Map<string, string[]>();
+  const selectedCandidateIds = new Set<string>();
+  const selectedRedundancyKeys = new Set<string>();
   const add = (candidate: CourseBriefCandidate, codes: string[]) => {
-    if (selected.some((item) => item.candidateId === candidate.candidateId)) return;
-    if (conflictsWithSelected(candidate, selected)) return;
+    if (selectedCandidateIds.has(candidate.candidateId)) return;
+    if (candidate.redundancyKeys.some((key) => selectedRedundancyKeys.has(key))) return;
     selected.push(candidate);
+    selectedCandidateIds.add(candidate.candidateId);
+    candidate.redundancyKeys.forEach((key) => selectedRedundancyKeys.add(key));
     reasons.set(candidate.candidateId, codes);
   };
 
   const componentIndexes = traversableComponents(pool.input);
-  for (const componentIndex of componentIndexes) {
-    if (selected.length >= target) break;
-    const candidate = ordered.find((item) => item.componentIndex === componentIndex);
-    if (candidate) add(candidate, ["component_coverage", "primary_structural_story"]);
-  }
+  if (safeOverflow) {
+    // Repetitive directional cycles are grouped during candidate construction. For the
+    // remaining complex structure, retain every nonredundant story in course order.
+    for (const candidate of ordered) add(candidate, ["safe_structural_overflow", "complete_structural_coverage"]);
+  } else {
+    for (const componentIndex of componentIndexes) {
+      if (selected.length >= target) break;
+      const candidate = ordered.find((item) => item.componentIndex === componentIndex);
+      if (candidate) add(candidate, ["component_coverage", "primary_structural_story"]);
+    }
 
-  // Preserve each useful component's opening and finish when there is room.
-  for (const componentIndex of componentIndexes) {
-    if (selected.length >= target) break;
-    const inComponent = ordered.filter((item) => item.componentIndex === componentIndex);
-    if (inComponent.length < 2) continue;
-    const last = inComponent.at(-1)!;
-    if (!selected.some((item) => item.componentIndex === componentIndex && item.candidateId === last.candidateId)) {
-      add(last, ["finish_progression", "primary_structural_story"]);
+    // Preserve each useful component's opening and finish when there is room.
+    for (const componentIndex of componentIndexes) {
+      if (selected.length >= target) break;
+      const inComponent = ordered.filter((item) => item.componentIndex === componentIndex);
+      if (inComponent.length < 2) continue;
+      const last = inComponent.at(-1)!;
+      if (!selected.some((item) => item.componentIndex === componentIndex && item.candidateId === last.candidateId)) {
+        add(last, ["finish_progression", "primary_structural_story"]);
+      }
+    }
+
+    while (selected.length < target) {
+      const remaining = ordered.filter((candidate) => !selected.some((item) => item.candidateId === candidate.candidateId) &&
+        !conflictsWithSelected(candidate, selected) && hasNovelStoryCoverage(candidate, selected));
+      if (remaining.length === 0) break;
+      const ranked = remaining.map((candidate) => ({ candidate, rank: rankCandidate(candidate, selected, pool.input) }))
+        .sort((left, right) => compareRanks(right.rank, left.rank) || compareCandidates(left.candidate, right.candidate));
+      const best = ranked[0];
+      const codes = ["new_structural_coverage"];
+      if (best.rank.newCharacter) codes.push("character_diversity");
+      if (best.rank.newTransition) codes.push("material_transition");
+      if (best.rank.lateEvolution) codes.push("late_progression");
+      if (best.rank.spread > 0) codes.push("course_spread");
+      add(best.candidate, codes);
     }
   }
 
-  while (selected.length < target) {
-    const remaining = ordered.filter((candidate) => !selected.some((item) => item.candidateId === candidate.candidateId) &&
-      !conflictsWithSelected(candidate, selected) && hasNovelStoryCoverage(candidate, selected));
-    if (remaining.length === 0) break;
-    const ranked = remaining.map((candidate) => ({ candidate, rank: rankCandidate(candidate, selected, pool.input) }))
-      .sort((left, right) => compareRanks(right.rank, left.rank) || compareCandidates(left.candidate, right.candidate));
-    const best = ranked[0];
-    const codes = ["new_structural_coverage"];
-    if (best.rank.newCharacter) codes.push("character_diversity");
-    if (best.rank.newTransition) codes.push("material_transition");
-    if (best.rank.lateEvolution) codes.push("late_progression");
-    if (best.rank.spread > 0) codes.push("course_spread");
-    add(best.candidate, codes);
-  }
-
   const chosen = selected.sort(compareCandidates);
-  const omitted = ordered.filter((candidate) => !selected.some((item) => item.candidateId === candidate.candidateId));
-  const omissionReasons = omitted.map((candidate) => ({
-    candidateId: candidate.candidateId,
-    code: selected.length >= target ? "safety_ceiling" as const : "redundant_coverage" as const,
-  }));
+  const omitted = ordered.filter((candidate) => !selectedCandidateIds.has(candidate.candidateId));
+  const omissionReasons = omitted.map((candidate) => ({ candidateId: candidate.candidateId, code: "redundant_coverage" as const }));
   const requiredComponents = new Set(pool.input.route.components.filter((component) => component.traversedDistanceKm > 0)
     .map((component) => component.segmentIndex));
   const represented = new Set(chosen.map(({ componentIndex }) => componentIndex));
@@ -392,7 +401,151 @@ function buildCanonicalCandidates(input: CourseBriefInputV2): CourseBriefCandida
   // Mark unused anchors as available facts, but never expand a unit into an anchor list.
   // They intentionally do not become candidates on their own.
   void representedAnchors;
-  return candidates.sort(compareCandidates);
+  return groupAlternatingRhythmCandidates(candidates, index.byId, input).sort(compareCandidates);
+}
+
+/** Collapse comparable component-local rhythm runs without absorbing defining members. */
+function groupAlternatingRhythmCandidates(
+  candidates: CourseBriefCandidate[],
+  facts: ReadonlyMap<string, NarrativeFact>,
+  input: CourseBriefInputV2,
+): CourseBriefCandidate[] {
+  const ordered = [...candidates].sort(compareCandidates);
+  const result: CourseBriefCandidate[] = [];
+  for (let index = 0; index < ordered.length;) {
+    const first = ordered[index];
+    const firstFact = facts.get(first.primaryFactId);
+    if (firstFact?.type !== "UNIT_CHARACTER" || !isDirectionalCharacter(firstFact.character)) {
+      result.push(first);
+      index += 1;
+      continue;
+    }
+    const run = [first];
+    while (index + run.length < ordered.length) {
+      const previousCandidate = run.at(-1)!;
+      const previous = facts.get(previousCandidate.primaryFactId);
+      const nextCandidate = ordered[index + run.length];
+      const next = facts.get(nextCandidate.primaryFactId);
+      if (previous?.type !== "UNIT_CHARACTER" || next?.type !== "UNIT_CHARACTER" ||
+        nextCandidate.componentIndex !== first.componentIndex || !isDirectionalCharacter(next.character) ||
+        next.character === previous.character || Math.abs(previous.endKm - next.startKm) > 0.01 ||
+        !hasTransitionBetween(previousCandidate, nextCandidate, facts)) break;
+      run.push(nextCandidate);
+    }
+    if (run.length < 3) {
+      result.push(first);
+      index += 1;
+      continue;
+    }
+
+    const definingIndexes = new Set(run.flatMap((candidate, memberIndex) =>
+      isDefiningRhythmMember(candidate, memberIndex, run, facts, input) ? [memberIndex] : []));
+    let groupStart = 0;
+    while (groupStart < run.length) {
+      if (definingIndexes.has(groupStart)) {
+        result.push(run[groupStart]);
+        groupStart += 1;
+        continue;
+      }
+      let groupEnd = groupStart + 1;
+      while (groupEnd < run.length && !definingIndexes.has(groupEnd)) groupEnd += 1;
+      const group = run.slice(groupStart, groupEnd);
+      if (group.length >= 3) result.push(createRhythmCandidate(group, facts));
+      else result.push(...group);
+      groupStart = groupEnd;
+    }
+    index += run.length;
+  }
+  return result;
+}
+
+/**
+ * A rhythm member is defining when it carries a selected Key Moment, or when
+ * its route-relative distance or directional vertical work exceeds twice the
+ * mean of its immediate neighbors. The comparison is deliberately conservative:
+ * ordinary variation within a rolling sequence does not split the story.
+ */
+function isDefiningRhythmMember(
+  candidate: CourseBriefCandidate,
+  memberIndex: number,
+  run: readonly CourseBriefCandidate[],
+  facts: ReadonlyMap<string, NarrativeFact>,
+  input: CourseBriefInputV2,
+): boolean {
+  const primary = facts.get(candidate.primaryFactId);
+  if (primary?.type !== "UNIT_CHARACTER") return false;
+  const candidateFacts = [primary, ...candidate.supportingFactIds.map((id) => facts.get(id)).filter((fact): fact is NarrativeFact => Boolean(fact))];
+  if (candidateFacts.some((fact) => fact.type === "ANCHOR_WITHIN_UNIT" && fact.anchorKind === "key-moment" &&
+    (fact.roles.includes("longest") || fact.roles.includes("largest")))) return true;
+  const memberMetrics = rhythmMemberMetrics(candidate, facts, input);
+  if (!memberMetrics) return false;
+  const neighbors = [run[memberIndex - 1], run[memberIndex + 1]].filter((neighbor): neighbor is CourseBriefCandidate => Boolean(neighbor));
+  const neighborMetrics = neighbors.map((neighbor) => rhythmMemberMetrics(neighbor, facts, input));
+  if (neighborMetrics.length === 0 || neighborMetrics.some((metrics) => metrics === null)) return false;
+  const neighboringDistanceKm = neighborMetrics.reduce((total, metrics) => total + metrics!.distanceKm, 0) / neighborMetrics.length;
+  const neighboringDirectionalWorkM = neighborMetrics.reduce((total, metrics) => total + metrics!.directionalWorkM, 0) / neighborMetrics.length;
+  return memberMetrics.distanceKm > 2 * neighboringDistanceKm || memberMetrics.directionalWorkM > 2 * neighboringDirectionalWorkM;
+}
+
+function rhythmMemberMetrics(
+  candidate: CourseBriefCandidate,
+  facts: ReadonlyMap<string, NarrativeFact>,
+  input: CourseBriefInputV2,
+): { distanceKm: number; directionalWorkM: number } | null {
+  const primary = facts.get(candidate.primaryFactId);
+  if (primary?.type !== "UNIT_CHARACTER" || !isDirectionalCharacter(primary.character)) return null;
+  const unitIds = new Set([primary, ...candidate.supportingFactIds.map((id) => facts.get(id))]
+    .filter((fact): fact is Extract<NarrativeFact, { type: "UNIT_CHARACTER" }> => fact?.type === "UNIT_CHARACTER")
+    .map(({ unitId }) => unitId));
+  const units = input.units.filter((unit) => unitIds.has(unit.unitId));
+  const phases = input.phases.filter((phase) => units.some((unit) => unit.phaseIds.includes(phase.phaseId)));
+  if (units.length === 0 || phases.length === 0) return null;
+  return {
+    distanceKm: Math.max(...units.map(({ endKm }) => endKm)) - Math.min(...units.map(({ startKm }) => startKm)),
+    directionalWorkM: primary.character === "climb-dominant"
+      ? phases.reduce((total, phase) => total + phase.ascentM, 0)
+      : phases.reduce((total, phase) => total + phase.descentM, 0),
+  };
+}
+
+function createRhythmCandidate(
+  run: readonly CourseBriefCandidate[],
+  facts: ReadonlyMap<string, NarrativeFact>,
+): CourseBriefCandidate {
+  const unitFacts = run.map((candidate) => facts.get(candidate.primaryFactId) as Extract<NarrativeFact, { type: "UNIT_CHARACTER" }>);
+  const unitIds = new Set(unitFacts.map(({ unitId }) => unitId));
+  const supportingIds = unique(run.flatMap((candidate) => [candidate.primaryFactId, ...candidate.supportingFactIds]))
+    .filter((factId) => factId !== run[0].primaryFactId)
+    .filter((factId) => {
+      const fact = facts.get(factId);
+      if (!fact) return false;
+      if (fact.type === "UNIT_CHARACTER") return unitIds.has(fact.unitId);
+      if (fact.type === "STRUCTURAL_TRANSITION") return unitIds.has(fact.fromUnitId) || unitIds.has(fact.toUnitId);
+      return "unitId" in fact && unitIds.has(fact.unitId);
+    })
+    .sort((left, right) => (facts.get(left)?.courseOrder ?? 0) - (facts.get(right)?.courseOrder ?? 0) || left.localeCompare(right));
+  const primary = facts.get(run[0].primaryFactId)!;
+  return createCandidate(primary, supportingIds.map((id) => facts.get(id)!), "RHYTHM_SEQUENCE",
+    run[0].displayOrderKey, unitFacts[0].unitId, run[0].componentIndex, unitFacts.map(({ unitId }) => unitId));
+}
+
+function hasTransitionBetween(
+  previous: CourseBriefCandidate,
+  next: CourseBriefCandidate,
+  facts: ReadonlyMap<string, NarrativeFact>,
+): boolean {
+  const previousFact = facts.get(previous.primaryFactId);
+  const nextFact = facts.get(next.primaryFactId);
+  return previousFact?.type === "UNIT_CHARACTER" && nextFact?.type === "UNIT_CHARACTER" &&
+    next.supportingFactIds.some((factId) => {
+      const fact = facts.get(factId);
+      return fact?.type === "STRUCTURAL_TRANSITION" && fact.fromUnitId === previousFact.unitId &&
+        fact.toUnitId === nextFact.unitId && fact.segmentIndex === next.componentIndex;
+    });
+}
+
+function isDirectionalCharacter(character: Extract<NarrativeFact, { type: "UNIT_CHARACTER" }>['character']): boolean {
+  return character === "climb-dominant" || character === "descent-dominant";
 }
 
 function createCandidate(
@@ -562,6 +715,29 @@ function renderCandidate(candidate: CourseBriefCandidate, facts: NarrativeFact[]
       const transition = support.find((fact): fact is Extract<NarrativeFact, { type: "STRUCTURAL_TRANSITION" }> => fact.type === "STRUCTURAL_TRANSITION");
       if (primary.type !== "UNIT_CHARACTER" || !unitRecord || !transition) throw new TypeError("STANDALONE_TRANSITION candidate facts do not match its render pattern.");
       return `${segmentPrefix}${renderUnitProgression(primary.character, unitStartKm, unitEndKm)}. ${renderTransition(transition.fromCharacter, transition.toCharacter, transition.boundaryKm)}.`;
+    }
+    case "RHYTHM_SEQUENCE": {
+      const sequenceUnits = groupedUnits.sort((left, right) => left.startKm - right.startKm || left.endKm - right.endKm);
+      if (sequenceUnits.length < 3 || sequenceUnits.some((item) => !isDirectionalCharacter(item.character)) ||
+        sequenceUnits.some((item, index) => index > 0 && item.character === sequenceUnits[index - 1].character)) {
+        throw new TypeError("RHYTHM_SEQUENCE candidate facts do not describe alternating directional units.");
+      }
+      for (let index = 1; index < sequenceUnits.length; index += 1) {
+        const before = sequenceUnits[index - 1];
+        const after = sequenceUnits[index];
+        if (!support.some((fact) => fact.type === "STRUCTURAL_TRANSITION" && fact.segmentIndex === candidate.componentIndex &&
+          fact.fromUnitId === before.unitId && fact.toUnitId === after.unitId)) {
+          throw new TypeError("RHYTHM_SEQUENCE candidate is missing an adjacent structural transition.");
+        }
+      }
+      const incoming = support.find((fact): fact is Extract<NarrativeFact, { type: "STRUCTURAL_TRANSITION" }> =>
+        fact.type === "STRUCTURAL_TRANSITION" && fact.toUnitId === sequenceUnits[0].unitId &&
+        fact.fromUnitId !== sequenceUnits[0].unitId);
+      const lead = incoming ? `${renderTransition(incoming.fromCharacter, incoming.toCharacter, incoming.boundaryKm)}. ` : "";
+      const text = `${lead}From ${formatKm(sequenceUnits[0].startKm)} to ${formatKm(sequenceUnits.at(-1)!.endKm)} km, the route alternates between climb-led and descent-led stretches.`;
+      const anchor = chooseAnchor(support.filter((fact): fact is Extract<NarrativeFact, { type: "ANCHOR_WITHIN_UNIT" }> =>
+        fact.type === "ANCHOR_WITHIN_UNIT" && fact.anchorKind === "key-moment"));
+      return anchor ? `${segmentPrefix}${text} The sequence includes ${renderAnchor(anchor)}.` : `${segmentPrefix}${text}`;
     }
   }
 }
