@@ -1,6 +1,6 @@
 # Race Intelligence — Project State
 
-**Last verified against:** `main` at `038bca51c6fd5551294288073926e42fca24079e` (runner-facing renderer refinement is in the current working tree)
+**Last verified against:** `main` at `608a607c1481d247a3ed455009fe2aa0b39d817d` (isolated AI narrative prototype is in the current working tree; no live calls were made)
 **Verification date:** 2026-10-11
 **Document scope:** Current repository architecture plus separately labeled Production facts supplied from completed operational verification.
 
@@ -100,6 +100,16 @@ It does **not** call a provider and is not wired into `/api/course-brief`; the V
 `app/courseBriefComposition.ts` composes the existing CourseBriefInputV2 builder, canonical candidate construction, deterministic selection, and V2 renderer over one supplied `RouteAnalysisData`. Structural failures are typed. Geographic evidence is optional, but internally consistent race/edition metadata and anchor evidence do not prove that the supplied analysis came from that edition's GPX. The helper therefore returns structural-only success with a diagnostic when independent edition-to-route provenance is unavailable; it does not enable geographic enrichment based on assertions, matching IDs, fingerprints, distance, or bounds alone.
 
 `app/CourseBriefView.tsx` displays ordered structural observations with a “GPX-derived summary” label in Race Mode and Route Mode. Race Mode passes its selected edition's existing analyzed course; Route Mode passes its existing uploaded-route analysis. The compact, single-column observation list has loading and unavailable states, and stale asynchronous results are discarded when the route or edition changes. Local visual inspection for Istria found the layout compact and readable; the final observation combines several late structural facts and remains denser than the earlier observations. This is not Production verification. The view renders structural V2 output only and does not display geographic claims or call the V1 API/provider.
+
+### Isolated AI narrative prototype — local evaluation only
+
+`app/courseBriefNarrativePrototype.ts` defines an isolated schema-v1 input builder from validated CourseBriefInputV2 facts. It sends ordered units, structural transitions, component boundaries, and supported significant climb/descent events with fact/provenance IDs. It excludes GPX coordinates, route names, existing rendered paragraphs, and unsupported or unknown measurements. The prototype uses a separate structured paragraph response with component and fact-ID references; validation checks shape, references, component-local citations, chronology, route endpoint coverage, and a bounded set of unsupported-claim patterns. A valid reference list is not proof that every sentence is semantically grounded, so this remains an evaluation tool rather than a trusted production renderer.
+
+`app/server/openAiCourseBriefNarrativePrototypeWriter.ts` is an isolated server-side Responses API adapter. It reuses the existing `gpt-5.4-mini`, timeout, and zero-retry configuration, requests Structured Outputs, uses `store: false`, and has a 500-token output cap. It does not change the V1 provider/API, V2 deterministic output, or Course Brief UI. The local environment check found no configured `OPENAI_API_KEY`; live model evaluation was **NOT RUN** and no AI narratives or token usage are claimed. Running the five-route comparison later requires a valid local server-side `OPENAI_API_KEY` with API access/billing; call outcomes should remain one request per route without retries.
+
+Checked-in tests build prototype inputs for Istria 110K and synthetic sustained climb/descent, comparable alternations, protected dominant climb, and low-vertical routes. Mocked responses exercise validation only and are not represented as model results. Production UI and application behavior remain unchanged.
+
+**Prototype verdict: INCONCLUSIVE.** Live AI evaluation was **NOT RUN** because `OPENAI_API_KEY` was not configured. No real AI-generated narrative quality has been evaluated. Production Course Brief behavior remains unchanged.
 
 **AI decision:** Phase 2's AI selection architecture remains implemented for Course Brief V1/proof work. Initial Course Brief V2 does not use AI for factual correctness, grouping, coverage, ordering, selection, or rendering. An optional AI stylistic/prose layer may be evaluated separately, but no decision has been made to add it. Deterministic fallback remains a product principle.
 
@@ -300,6 +310,8 @@ The current uncommitted renderer-only refinement changes reader-facing wording w
 After adding defining-phase protection, the focused `app/courseBriefCandidates.test.mjs` suite reported **35 passed, 0 failed**; the full Node suite reported **528 passed, 0 failed**; TypeScript, ESLint, production build, and `git diff --check` passed. The full Node suite exercises existing Overpass integration tests, including partial/unavailable test responses; these are local checks, not Production verification.
 
 For the current uncommitted runner-facing renderer refinement, the focused `app/courseBriefCandidates.test.mjs` suite passed **35/35** and the full Node suite passed **528/528**. TypeScript, ESLint, production build, and `git diff --check` passed. Representative outputs were checked for the Istria 110K GPX, sustained climb/descent, comparable alternations, a protected dominant climb, low vertical change, and disconnected components. Tests confirm candidate IDs/order and source-fact references remain aligned between selection and rendering; the Istria evolution fact remains selected when its qualitative sentence is suppressed. These are local checks only; the wording change has not been verified in Production.
+
+For the isolated AI narrative prototype, focused prototype and V2 composition/regression tests passed **74/74**; the full Node suite passed **535/535**. TypeScript, ESLint, and production build passed. The five requested route fixtures were projected to validated prototype inputs and compared with deterministic V2 output; live AI evaluation was **NOT RUN** because `OPENAI_API_KEY` was not configured locally. Mocked provider tests validate Structured Output request settings and response failure paths only. No AI-generated narrative, production behavior, or cost result is claimed.
 
 ## 12. Architectural invariants
 
