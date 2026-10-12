@@ -28,11 +28,11 @@ export type OfficialGpxDiscoveryResult =
   | { status: "unsafe-destination"; candidates: [] }
   | { status: "provider-failure"; candidates: []; category: "timeout" | "unavailable" | "invalid-response" | "busy" };
 
-type ResolvedAddress = { address: string; family: 4 | 6 };
-type PageResponse = { statusCode: number; headers: Record<string, string | undefined>; body: Uint8Array };
-type DiscoveryDependencies = {
-  resolve: (hostname: string) => Promise<ResolvedAddress[]>;
-  request: (url: URL, address: ResolvedAddress, maxBytes: number, timeoutMs: number) => Promise<PageResponse>;
+export type SafeHttpsAddress = { address: string; family: 4 | 6 };
+export type SafeHttpsResponse = { statusCode: number; headers: Record<string, string | undefined>; body: Uint8Array };
+export type SafeHttpsDependencies = {
+  resolve: (hostname: string) => Promise<SafeHttpsAddress[]>;
+  request: (url: URL, address: SafeHttpsAddress, maxBytes: number, timeoutMs: number, accept?: string) => Promise<SafeHttpsResponse>;
 };
 
 const IPV4_BLOCKED: Array<[string, number]> = [
@@ -104,7 +104,7 @@ export function validateOfficialPageUrl(input: string): URL | null {
   }
 }
 
-async function resolvePublic(hostname: string): Promise<ResolvedAddress[]> {
+async function resolvePublic(hostname: string): Promise<SafeHttpsAddress[]> {
   const bareHost = hostname.replace(/^\[|\]$/g, "");
   const family = isIP(bareHost);
   const records = family
@@ -114,9 +114,15 @@ async function resolvePublic(hostname: string): Promise<ResolvedAddress[]> {
   return records.map((record) => ({ address: record.address, family: record.family as 4 | 6 }));
 }
 
-class UnsafeDestinationError extends Error {}
-class OfficialGpxDiscoveryTimeoutError extends Error {}
-class InvalidResponseError extends Error {}
+class UnsafeDestinationError extends Error {
+  constructor() { super(); this.name = "UnsafeDestinationError"; }
+}
+class OfficialGpxDiscoveryTimeoutError extends Error {
+  constructor() { super(); this.name = "OfficialGpxDiscoveryTimeoutError"; }
+}
+class InvalidResponseError extends Error {
+  constructor() { super(); this.name = "InvalidResponseError"; }
+}
 
 function withinTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -128,25 +134,21 @@ function withinTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   });
 }
 
-function requestPinnedHttps(url: URL, address: ResolvedAddress, maxBytes: number, timeoutMs: number): Promise<PageResponse> {
+function requestPinnedHttps(url: URL, address: SafeHttpsAddress, maxBytes: number, timeoutMs: number, accept = "text/html"): Promise<SafeHttpsResponse> {
   return new Promise((resolve, reject) => {
     let settled = false;
-    const finish = (error?: Error, value?: PageResponse) => {
+    const finish = (error?: Error, value?: SafeHttpsResponse) => {
       if (settled) return;
       settled = true;
       if (error) reject(error);
       else resolve(value!);
     };
-    const lookupPinned = ((_: string, optionsOrCallback: unknown, maybeCallback?: (error: NodeJS.ErrnoException | null, address: string, family: number) => void) => {
-      const callback = typeof optionsOrCallback === "function" ? optionsOrCallback as (error: NodeJS.ErrnoException | null, address: string, family: number) => void : maybeCallback;
-      if (!callback) throw new Error("Pinned DNS lookup callback missing");
-      callback(null, address.address, address.family);
-    }) as NonNullable<RequestOptions["lookup"]>;
+    const lookupPinned = createPinnedDnsLookup(address);
     const req = httpsRequest({
       protocol: "https:", hostname: url.hostname, port: 443, method: "GET",
       path: `${url.pathname}${url.search}`, servername: url.hostname.replace(/^\[|\]$/g, ""),
       rejectUnauthorized: true, lookup: lookupPinned,
-      headers: { accept: "text/html", "user-agent": "RaceIntelligence-GpxDiscovery/1.0", "accept-encoding": "identity" },
+      headers: { accept, "user-agent": "RaceIntelligence-GpxDiscovery/1.0", "accept-encoding": "identity" },
     }, (res) => {
       const chunks: Uint8Array[] = [];
       let length = 0;
@@ -174,6 +176,18 @@ function requestPinnedHttps(url: URL, address: ResolvedAddress, maxBytes: number
     req.on("error", (error) => finish(error));
     req.end();
   });
+}
+
+export function createPinnedDnsLookup(address: SafeHttpsAddress): NonNullable<RequestOptions["lookup"]> {
+  return ((_: string, optionsOrCallback: unknown, maybeCallback?: (...args: unknown[]) => void) => {
+    const callback = typeof optionsOrCallback === "function" ? optionsOrCallback as (...args: unknown[]) => void : maybeCallback;
+    if (!callback) throw new Error("Pinned DNS lookup callback missing");
+    const options = typeof optionsOrCallback === "object" && optionsOrCallback !== null
+      ? optionsOrCallback as { all?: boolean }
+      : undefined;
+    if (options?.all) callback(null, [{ address: address.address, family: address.family }]);
+    else callback(null, address.address, address.family);
+  }) as NonNullable<RequestOptions["lookup"]>;
 }
 
 function decodeEntities(value: string): string {
@@ -283,6 +297,48 @@ function sanitizeWebUrl(raw: string, base: URL, sameOriginOnly: boolean): URL | 
   } catch { return null; }
 }
 
+export async function fetchPublicHttps(
+  input: string,
+  options: { maxBytes: number; timeoutMs: number; maxRedirects: number; accept: string; sameOriginRedirects: boolean },
+  dependencies: SafeHttpsDependencies = { resolve: resolvePublic, request: requestPinnedHttps },
+): Promise<SafeHttpsResponse & { finalUrl: URL; bytesRead: number }> {
+  const initialUrl = validateOfficialPageUrl(input);
+  if (!initialUrl) throw new UnsafeDestinationError();
+  const initialOrigin = initialUrl.origin;
+  let current = initialUrl;
+  let bytesRead = 0;
+  const started = Date.now();
+
+  for (let redirects = 0; ; redirects++) {
+    const remaining = options.timeoutMs - (Date.now() - started);
+    if (remaining <= 0) throw new OfficialGpxDiscoveryTimeoutError();
+    if (options.sameOriginRedirects && current.origin !== initialOrigin) throw new UnsafeDestinationError();
+    const hostname = current.hostname.replace(/^\[|\]$/g, "");
+    const addresses = await withinTimeout(dependencies.resolve(hostname), remaining);
+    if (!addresses.length || addresses.some((item) => !isPublicAddress(item.address))) throw new UnsafeDestinationError();
+
+    const requestRemaining = options.timeoutMs - (Date.now() - started);
+    if (requestRemaining <= 0) throw new OfficialGpxDiscoveryTimeoutError();
+    const response = await withinTimeout(
+      dependencies.request(current, addresses[0], options.maxBytes - bytesRead, requestRemaining, options.accept),
+      requestRemaining,
+    );
+    bytesRead += response.body.byteLength;
+    if (bytesRead > options.maxBytes) throw new InvalidResponseError();
+
+    if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
+      if (redirects >= options.maxRedirects) throw new Error("redirect-limit");
+      const target = response.headers.location
+        ? sanitizeWebUrl(response.headers.location, current, options.sameOriginRedirects)
+        : null;
+      if (!target) throw new UnsafeDestinationError();
+      current = target;
+      continue;
+    }
+    return { ...response, finalUrl: current, bytesRead };
+  }
+}
+
 const SENSITIVE_QUERY_KEY = /(?:^|[_-])(?:key|token|secret|password|credential|signature|sig|auth|jwt|session|code)(?:[_-]|$)/i;
 function hasSensitiveQuery(url: URL): boolean {
   return [...url.searchParams.keys()].some((key) => SENSITIVE_QUERY_KEY.test(key));
@@ -301,7 +357,7 @@ function safeError(error: unknown): OfficialGpxDiscoveryResult {
 let activeDiscoveries = 0;
 
 export function createOfficialGpxDiscovery(
-  dependencies: DiscoveryDependencies = { resolve: resolvePublic, request: requestPinnedHttps },
+  dependencies: SafeHttpsDependencies = { resolve: resolvePublic, request: requestPinnedHttps },
   limits: typeof OFFICIAL_GPX_DISCOVERY_LIMITS = OFFICIAL_GPX_DISCOVERY_LIMITS,
 ) {
   return async function discoverOfficialGpx(input: string): Promise<OfficialGpxDiscoveryResult> {
@@ -319,8 +375,15 @@ export function createOfficialGpxDiscovery(
         const pageUrl = queue.shift()!;
         if (visited.has(pageUrl.href)) continue;
         visited.add(pageUrl.href);
-        const { html, sourceUrl, bytesRead } = await fetchHtml(pageUrl, firstUrl.origin, dependencies, started, limits.maxResponseBytes - responseBytes, limits);
-        responseBytes += bytesRead;
+        const fetched = await fetchPublicHttps(pageUrl.href, {
+          maxBytes: limits.maxResponseBytes - responseBytes,
+          timeoutMs: limits.timeoutMs - (Date.now() - started),
+          maxRedirects: limits.maxRedirects,
+          accept: "text/html",
+          sameOriginRedirects: true,
+        }, dependencies);
+        const { html, sourceUrl } = validateHtmlResponse(fetched);
+        responseBytes += fetched.bytesRead;
         const links = parseAnchorLinks(html);
         for (const link of links) {
           const target = sanitizeWebUrl(link.href, pageUrl, false);
@@ -350,41 +413,16 @@ export function createOfficialGpxDiscovery(
   };
 }
 
-async function fetchHtml(pageUrl: URL, originalOrigin: string, deps: DiscoveryDependencies, started: number, byteBudget: number, limits: typeof OFFICIAL_GPX_DISCOVERY_LIMITS): Promise<{ html: string; sourceUrl: URL; bytesRead: number }> {
-  let current = pageUrl;
-  let bytesRead = 0;
-  for (let redirects = 0; ; redirects++) {
-    if (Date.now() - started >= limits.timeoutMs) throw new OfficialGpxDiscoveryTimeoutError();
-    if (current.origin !== originalOrigin) throw new UnsafeDestinationError();
-    const bareHost = current.hostname.replace(/^\[|\]$/g, "");
-    const remaining = limits.timeoutMs - (Date.now() - started);
-    if (remaining <= 0) throw new OfficialGpxDiscoveryTimeoutError();
-    const addresses = await withinTimeout(deps.resolve(bareHost), remaining);
-    if (!addresses.length || addresses.some((item) => !isPublicAddress(item.address))) throw new UnsafeDestinationError();
-    const requestRemaining = limits.timeoutMs - (Date.now() - started);
-    if (requestRemaining <= 0) throw new OfficialGpxDiscoveryTimeoutError();
-    const response = await withinTimeout(deps.request(current, addresses[0], byteBudget - bytesRead, requestRemaining), requestRemaining);
-    bytesRead += response.body.byteLength;
-    if (bytesRead > byteBudget) throw new InvalidResponseError();
-    if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
-      if (redirects >= limits.maxRedirects) throw new Error("redirect-limit");
-      const location = response.headers.location;
-      const target = location ? sanitizeWebUrl(location, current, true) : null;
-      if (!target) throw new UnsafeDestinationError();
-      current = target;
-      continue;
-    }
-    if (response.statusCode < 200 || response.statusCode >= 300) throw new InvalidResponseError();
-    const contentType = response.headers["content-type"]?.split(";")[0].trim().toLowerCase();
-    const encoding = response.headers["content-encoding"]?.toLowerCase();
-    if (contentType !== "text/html" && contentType !== "application/xhtml+xml") throw new InvalidResponseError();
-    if (encoding && encoding !== "identity") throw new InvalidResponseError();
-    if (response.body.byteLength > limits.maxResponseBytes) throw new InvalidResponseError();
-    let text: string;
-    try { text = new TextDecoder("utf-8", { fatal: true }).decode(response.body); } catch { throw new InvalidResponseError(); }
-    if (!/<(?:!doctype\s+html|html)\b/i.test(text)) throw new InvalidResponseError();
-    return { html: text, sourceUrl: current, bytesRead };
-  }
+function validateHtmlResponse(response: SafeHttpsResponse & { finalUrl: URL }): { html: string; sourceUrl: URL } {
+  if (response.statusCode < 200 || response.statusCode >= 300) throw new InvalidResponseError();
+  const contentType = response.headers["content-type"]?.split(";")[0].trim().toLowerCase();
+  const encoding = response.headers["content-encoding"]?.toLowerCase();
+  if (contentType !== "text/html" && contentType !== "application/xhtml+xml") throw new InvalidResponseError();
+  if (encoding && encoding !== "identity") throw new InvalidResponseError();
+  let text: string;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(response.body); } catch { throw new InvalidResponseError(); }
+  if (!/<(?:!doctype\s+html|html)\b/i.test(text)) throw new InvalidResponseError();
+  return { html: text, sourceUrl: response.finalUrl };
 }
 
 export const discoverOfficialGpx = createOfficialGpxDiscovery();

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createOfficialGpxDiscovery,
+  createPinnedDnsLookup,
   isPublicAddress,
   OFFICIAL_GPX_DISCOVERY_LIMITS,
   validateOfficialPageUrl,
@@ -9,6 +10,18 @@ import {
 import { POST as postDiscovery } from "./api/race-gpx-discovery/route.ts";
 
 const PUBLIC = [{ address: "93.184.216.34", family: 4 }];
+
+test("pinned DNS lookup supports Node's all-address callback contract", () => {
+  const lookup = createPinnedDnsLookup(PUBLIC[0]);
+  let allResult;
+  lookup("race.example", { all: true }, (error, addresses) => { allResult = { error, addresses }; });
+  assert.deepEqual(allResult, { error: null, addresses: [PUBLIC[0]] });
+
+  let singleResult;
+  lookup("race.example", (error, address, family) => { singleResult = { error, address, family }; });
+  assert.deepEqual(singleResult, { error: null, address: PUBLIC[0].address, family: PUBLIC[0].family });
+});
+
 const page = (html, url = "https://race.example/event") => ({
   statusCode: 200,
   headers: { "content-type": "text/html; charset=utf-8" },

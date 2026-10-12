@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import RouteAnalysisView from "./RouteAnalysisView";
 import {
@@ -15,6 +15,7 @@ import { createAnalysisInputFingerprint } from "./analysisInputFingerprint";
 import { browserRoutePersistence, cacheRouteAnalysis, getOrCreateRouteAnalysis } from "./routePersistence";
 import { lookupSharedRoute, type SharedRouteCache } from "./routePersistenceClient";
 import type { RouteFingerprintResult } from "./routeFingerprint";
+import { consumePendingDiscoveredGpx } from "./discoveredGpxTransfer";
 
 export default function RouteMode() {
   const [analysis, setAnalysis] = useState<RouteAnalysisData | null>(null);
@@ -24,28 +25,16 @@ export default function RouteMode() {
   const [persistenceScope, setPersistenceScope] = useState<"local" | "shared">("local");
   const [sharedCache, setSharedCache] = useState<SharedRouteCache | null>(null);
 
-  async function handleFileChange(
-    event: React.ChangeEvent<HTMLInputElement>,
-  ) {
-    const input = event.currentTarget;
-    const file = input.files?.[0];
-    input.value = "";
-    if (!file) return;
-
+  const analyzeText = useCallback(async (text: string, fallbackName: string) => {
     setAnalysis(null);
     setRouteFingerprint(null);
     setPersistenceScope("local");
     setSharedCache(null);
     setError("");
-    if (!file.name.toLowerCase().endsWith(".gpx")) {
-      setError("Please choose a file with the .gpx extension.");
-      return;
-    }
-
     setIsProcessing(true);
     try {
-      const parsed = parseGpxText(await file.text());
-      const displayName = parsed.name ?? file.name.replace(/\.gpx$/i, "");
+      const parsed = parseGpxText(text);
+      const displayName = parsed.name ?? fallbackName;
       try {
         const [fingerprint, analysisInputFingerprint] = await Promise.all([
           createRouteFingerprint(parsed.segments.map((segment) => segment.map(({ latitude, longitude }) => ({ latitude, longitude })))),
@@ -83,6 +72,33 @@ export default function RouteMode() {
     } finally {
       setIsProcessing(false);
     }
+  }, []);
+
+  useEffect(() => {
+    const pending = consumePendingDiscoveredGpx();
+    if (pending) {
+      queueMicrotask(() => {
+        void analyzeText(pending.text, pending.name);
+      });
+    }
+  }, [analyzeText]);
+
+  async function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+
+    if (!file.name.toLowerCase().endsWith(".gpx")) {
+      setAnalysis(null);
+      setError("Please choose a file with the .gpx extension.");
+      return;
+    }
+    try {
+      await analyzeText(await file.text(), file.name.replace(/\.gpx$/i, ""));
+    } catch {
+      setError("The GPX file could not be read. Try selecting it again.");
+    }
   }
 
   return (
@@ -107,7 +123,7 @@ export default function RouteMode() {
             Analyze a GPX route.
           </h1>
           <p className="mt-6 max-w-2xl text-base leading-7 text-white/55 sm:text-lg">
-            Choose a trail GPX file to calculate its distance, elevation profile and route sections locally.
+            Upload a GPX file or choose a discovered route link to calculate its distance, elevation profile and route sections.
           </p>
 
           <div className="mt-9 max-w-2xl rounded-3xl border border-white/10 bg-white/5 p-5 sm:p-6">
@@ -126,7 +142,7 @@ export default function RouteMode() {
               className="mt-4 block w-full min-w-0 cursor-pointer text-sm text-white/65 file:mr-4 file:rounded-full file:border-0 file:bg-[#a7c957] file:px-5 file:py-2.5 file:text-sm file:font-semibold file:text-[#17211c] hover:file:bg-[#b8d86b] disabled:cursor-wait"
             />
             <p className="mt-4 text-xs leading-5 text-white/40">
-              The GPX file itself is not stored. For official public courses in the race registry, the route fingerprint, analysis and optional map evidence may be shared through this app&apos;s server. Other uploaded routes remain in this browser&apos;s local cache. If you request Terrain Evidence for a local route, route coordinates are sent to this app&apos;s matching endpoint. For optional Mapillary imagery, bounded section search areas are queried server-side; the GPX file and elevation data are not uploaded to Mapillary.
+              Discovered links are checked as a supported single-track GPX before analysis. They are treated as GPX-derived routes and are not bound to a race edition. The GPX file itself is not stored. For registered public courses, the route fingerprint, analysis and optional map evidence may be shared through this app&apos;s server. Other uploaded routes remain in this browser&apos;s local cache. Terrain Evidence sends route coordinates to this app&apos;s matching endpoint; Mapillary receives bounded section search areas, not the GPX file or elevation data.
             </p>
             {isProcessing && (
               <p aria-live="polite" className="mt-4 text-sm text-[#a7c957]">

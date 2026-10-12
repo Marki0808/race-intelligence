@@ -15,7 +15,7 @@ test("homepage offers supported-race lookup and the existing GPX upload as equal
   assert.match(homePage, /Find a supported race/);
   assert.match(homePage, /href="\/route"[\s\S]*?Open GPX upload/);
   assert.match(homePage, /id="race-search-entry"/);
-  assert.match(homePage, /Arbitrary race URL import is not available yet\./);
+  assert.match(homePage, /<RaceGpxDiscovery\s*\/>/);
 });
 
 test("race lookup still resolves a supported race to its registered edition route", () => {
@@ -30,5 +30,5 @@ test("GPX entry still opens the local file picker and processes selected GPX fil
   assert.match(routeMode, /type="file"/);
   assert.match(routeMode, /accept="\.gpx,application\/gpx\+xml,application\/xml,text\/xml"/);
   assert.match(routeMode, /onChange=\{handleFileChange\}/);
-  assert.match(routeMode, /parseGpxText\(await file\.text\(\)\)/);
+  assert.match(routeMode, /parseGpxText\(text\)/);
 });

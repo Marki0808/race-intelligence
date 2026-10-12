@@ -5,6 +5,7 @@ import RaceSources from "./RaceSources";
 import { homepageRaceRecord, raceRegistry } from "./raceRegistry";
 import RaceSearch from "./RaceSearch";
 import CourseAnalysis from "./CourseAnalysis";
+import RaceGpxDiscovery from "./RaceGpxDiscovery";
 
 export default function Home() {
   return (
@@ -79,7 +80,7 @@ export default function Home() {
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#a7c957]">Race Mode</p>
                 <h2 className="mt-3 text-xl font-semibold">Analyze a race</h2>
                 <p className="mt-2 flex-1 text-sm leading-6 text-white/55">
-                  Find a race in the supported registry by name or official race URL. Arbitrary race URL import is not available yet.
+                  Find a supported race or discover route links from an official race webpage. You choose the course before its GPX is analyzed.
                 </p>
                 <a
                   href="#race-search-entry"
@@ -87,6 +88,7 @@ export default function Home() {
                 >
                   Find a supported race
                 </a>
+                <RaceGpxDiscovery />
               </article>
 
               <article className="flex min-w-0 flex-col rounded-3xl border border-white/15 bg-white/5 p-5 sm:p-6">
