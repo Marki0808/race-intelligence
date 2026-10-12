@@ -28,7 +28,7 @@ export default function RaceSearch({
     <div className="mt-9 max-w-2xl">
       <form onSubmit={handleSubmit} className="flex flex-col gap-3 sm:flex-row">
         <label className="sr-only" htmlFor="race-search">
-          Enter a race name or paste a race URL
+          Search supported races by name or official race URL
         </label>
         <input
           id="race-search"
@@ -38,7 +38,7 @@ export default function RaceSearch({
             setQuery(event.target.value);
             setResult(null);
           }}
-          placeholder="Enter a race name or paste a race URL"
+          placeholder="Race name or official URL for a supported race"
           className="min-w-0 flex-1 rounded-full border border-white/20 bg-white/5 px-5 py-3 text-sm text-white outline-none transition placeholder:text-white/40 focus:border-[#a7c957]"
         />
         <button
@@ -48,6 +48,10 @@ export default function RaceSearch({
           Find race
         </button>
       </form>
+
+      <p className="mt-3 text-xs leading-5 text-white/40">
+        This searches races already in our registry; it does not import an arbitrary race URL or GPX file.
+      </p>
 
       {result?.status === "resolved" && (
         <div

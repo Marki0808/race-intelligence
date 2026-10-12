@@ -28,9 +28,9 @@ export default function Home() {
             </a>
           </div>
 
-          <button className="rounded-full bg-[#a7c957] px-5 py-2.5 text-sm font-semibold text-[#17211c] transition hover:bg-[#b8d86b]">
+          <a href="#race-search-entry" className="rounded-full bg-[#a7c957] px-5 py-2.5 text-sm font-semibold text-[#17211c] transition hover:bg-[#b8d86b]">
             Analyze a race
-          </button>
+          </a>
         </div>
       </nav>
 
@@ -74,13 +74,40 @@ export default function Home() {
               information behind the race before race day.
             </p>
 
-            <RaceSearch records={raceRegistry} />
-            <Link
-              href="/route"
-              className="mt-4 inline-flex rounded-full border border-white/20 px-5 py-2.5 text-sm text-white/80 transition hover:bg-white/10 hover:text-white"
-            >
-              Analyze a GPX route
-            </Link>
+            <div className="mt-9 grid max-w-4xl gap-4 sm:grid-cols-2">
+              <article className="flex min-w-0 flex-col rounded-3xl border border-white/15 bg-white/5 p-5 sm:p-6">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#a7c957]">Race Mode</p>
+                <h2 className="mt-3 text-xl font-semibold">Analyze a race</h2>
+                <p className="mt-2 flex-1 text-sm leading-6 text-white/55">
+                  Find a race in the supported registry by name or official race URL. Arbitrary race URL import is not available yet.
+                </p>
+                <a
+                  href="#race-search-entry"
+                  className="mt-5 inline-flex min-h-11 items-center justify-center rounded-full bg-[#a7c957] px-5 py-2.5 text-center text-sm font-semibold text-[#17211c] transition hover:bg-[#b8d86b]"
+                >
+                  Find a supported race
+                </a>
+              </article>
+
+              <article className="flex min-w-0 flex-col rounded-3xl border border-white/15 bg-white/5 p-5 sm:p-6">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#a7c957]">Route Mode</p>
+                <h2 className="mt-3 text-xl font-semibold">Analyze a route</h2>
+                <p className="mt-2 flex-1 text-sm leading-6 text-white/55">
+                  Choose a single-track or single-route GPX with elevation for local route analysis.
+                </p>
+                <Link
+                  href="/route"
+                  className="mt-5 inline-flex min-h-11 items-center justify-center rounded-full border border-white/25 px-5 py-2.5 text-center text-sm font-semibold text-white transition hover:bg-white/10"
+                >
+                  Open GPX upload
+                </Link>
+              </article>
+            </div>
+
+            <div id="race-search-entry" className="mt-6 scroll-mt-24">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/40">Supported race lookup</p>
+              <RaceSearch records={raceRegistry} />
+            </div>
 
             <div className="mt-10 flex flex-wrap gap-3">
               <a

@@ -1,6 +1,6 @@
 # Race Intelligence — Project State
 
-**Last verified against:** `main` at `608a607c1481d247a3ed455009fe2aa0b39d817d` (isolated AI narrative prototype is in the current working tree; no live calls were made)
+**Last verified against:** `main` at `ad1a56fecb025023c38bfc9c534d899859c2513c`
 **Verification date:** 2026-10-11
 **Document scope:** Current repository architecture plus separately labeled Production facts supplied from completed operational verification.
 
@@ -14,6 +14,8 @@ Race Intelligence helps trail runners understand a route before running or racin
 - **Route Mode:** a user selects a GPX file for deterministic route analysis. Analysis runs in the browser. OSM and Mapillary evidence can also be requested for local/noncanonical uploads through the application APIs; shared-persistence eligibility is not required to request or use that evidence. For registered physical routes that meet the shared-route rules, the same evidence flow can additionally use server-side shared persistence and reuse.
 
 Current analytical outputs include distance and elevation metrics, Route Dynamics, consolidated runner-facing Route Sections, Key Route Moments, optional surface/imagery evidence, and Course Brief. The deterministic V2 structural Course Brief is integrated into Race Mode and Route Mode; its separate V3 geographic presentation engine is not exposed. The V1 OpenAI API/provider flow remains separate and unchanged. GPX-derived outputs are distinct from external provider evidence. Race search remains statically registered rather than database-backed.
+
+The homepage offers two equal entry paths: Race Mode looks up races already in the static registry by name or official source URL, and Route Mode opens the existing local GPX upload flow. Pasting an arbitrary official race URL does not import its GPX. Official-URL discovery and edition-GPX loading beyond the current registry lookup is the next planned feature.
 
 ## 2. End-to-end data flow
 
@@ -356,9 +358,10 @@ For the isolated AI narrative prototype, focused prototype and V2 composition/re
 
 ## 14. Current priorities
 
-1. In the next session, assess Course Brief's product value and identify additional verifiable route information that could make its narrative more useful without adding unsupported claims or speculative features.
-2. Before enabling Phase 3D geographic presentation, establish trusted edition-GPX-to-RouteAnalysisData provenance during Race Mode's actual selected-edition GPX loading and analysis flow. Route Mode remains structural-only unless it gains an independent edition binding.
-3. Preserve the separation from the V1 OpenAI API/provider flow, and keep external evidence coverage and provenance explicit; do not infer terrain, imagery, or geographic position where evidence is absent.
+1. Implement official race URL discovery and edition-GPX loading beyond the current static exact-match registry, with explicit supported-source and edition validation.
+2. Assess Course Brief's product value and identify additional verifiable route information that could make its narrative more useful without adding unsupported claims or speculative features.
+3. Before enabling Phase 3D geographic presentation, establish trusted edition-GPX-to-RouteAnalysisData provenance during Race Mode's actual selected-edition GPX loading and analysis flow. Route Mode remains structural-only unless it gains an independent edition binding.
+4. Preserve the separation from the V1 OpenAI API/provider flow, and keep external evidence coverage and provenance explicit; do not infer terrain, imagery, or geographic position where evidence is absent.
 
 ## 15. Safe development workflow
 
