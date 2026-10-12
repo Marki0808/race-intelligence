@@ -5,6 +5,7 @@ import { request as httpsRequest, type RequestOptions } from "node:https";
 export const OFFICIAL_GPX_DISCOVERY_LIMITS = {
   timeoutMs: 8_000,
   maxPages: 3,
+  maxSubpageDepth: 2,
   maxRedirects: 2,
   maxResponseBytes: 1_000_000,
   maxCandidates: 20,
@@ -312,9 +313,13 @@ function parseAnchorLinks(html: string): HtmlLink[] {
 }
 
 const DISTANCE = /(?:^|[^a-z0-9])(\d{1,3}(?:[.,]\d{1,2})?\s*(?:km|k|mi|mile|miles))(?![a-z])/i;
-const RELEVANT = /\b(course|route|distance|track|gpx|download|map|ultra|race)\b/i;
+const ROUTE_NAV = /\b(gpx|tracks?|stazes?|stazama|trases?|trasama|routes?|courses?|parcours|recorridos|downloads?)\b/i;
+const RACE_NAV = /\b(utrke|races?|events?)\b/i;
+const IRRELEVANT_NAV = /\b(account|login|sign[\s_-]?in|register|registration|prijava|partners?|sponsors?|advert|shop|store|news|media|faq|privacy|terms|contact|volunteers?|accommodation|hotel|travel|transport|destination|climate|weather|results?|schedule|program|photos|newsletter|cookies)\b/i;
 const DOWNLOAD = /\bdownload\b.{0,40}\b(?:gpx|track|route)\b|\b(?:gpx|track|route)\b.{0,40}\bdownload\b/i;
 const GPX_PATH = /\.gpx$/i;
+
+type QueuedPage = { url: URL; depth: number; priority: number; order: number };
 
 function distanceIn(value: string): string | null {
   const matches = [...value.matchAll(new RegExp(DISTANCE.source, "gi"))]
@@ -341,8 +346,25 @@ function isGpxEvidence(url: URL, link: HtmlLink): boolean {
   return GPX_PATH.test(url.pathname) || DOWNLOAD.test(labels);
 }
 
-function isRelevantSubpage(link: HtmlLink): boolean {
-  return RELEVANT.test(`${link.text} ${link.title} ${link.href}`) && !DOWNLOAD.test(`${link.text} ${link.title}`);
+function subpagePriority(link: HtmlLink, target: URL): number {
+  const label = `${link.text} ${link.title}`.trim();
+  let decodedPath = target.pathname;
+  try { decodedPath = decodeURIComponent(target.pathname); } catch { /* retain the safely parsed encoded path */ }
+  const path = decodedPath.replace(/[-_]+/g, " ");
+  const evidence = `${label} ${path}`;
+  if (IRRELEVANT_NAV.test(evidence) || DOWNLOAD.test(label)) return 0;
+
+  const routeLabel = ROUTE_NAV.test(label);
+  const routePath = ROUTE_NAV.test(path);
+  const gpxContext = /\bgpx\b/i.test(evidence);
+  if (gpxContext) return 120;
+  if (routeLabel) return 100;
+  if (routePath) return 80;
+
+  // Individual race pages can expose route pages one level deeper, but generic
+  // global race/event indexes are deliberately excluded.
+  if (RACE_NAV.test(evidence) && !/\/(?:races?|utrke|events?)(?:\/)?$/i.test(target.pathname)) return 35;
+  return 0;
 }
 
 function sanitizeWebUrl(raw: string, base: URL, sameOriginOnly: boolean): URL | null {
@@ -426,13 +448,28 @@ export function createOfficialGpxDiscovery(
     const started = Date.now();
     const candidates = new Map<string, GpxDiscoveryCandidate>();
     const visited = new Set<string>();
-    const queue: URL[] = [firstUrl];
+    const queue: QueuedPage[] = [{ url: firstUrl, depth: 0, priority: Number.POSITIVE_INFINITY, order: 0 }];
+    let nextQueueOrder = 1;
     let responseBytes = 0;
+    const enqueuePage = (url: URL, depth: number, priority: number) => {
+      if (depth > limits.maxSubpageDepth || visited.has(url.href)) return;
+      const existingIndex = queue.findIndex((item) => item.url.href === url.href);
+      if (existingIndex >= 0) {
+        if (queue[existingIndex].priority < priority) queue[existingIndex] = { ...queue[existingIndex], priority };
+      } else {
+        queue.push({ url, depth, priority, order: nextQueueOrder++ });
+      }
+      queue.sort((left, right) => right.priority - left.priority || left.order - right.order);
+      const available = Math.max(0, limits.maxPages - visited.size);
+      if (queue.length > available) queue.length = available;
+    };
     try {
       while (queue.length && visited.size < limits.maxPages && candidates.size < limits.maxCandidates && responseBytes < limits.maxResponseBytes) {
-        const pageUrl = queue.shift()!;
+        const currentPage = queue.shift()!;
+        const pageUrl = currentPage.url;
         if (visited.has(pageUrl.href)) continue;
         visited.add(pageUrl.href);
+        if (queue.length > limits.maxPages - visited.size) queue.length = limits.maxPages - visited.size;
         const fetched = await fetchPublicHttps(pageUrl.href, {
           maxBytes: limits.maxResponseBytes - responseBytes,
           timeoutMs: limits.timeoutMs - (Date.now() - started),
@@ -443,6 +480,7 @@ export function createOfficialGpxDiscovery(
         const { html, sourceUrl } = validateHtmlResponse(fetched);
         responseBytes += fetched.bytesRead;
         const links = parseAnchorLinks(html);
+        const candidatesBeforePage = candidates.size;
         for (const link of links) {
           const target = sanitizeWebUrl(link.href, pageUrl, false);
           if (!target) continue;
@@ -485,11 +523,19 @@ export function createOfficialGpxDiscovery(
                 discoveryStatus: "link-evidence-only", ambiguity: null,
               });
             }
-          } else if (!gpxLink && queue.length + visited.size < OFFICIAL_GPX_DISCOVERY_LIMITS.maxPages &&
-            target.origin === firstUrl.origin && isRelevantSubpage(link) && !visited.has(target.href) && !queue.some((item) => item.href === target.href)) {
-            queue.push(target);
+          } else if (!gpxLink && target.origin === firstUrl.origin && currentPage.depth < limits.maxSubpageDepth) {
+            const priority = subpagePriority(link, target);
+            if (priority > 0) enqueuePage(target, currentPage.depth + 1, priority);
           }
           if (candidates.size >= limits.maxCandidates) break;
+        }
+        if (candidates.size > candidatesBeforePage) {
+          // Once an explicit route page has produced selectable GPX links,
+          // do not spend the remaining page budget on lower-confidence race
+          // listings or unrelated site navigation.
+          for (let index = queue.length - 1; index >= 0; index--) {
+            if (queue[index].priority < 80) queue.splice(index, 1);
+          }
         }
       }
       const results = [...candidates.values()].map((candidate) => ({ ...candidate, ambiguity: candidates.size > 1 ? "multiple-candidates" as const : null }));

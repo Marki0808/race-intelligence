@@ -119,6 +119,99 @@ test("extracts five course distances from associated headings and excludes the G
   assert.equal(result.candidates.some(({ gpxUrl }) => gpxUrl.endsWith("/courses/gpx-tracks")), false);
 });
 
+test("Croatian GPX zapisi navigation is prioritized over generic race links and reaches five labeled routes", async () => {
+  const rootUrl = "https://race.example/hr";
+  const indexUrl = "https://race.example/races-runners/runners/gpx-tracks";
+  const routeHtml = ["168K", "110K", "69K", "42K", "21K"].map((distance) =>
+    `<article><h3>Istria100 - ${distance}</h3><a href="https://files.example/${distance}.gpx">GPX track</a></article>`,
+  ).join("");
+  const pages = new Map([
+    [rootUrl, page('<nav><a href="/hr/races">Utrke</a><a href="/hr/race/168k">Istra 168K</a><a href="/hr/login">Prijava</a><a href="/races-runners/runners/gpx-tracks">GPX zapisi</a></nav>')],
+    [indexUrl, page(routeHtml)],
+  ]);
+  const { run, calls } = discovery(pages);
+  const result = await run(rootUrl);
+  assert.equal(result.status, "success");
+  assert.deepEqual(calls.filter((call) => call.type === "request").map((call) => call.url), [rootUrl, indexUrl]);
+  assert.deepEqual(result.candidates.map(({ distanceLabel }) => distanceLabel), ["168K", "110K", "69K", "42K", "21K"]);
+});
+
+test("English GPX tracks navigation is followed before unrelated same-origin event links", async () => {
+  const rootUrl = "https://race.example/en";
+  const indexUrl = "https://race.example/en/course/gpx-tracks";
+  const pages = new Map([
+    [rootUrl, page('<nav><a href="/events">Events</a><a href="/en/account">Account</a><a href="/en/course/gpx-tracks">GPX tracks</a></nav>')],
+    [indexUrl, page('<article><h3>Mountain route 42K</h3><a href="https://files.example/42k.gpx">GPX track</a></article>')],
+  ]);
+  const { run, calls } = discovery(pages);
+  const result = await run(rootUrl);
+  assert.equal(result.status, "success");
+  assert.deepEqual(calls.filter((call) => call.type === "request").map((call) => call.url), [rootUrl, indexUrl]);
+  assert.equal(result.candidates[0].distanceLabel, "42K");
+});
+
+test("recognizes explicit route navigation labels across supported languages", async () => {
+  const labels = [
+    ["Staze", "/hr/staze"], ["Trase", "/hr/trase"], ["Utrke", "/hr/utrke/istria"],
+    ["Routes", "/en/routes"], ["Courses", "/en/courses"], ["Parcours", "/fr/parcours"],
+    ["Recorridos", "/es/recorridos"], ["Tracks", "/en/tracks"], ["Downloads", "/en/downloads"],
+  ];
+  for (const [label, path] of labels) {
+    const rootUrl = "https://race.example/home";
+    const targetUrl = new URL(path, rootUrl).href;
+    const pages = new Map([
+      [rootUrl, page(`<nav><a href="${path}">${label}</a></nav>`, rootUrl)],
+      [targetUrl, page('<p>No route download on this page.</p>', targetUrl)],
+    ]);
+    const { run, calls } = discovery(pages);
+    assert.deepEqual(await run(rootUrl), { status: "no-results", candidates: [] }, label);
+    assert.deepEqual(calls.filter((call) => call.type === "request").map((call) => call.url), [rootUrl, targetUrl], label);
+  }
+});
+
+test("reaches a GPX page at subpage depth two within the page budget", async () => {
+  const rootUrl = "https://race.example/home";
+  const raceUrl = "https://race.example/utrke/spring-trail";
+  const indexUrl = "https://race.example/en/courses";
+  const pages = new Map([
+    [rootUrl, page('<a href="/races">Utrke</a><a href="/utrke/spring-trail">Spring trail event</a>')],
+    [raceUrl, page('<a href="/en/courses">Course routes</a><a href="/en/account">Account</a>')],
+    [indexUrl, page('<article><h3>Spring trail 33K</h3><a href="https://files.example/spring-33k.gpx">GPX track</a></article>')],
+  ]);
+  const { run, calls } = discovery(pages);
+  const result = await run(rootUrl);
+  assert.equal(result.status, "success");
+  assert.deepEqual(calls.filter((call) => call.type === "request").map((call) => call.url), [rootUrl, raceUrl, indexUrl]);
+  assert.equal(result.candidates[0].distanceLabel, "33K");
+});
+
+test("irrelevant navigation links do not consume the bounded page traversal budget", async () => {
+  const rootUrl = "https://race.example/home";
+  const indexUrl = "https://race.example/gpx/staze";
+  const irrelevant = Array.from({ length: 30 }, (_, index) =>
+    `<a href="/account/page-${index}">Account ${index}</a><a href="/news/item-${index}">News ${index}</a><a href="https://ad.example/${index}">Partner</a>`,
+  ).join("");
+  const pages = new Map([
+    [rootUrl, page(`${irrelevant}<a href="/races">Races</a><a href="/gpx/staze">Staze</a>`, rootUrl)],
+    [indexUrl, page('<article><h3>Forest route 18K</h3><a href="https://files.example/18k.gpx">GPX track</a></article>', indexUrl)],
+  ]);
+  const { run, calls } = discovery(pages);
+  const result = await run(rootUrl);
+  assert.equal(result.status, "success");
+  assert.deepEqual(calls.filter((call) => call.type === "request").map((call) => call.url), [rootUrl, indexUrl]);
+  assert.equal(result.candidates[0].distanceLabel, "18K");
+});
+
+test("course navigation with no GPX remains a bounded no-results state", async () => {
+  const pages = new Map([
+    ["https://race.example/home", page('<nav><a href="/courses">Courses</a></nav>')],
+    ["https://race.example/courses", page('<h2>Courses</h2><a href="/registration">Registration</a>')],
+  ]);
+  const { run, calls } = discovery(pages);
+  assert.deepEqual(await run("https://race.example/home"), { status: "no-results", candidates: [] });
+  assert.equal(calls.filter((call) => call.type === "request").length, 2);
+});
+
 test("uses distinguishable filename labels when distance evidence is absent", async () => {
   const html = '<article><h3>Course files</h3><a href="/files/east_loop.gpx">GPX track</a><a href="/files/west_loop.gpx">GPX track</a></article>';
   const { run } = discovery(new Map([[
@@ -286,7 +379,7 @@ test("the API rejects invalid and oversized requests without fetching", async ()
 
 test("bounds pages, redirects, bytes, candidates, timeout, and per-process concurrency", () => {
   assert.deepEqual(OFFICIAL_GPX_DISCOVERY_LIMITS, {
-    timeoutMs: 8_000, maxPages: 3, maxRedirects: 2, maxResponseBytes: 1_000_000,
+    timeoutMs: 8_000, maxPages: 3, maxSubpageDepth: 2, maxRedirects: 2, maxResponseBytes: 1_000_000,
     maxCandidates: 20, maxConcurrentPerProcess: 2,
   });
 });
