@@ -17,7 +17,15 @@ type Candidate = {
   ambiguity: "multiple-candidates" | null;
 };
 
-type DiscoveryResponse = { status: string; candidates?: Candidate[]; category?: string };
+type EventChoice = {
+  url: string;
+  sourcePageUrl: string;
+  linkText: string;
+  displayName: string;
+  supportingEvidence: string[];
+};
+
+type DiscoveryResponse = { status: string; candidates?: Candidate[]; events?: EventChoice[]; category?: string };
 
 function isSafeDisplayUrl(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -32,15 +40,18 @@ export default function RaceGpxDiscovery() {
   const [raceUrl, setRaceUrl] = useState("");
   const [submittedUrl, setSubmittedUrl] = useState("");
   const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [events, setEvents] = useState<EventChoice[]>([]);
   const [selectedUrl, setSelectedUrl] = useState("");
-  const [status, setStatus] = useState<"idle" | "loading" | "no-results" | "error" | "downloading" | "ready">("idle");
+  const [selectedEventUrl, setSelectedEventUrl] = useState("");
+  const [status, setStatus] = useState<"idle" | "loading" | "no-results" | "unsupported" | "error" | "downloading" | "ready">("idle");
   const [message, setMessage] = useState("");
 
-  async function handleDiscovery(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function discoverPage(url: string) {
     setCandidates([]);
+    setEvents([]);
     setSelectedUrl("");
-    setSubmittedUrl(raceUrl.trim());
+    setSelectedEventUrl("");
+    setSubmittedUrl(url);
     setMessage("");
     setStatus("loading");
     try {
@@ -63,6 +74,25 @@ export default function RaceGpxDiscovery() {
           return;
         }
       }
+      if (result.status === "event-selection-required" && Array.isArray(result.events)) {
+        const safeEvents = result.events.filter((choice) =>
+          choice && isSafeDisplayUrl(choice.url) && isSafeDisplayUrl(choice.sourcePageUrl) &&
+          new URL(choice.url).origin === new URL(choice.sourcePageUrl).origin &&
+          typeof choice.displayName === "string" && choice.displayName.trim().length > 0 &&
+          typeof choice.linkText === "string" && Array.isArray(choice.supportingEvidence) &&
+          choice.supportingEvidence.every((item) => typeof item === "string"),
+        );
+        if (safeEvents.length >= 2) {
+          setEvents(safeEvents);
+          setStatus("idle");
+          return;
+        }
+      }
+      if (result.status === "unsupported-resources") {
+        setMessage("This event links GPX resources as ZIP archives, which this flow cannot open yet. You can upload a supported GPX file instead.");
+        setStatus("unsupported");
+        return;
+      }
       if (result.status === "no-results") {
         setStatus("no-results");
         return;
@@ -75,6 +105,16 @@ export default function RaceGpxDiscovery() {
       setMessage("Race-page discovery is temporarily unavailable. You can upload a GPX file instead.");
       setStatus("error");
     }
+  }
+
+  async function handleDiscovery(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await discoverPage(raceUrl.trim());
+  }
+
+  async function handleEventSelection() {
+    if (!events.some((choice) => choice.url === selectedEventUrl) || status === "loading") return;
+    await discoverPage(selectedEventUrl);
   }
 
   async function handleConfirmSelection() {
@@ -142,7 +182,30 @@ export default function RaceGpxDiscovery() {
       {status === "loading" && <p aria-live="polite" className="mt-3 text-sm text-white/65">Checking the page for route links…</p>}
       {status === "downloading" && <p aria-live="polite" className="mt-3 text-sm text-white/65">Retrieving and validating the selected GPX…</p>}
       {status === "no-results" && <div role="status" className="mt-3 text-sm leading-6 text-white/70">No GPX route links were found on that page. <Link href="/route" className="font-semibold text-[#a7c957] underline">Upload a GPX file instead.</Link></div>}
+      {status === "unsupported" && <div role="status" className="mt-3 text-sm leading-6 text-white/70">{message} <Link href="/route" className="font-semibold text-[#a7c957] underline">Open manual GPX upload.</Link></div>}
       {(status === "error" || status === "ready") && <div role="status" className="mt-3 text-sm leading-6 text-white/70">{message} {status === "error" && <Link href="/route" className="font-semibold text-[#a7c957] underline">Open manual GPX upload.</Link>}</div>}
+
+      {events.length > 0 && status !== "loading" && (
+        <fieldset className="mt-4 space-y-3">
+          <legend className="text-sm font-semibold text-white">Choose the event you want to search</legend>
+          <p className="text-xs leading-5 text-amber-100/75">This organizer page links to several events. Choose one so routes from different events are not mixed.</p>
+          {events.map((choice) => (
+            <label key={choice.url} className="block min-w-0 cursor-pointer rounded-xl border border-white/10 bg-white/5 p-3 text-sm">
+              <span className="flex min-w-0 items-start gap-3">
+                <input type="radio" name="selected-race-event" value={choice.url} checked={selectedEventUrl === choice.url} onChange={() => setSelectedEventUrl(choice.url)} className="mt-1 accent-[#a7c957]" />
+                <span className="min-w-0 flex-1">
+                  <span className="block break-words font-semibold text-white">{choice.displayName}</span>
+                  <span className="mt-1 block break-all text-xs text-white/45">Source: {choice.sourcePageUrl}</span>
+                  {choice.supportingEvidence.map((item, index) => <span key={`${index}-${item}`} className="mt-1 block break-words text-xs text-white/60">{item}</span>)}
+                </span>
+              </span>
+            </label>
+          ))}
+          <button type="button" onClick={handleEventSelection} disabled={!selectedEventUrl || busy} className="min-h-11 w-full rounded-full border border-[#a7c957]/70 px-5 py-2.5 text-sm font-semibold text-[#d5e8a2] disabled:cursor-not-allowed disabled:opacity-40">
+            Search this event for GPX links
+          </button>
+        </fieldset>
+      )}
 
       {candidates.length > 0 && status !== "downloading" && status !== "ready" && (
         <fieldset className="mt-4 space-y-3" disabled={busy}>

@@ -29,6 +29,21 @@ test("candidate UI requires explicit radio selection and confirmation even for o
   assert.match(discoveryUi, /typeof candidate\.displayLabel === "string"/);
 });
 
+test("organizer event choices require explicit selection and launch a fresh scoped discovery", () => {
+  assert.match(discoveryUi, /event-selection-required/);
+  assert.match(discoveryUi, /type="radio" name="selected-race-event"/);
+  assert.match(discoveryUi, /Search this event for GPX links/);
+  assert.match(discoveryUi, /discoverPage\(selectedEventUrl\)/);
+  assert.match(discoveryUi, /choice\.sourcePageUrl/);
+  assert.match(discoveryUi, /new URL\(choice\.url\)\.origin === new URL\(choice\.sourcePageUrl\)\.origin/);
+});
+
+test("unsupported GPX archives are not offered as GPX candidates and keep manual upload available", () => {
+  assert.match(discoveryUi, /unsupported-resources/);
+  assert.match(discoveryUi, /ZIP archives, which this flow cannot open yet/);
+  assert.match(discoveryUi, /Open manual GPX upload/);
+});
+
 test("no-results and failures offer the existing manual-upload route", () => {
   assert.match(discoveryUi, /status === "no-results"/);
   assert.match(discoveryUi, /status === "error"/);

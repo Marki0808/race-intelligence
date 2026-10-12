@@ -25,8 +25,26 @@ export type GpxDiscoveryCandidate = {
   ambiguity: "multiple-candidates" | null;
 };
 
+export type OfficialGpxEventChoice = {
+  url: string;
+  sourcePageUrl: string;
+  linkText: string;
+  displayName: string;
+  supportingEvidence: string[];
+};
+
+export type UnsupportedGpxResource = {
+  sourcePageUrl: string;
+  displayLabel: string;
+  linkText: string;
+  supportingEvidence: string[];
+  format: "zip";
+};
+
 export type OfficialGpxDiscoveryResult =
   | { status: "success"; candidates: GpxDiscoveryCandidate[] }
+  | { status: "event-selection-required"; events: OfficialGpxEventChoice[] }
+  | { status: "unsupported-resources"; resources: UnsupportedGpxResource[] }
   | { status: "no-results"; candidates: [] }
   | { status: "invalid-url"; candidates: [] }
   | { status: "unsafe-destination"; candidates: [] }
@@ -363,6 +381,55 @@ function isGpxEvidence(url: URL, link: HtmlLink): boolean {
   return GPX_PATH.test(url.pathname) || DOWNLOAD.test(labels);
 }
 
+const GENERIC_EVENT_LABEL = /^(?:learn more|find out more|more|details|saznaj više|saznaj vise|više|vise|event|events|race|races|utrka|utrke|homepage|home)$/i;
+
+function isDistanceRoutePath(pathname: string): boolean {
+  const segments = pathname.split("/").filter(Boolean);
+  const leaf = segments.at(-1) ?? "";
+  return /^(?:\d{1,3}(?:[.,]\d{1,2})?\s*(?:km|k|m|mi|mile|miles))$/i.test(leaf)
+    || (/^(?:races?|events?|courses?)$/i.test(segments.at(-2) ?? "") && /^\d{1,3}(?:km|k|m|mi)$/i.test(leaf));
+}
+
+function organizerEventChoices(links: HtmlLink[], sourceUrl: URL, maxChoices = 8): OfficialGpxEventChoice[] {
+  const choices = new Map<string, OfficialGpxEventChoice>();
+  for (const link of links) {
+    const target = sanitizeWebUrl(link.href, sourceUrl, true);
+    if (!target || hasSensitiveQuery(target) || target.href === sourceUrl.href || isDistanceRoutePath(target.pathname)
+      || isGpxEvidence(target, link) || unsupportedArchiveEvidence(target, link)) continue;
+    const name = link.contextHeading?.trim() ?? "";
+    // An enclosing card/section heading is required. Bare navigation labels
+    // are too weak to distinguish organizer events from ordinary site menus.
+    if (!name || name.length > 160 || GENERIC_EVENT_LABEL.test(name) || IRRELEVANT_NAV.test(name)) continue;
+    if (name.split(/\s+/).filter(Boolean).length < 2) continue;
+    const priority = subpagePriority(link, target);
+    if (priority >= 80 || IRRELEVANT_NAV.test(`${link.text} ${link.title}`)) continue;
+    const evidence = [
+      link.text && `link text: ${link.text}`,
+      link.title && `title: ${link.title}`,
+      `associated heading: ${name}`,
+    ].filter(Boolean) as string[];
+    const existing = choices.get(target.href);
+    if (existing) {
+      existing.supportingEvidence = [...new Set([...existing.supportingEvidence, ...evidence])];
+      if (existing.displayName.length < name.length) existing.displayName = name;
+      if (!existing.linkText && link.text) existing.linkText = link.text;
+    } else if (choices.size < maxChoices) {
+      choices.set(target.href, {
+        url: target.href,
+        sourcePageUrl: publicSourceUrl(sourceUrl),
+        linkText: link.text,
+        displayName: name,
+        supportingEvidence: evidence,
+      });
+    }
+  }
+  return [...choices.values()];
+}
+
+function unsupportedArchiveEvidence(url: URL, link: HtmlLink): boolean {
+  return /\.zip$/i.test(url.pathname) && /\bgpx\b/i.test(`${link.text} ${link.title}`);
+}
+
 function subpagePriority(link: HtmlLink, target: URL): number {
   const label = `${link.text} ${link.title}`.trim();
   let decodedPath = target.pathname;
@@ -473,6 +540,7 @@ export function createOfficialGpxDiscovery(
     activeDiscoveries++;
     const started = Date.now();
     const candidates = new Map<string, GpxDiscoveryCandidate>();
+    const unsupportedResources = new Map<string, UnsupportedGpxResource>();
     const visited = new Set<string>();
     const queue: QueuedPage[] = [{ url: firstUrl, depth: 0, priority: Number.POSITIVE_INFINITY, order: 0 }];
     let nextQueueOrder = 1;
@@ -512,6 +580,10 @@ export function createOfficialGpxDiscovery(
         responseBytes += fetched.bytesRead;
         const links = parseAnchorLinks(html);
         const candidatesBeforePage = candidates.size;
+        const routeIndexEvidence = links.some((link) => {
+          const target = sanitizeWebUrl(link.href, pageUrl, true);
+          return target !== null && !isGpxEvidence(target, link) && subpagePriority(link, target) >= 80;
+        });
         for (const link of links) {
           const target = sanitizeWebUrl(link.href, pageUrl, false);
           if (!target) continue;
@@ -554,11 +626,34 @@ export function createOfficialGpxDiscovery(
                 discoveryStatus: "link-evidence-only", ambiguity: null,
               });
             }
+          } else if (unsupportedArchiveEvidence(target, link) && !hasSensitiveQuery(target)) {
+            const heading = link.contextHeading?.trim();
+            const fileName = fileNameFromUrl(target);
+            const distance = distanceIn(`${heading ?? ""} ${link.text} ${link.title} ${fileName ?? ""}`);
+            const displayLabel = heading && !GENERIC_EVENT_LABEL.test(heading)
+              ? heading.slice(0, 200)
+              : distance ?? fileName ?? "GPX archive";
+            const resource: UnsupportedGpxResource = {
+              sourcePageUrl: publicSourceUrl(sourceUrl),
+              displayLabel,
+              linkText: link.text,
+              supportingEvidence: [
+                link.text && `link text: ${link.text}`,
+                heading && `associated heading: ${heading}`,
+                `resource format: ZIP archive`,
+              ].filter(Boolean) as string[],
+              format: "zip",
+            };
+            unsupportedResources.set(target.href, resource);
           } else if (!gpxLink && target.origin === firstUrl.origin && currentPage.depth < limits.maxSubpageDepth) {
             const priority = subpagePriority(link, target);
             if (priority > 0) enqueuePage(target, currentPage.depth + 1, priority);
           }
           if (candidates.size >= limits.maxCandidates) break;
+        }
+        if (currentPage.depth === 0 && candidates.size === 0 && !routeIndexEvidence) {
+          const events = organizerEventChoices(links, sourceUrl);
+          if (events.length >= 2) return { status: "event-selection-required", events };
         }
         if (candidates.size > candidatesBeforePage) {
           // Once an explicit route page has produced selectable GPX links,
@@ -570,7 +665,9 @@ export function createOfficialGpxDiscovery(
         }
       }
       const results = [...candidates.values()].map((candidate) => ({ ...candidate, ambiguity: candidates.size > 1 ? "multiple-candidates" as const : null }));
-      return results.length ? { status: "success", candidates: results } : { status: "no-results", candidates: [] };
+      if (results.length) return { status: "success", candidates: results };
+      if (unsupportedResources.size) return { status: "unsupported-resources", resources: [...unsupportedResources.values()] };
+      return { status: "no-results", candidates: [] };
     } catch (error) {
       const result = safeError(error);
       if (result.status === "provider-failure") {

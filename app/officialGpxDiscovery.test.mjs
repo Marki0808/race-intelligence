@@ -148,6 +148,106 @@ test("Croatian GPX zapisi navigation is prioritized over generic race links and 
   assert.deepEqual(result.candidates.map(({ distanceLabel }) => distanceLabel), ["168K", "110K", "69K", "42K", "21K"]);
 });
 
+test("returns evidence-backed organizer event choices instead of crawling and mixing event routes", async () => {
+  const rootUrl = "https://organizer.example/";
+  const html = [
+    '<nav><a href="/about">About</a><a href="/races/100M">SDT - Serra de Tramuntana</a></nav>',
+    '<main>',
+    '<article><h2>External Ultra Trail</h2><a href="https://external.example/event">Details</a></article>',
+    '<article><h2>Ultra Trail Učka</h2><a href="/ultra-trail-ucka">Saznaj više</a></article>',
+    '<article><h2>Rika Vertikal</h2><a href="/rika-vertikal">Saznaj više</a></article>',
+    '<article><h2>Drenova Trail</h2><a href="/drenova-trail">Saznaj više</a></article>',
+    '<article><h2>Malinska Trail</h2><a href="/malinska-trail">Saznaj više</a></article>',
+    '</main>',
+  ].join("");
+  const { run, calls } = discovery(new Map([[rootUrl, page(html, rootUrl)]]));
+  const result = await run(rootUrl);
+  assert.equal(result.status, "event-selection-required");
+  assert.deepEqual(result.events.map(({ displayName, url }) => [displayName, url]), [
+    ["Ultra Trail Učka", "https://organizer.example/ultra-trail-ucka"],
+    ["Rika Vertikal", "https://organizer.example/rika-vertikal"],
+    ["Drenova Trail", "https://organizer.example/drenova-trail"],
+    ["Malinska Trail", "https://organizer.example/malinska-trail"],
+  ]);
+  assert.ok(result.events.every((event) => event.sourcePageUrl === rootUrl && event.supportingEvidence.includes(`associated heading: ${event.displayName}`)));
+  assert.equal(calls.filter((call) => call.type === "request").length, 1, "event pages are not fetched before user selection");
+});
+
+test("selected organizer event gets a fresh scoped discovery and GPX-labeled ZIP is reported unsupported", async () => {
+  const rootUrl = "https://organizer.example/";
+  const eventUrl = "https://organizer.example/ultra-trail-ucka";
+  const pages = new Map([
+    [rootUrl, page('<main><article><h2>Ultra Trail Učka</h2><a href="/ultra-trail-ucka">Saznaj više</a></article><article><h2>Rika Vertikal</h2><a href="/rika-vertikal">Saznaj više</a></article><article><h2>Drenova Trail</h2><a href="/drenova-trail">Saznaj više</a></article></main>', rootUrl)],
+    [eventUrl, page('<section><h2>UTU 85km / 4600m+</h2><a href="/uploads/utu-course.zip">GPX</a></section>', eventUrl)],
+  ]);
+  const { run, calls } = discovery(pages);
+  const choices = await run(rootUrl);
+  assert.equal(choices.status, "event-selection-required");
+  const scoped = await run(choices.events[0].url);
+  assert.deepEqual(scoped, {
+    status: "unsupported-resources",
+    resources: [{
+      sourcePageUrl: eventUrl,
+      displayLabel: "UTU 85km / 4600m+",
+      linkText: "GPX",
+      supportingEvidence: ["link text: GPX", "associated heading: UTU 85km / 4600m+", "resource format: ZIP archive"],
+      format: "zip",
+    }],
+  });
+  assert.deepEqual(calls.filter((call) => call.type === "request").map((call) => call.url), [rootUrl, eventUrl]);
+});
+
+test("multiple distance archives on one event page are reported as unsupported resources, not separate events", async () => {
+  const eventUrl = "https://organizer.example/ultra-trail-ucka";
+  const html = [
+    '<section><h2>UTU 85km / 4600m+</h2><a href="/uploads/utu.zip">GPX</a></section>',
+    '<section><h2>ULC 42km / 2200m+</h2><a href="/uploads/ulc.zip">GPX</a></section>',
+    '<section><h2>ULA 22km / 1200m+</h2><a href="/uploads/ula.zip">GPX</a></section>',
+  ].join("");
+  const { run } = discovery(new Map([[eventUrl, page(html, eventUrl)]]));
+  const result = await run(eventUrl);
+  assert.equal(result.status, "unsupported-resources");
+  assert.deepEqual(result.resources.map((resource) => resource.displayLabel), [
+    "UTU 85km / 4600m+", "ULC 42km / 2200m+", "ULA 22km / 1200m+",
+  ]);
+});
+
+test("two distinct event cards are sufficient to request explicit event selection", async () => {
+  const rootUrl = "https://organizer.example/";
+  const html = '<main><article><h2>Ultra Trail A</h2><a href="/ultra-trail-a">Details</a></article><article><h2>City Marathon B</h2><a href="/city-marathon-b">Details</a></article></main>';
+  const { run } = discovery(new Map([[rootUrl, page(html, rootUrl)]]));
+  const result = await run(rootUrl);
+  assert.equal(result.status, "event-selection-required");
+  assert.equal(result.events.length, 2);
+});
+
+test("single-event homepage with an explicit GPX index keeps the existing crawl flow", async () => {
+  const rootUrl = "https://istria.example/hr";
+  const indexUrl = "https://istria.example/runners/gpx-tracks";
+  const pages = new Map([
+    [rootUrl, page('<main><article><h2>Istria 100</h2><a href="/races/110k">Istria 110K</a></article><nav><a href="/runners/gpx-tracks">GPX zapisi</a></nav></main>', rootUrl)],
+    [indexUrl, page('<article><h3>Istria 110K</h3><a href="https://files.example/istria-110k.gpx">GPX</a></article>', indexUrl)],
+  ]);
+  const { run, calls } = discovery(pages);
+  const result = await run(rootUrl);
+  assert.equal(result.status, "success");
+  assert.equal(result.candidates[0].distanceLabel, "110K");
+  assert.deepEqual(calls.filter((call) => call.type === "request").map((call) => call.url), [rootUrl, indexUrl]);
+});
+
+test("distance-specific race pages and generic navigation do not become organizer event choices", async () => {
+  const rootUrl = "https://series.example/";
+  const html = '<nav><a href="/about">About</a><a href="/contact">Contact</a></nav><main><article><h2>SDT - 100M</h2><a href="/races/100M">SDT - 100M</a></article><article><h2>CPS - 100K</h2><a href="/races/100K">CPS - 100K</a></article><article><h2>ETM - 50K</h2><a href="/races/50K">ETM - 50K</a></article></main>';
+  const pages = new Map([
+    [rootUrl, page(html, rootUrl)],
+    ["https://series.example/races/100M", page("<main><p>Race detail</p></main>", "https://series.example/races/100M")],
+    ["https://series.example/races/100K", page("<main><p>Race detail</p></main>", "https://series.example/races/100K")],
+  ]);
+  const { run } = discovery(pages);
+  const result = await run(rootUrl);
+  assert.equal(result.status, "no-results");
+});
+
 test("English GPX tracks navigation is followed before unrelated same-origin event links", async () => {
   const rootUrl = "https://race.example/en";
   const indexUrl = "https://race.example/en/course/gpx-tracks";
