@@ -15,6 +15,7 @@ export type GpxDiscoveryCandidate = {
   gpxUrl: string;
   sourcePageUrl: string;
   linkText: string;
+  displayLabel: string;
   supportingEvidence: string[];
   distanceLabel: string | null;
   discoveryStatus: "link-evidence-only";
@@ -204,16 +205,19 @@ function decodeEntities(value: string): string {
   });
 }
 
-type HtmlLink = { href: string; text: string; title: string };
+type HtmlLink = { href: string; text: string; title: string; contextHeading: string | null };
 function parseAnchorLinks(html: string): HtmlLink[] {
   const links: HtmlLink[] = [];
-  let active: { href: string; title: string; pieces: string[] } | null = null;
+  const scopes: Array<{ tag: string; heading: string | null }> = [];
+  let active: { href: string; title: string; pieces: string[]; contextHeading: string | null } | null = null;
+  let activeHeading: { tag: string; pieces: string[] } | null = null;
   let cursor = 0;
   const finishAnchor = () => {
     if (active) links.push({
       href: decodeEntities(active.href).trim(),
       title: active.title,
       text: decodeEntities(active.pieces.join(" ").replace(/\s+/g, " ").trim()).slice(0, 300),
+      contextHeading: active.contextHeading,
     });
     active = null;
   };
@@ -232,6 +236,7 @@ function parseAnchorLinks(html: string): HtmlLink[] {
     }
     if (!/[a-zA-Z/!?]/.test(html[start + 1] ?? "")) {
       if (active) active.pieces.push("<");
+      if (activeHeading) activeHeading.pieces.push("<");
       cursor = start + 1;
       continue;
     }
@@ -246,6 +251,8 @@ function parseAnchorLinks(html: string): HtmlLink[] {
     }
     if (end >= html.length) break;
     const tag = html.slice(start, end + 1);
+    const textBetweenTags = html.slice(cursor, start);
+    if (activeHeading) activeHeading.pieces.push(textBetweenTags);
     cursor = end + 1;
     if (/^<\s*(script|style)\b/i.test(tag) && !/\/\s*>$/.test(tag)) {
       const name = /^<\s*(script|style)\b/i.exec(tag)?.[1] ?? "script";
@@ -260,27 +267,78 @@ function parseAnchorLinks(html: string): HtmlLink[] {
       finishAnchor();
       continue;
     }
+    const closingTag = /^<\s*\/\s*([a-z][\w:-]*)/i.exec(tag)?.[1]?.toLowerCase();
+    if (closingTag && activeHeading?.tag === closingTag) {
+      const heading = decodeEntities(activeHeading.pieces.join(" ").replace(/\s+/g, " ").trim()).slice(0, 200);
+      if (heading) {
+        const scope = [...scopes].reverse().find((item) => item.tag !== "html" && item.tag !== "body" && item.tag !== "main");
+        if (scope) scope.heading = heading;
+      }
+      activeHeading = null;
+    }
+    if (closingTag && ["div", "section", "article", "li", "tr", "td", "nav", "main", "body", "html"].includes(closingTag)) {
+      for (let index = scopes.length - 1; index >= 0; index--) {
+        if (scopes[index].tag === closingTag) {
+          scopes.length = index;
+          break;
+        }
+      }
+      continue;
+    }
     if (/^<\s*a\b/i.test(tag)) {
       finishAnchor();
       const attrs: Record<string, string> = {};
       const remainder = tag.replace(/^<\s*a\b/i, "").replace(/>\s*$/, "");
       const attrPattern = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
       for (const attr of remainder.matchAll(attrPattern)) attrs[attr[1].toLowerCase()] = attr[2] ?? attr[3] ?? attr[4] ?? "";
-      active = attrs.href ? { href: attrs.href, title: decodeEntities(attrs.title ?? ""), pieces: [] } : null;
+      active = attrs.href ? {
+        href: attrs.href,
+        title: decodeEntities(attrs.title ?? ""),
+        pieces: [],
+        contextHeading: [...scopes].reverse().find((item) => item.heading)?.heading ?? null,
+      } : null;
       if (/\/\s*>$/.test(tag)) finishAnchor();
+      continue;
     }
+    const openingTag = /^<\s*([a-z][\w:-]*)/i.exec(tag)?.[1]?.toLowerCase();
+    if (!openingTag || /^<\s*!|^<\s*\?/i.test(tag)) continue;
+    if (["div", "section", "article", "li", "tr", "td", "nav", "main", "body", "html"].includes(openingTag) && !/\/\s*>$/.test(tag)) {
+      scopes.push({ tag: openingTag, heading: null });
+    }
+    if (/^h[1-6]$/.test(openingTag)) activeHeading = { tag: openingTag, pieces: [] };
   }
   finishAnchor();
   return links;
 }
 
-const DISTANCE = /\b(\d{1,3}(?:[.,]\d{1,2})?\s*(?:km|k|mi|mile|miles))\b/i;
+const DISTANCE = /(?:^|[^a-z0-9])(\d{1,3}(?:[.,]\d{1,2})?\s*(?:km|k|mi|mile|miles))(?![a-z])/i;
 const RELEVANT = /\b(course|route|distance|track|gpx|download|map|ultra|race)\b/i;
-const DOWNLOAD = /\b(gpx|download.{0,30}(?:track|route)|(?:track|route).{0,30}download)\b/i;
+const DOWNLOAD = /\bdownload\b.{0,40}\b(?:gpx|track|route)\b|\b(?:gpx|track|route)\b.{0,40}\bdownload\b/i;
 const GPX_PATH = /\.gpx$/i;
 
-function isGpxEvidence(url: URL, label: string): boolean {
-  return GPX_PATH.test(url.pathname) || DOWNLOAD.test(label);
+function distanceIn(value: string): string | null {
+  const matches = [...value.matchAll(new RegExp(DISTANCE.source, "gi"))]
+    .map((match) => match[1].replace(/\s+/g, " ").trim().replace(/(\d)\s*(km|mi)$/i, "$1 $2").replace(/k$/i, "K"));
+  const unique = [...new Set(matches)];
+  return unique.length === 1 ? unique[0] : null;
+}
+
+function fileNameFromUrl(url: URL): string | null {
+  const segment = url.pathname.split("/").filter(Boolean).at(-1);
+  if (!segment) return null;
+  try {
+    const decoded = decodeURIComponent(segment).replace(/\.gpx$/i, "").replace(/[._-]+/g, " ").replace(/\s+/g, " ").trim();
+    return decoded.slice(0, 120) || null;
+  } catch {
+    return segment.replace(/\.gpx$/i, "").replace(/[._-]+/g, " ").slice(0, 120) || null;
+  }
+}
+
+function isGpxEvidence(url: URL, link: HtmlLink): boolean {
+  const labels = `${link.text} ${link.title}`;
+  // A generic “GPX tracks” navigation label is not a file candidate. It can
+  // still be followed below as a same-origin course index page.
+  return GPX_PATH.test(url.pathname) || DOWNLOAD.test(labels);
 }
 
 function isRelevantSubpage(link: HtmlLink): boolean {
@@ -388,15 +446,46 @@ export function createOfficialGpxDiscovery(
         for (const link of links) {
           const target = sanitizeWebUrl(link.href, pageUrl, false);
           if (!target) continue;
-          const evidence = [link.text && `link text: ${link.text}`, link.title && `title: ${link.title}`].filter(Boolean) as string[];
-          if (isGpxEvidence(target, `${link.text} ${link.title}`) && !hasSensitiveQuery(target)) {
-            candidates.set(target.href, {
-              gpxUrl: target.href, sourcePageUrl: publicSourceUrl(sourceUrl), linkText: link.text,
-              supportingEvidence: evidence.length ? evidence : ["URL path ends in .gpx"],
-              distanceLabel: `${link.text} ${link.title}`.match(DISTANCE)?.[0] ?? null,
-              discoveryStatus: "link-evidence-only", ambiguity: null,
-            });
-          } else if (queue.length + visited.size < OFFICIAL_GPX_DISCOVERY_LIMITS.maxPages &&
+          const evidence = [
+            link.text && `link text: ${link.text}`,
+            link.title && `title: ${link.title}`,
+            link.contextHeading && `associated heading: ${link.contextHeading}`,
+          ].filter(Boolean) as string[];
+          const gpxLink = isGpxEvidence(target, link);
+          if (gpxLink && !hasSensitiveQuery(target)) {
+            const headingDistance = link.contextHeading ? distanceIn(link.contextHeading) : null;
+            const linkDistance = distanceIn(`${link.text} ${link.title}`);
+            const fileName = fileNameFromUrl(target);
+            const distanceLabel = headingDistance ?? linkDistance ?? (fileName ? distanceIn(fileName) : null);
+            const visibleText = [link.text, link.title].map((item) => item.trim()).find((item) =>
+              item && !/^(?:gpx|track|route|download)(?:\s+(?:track|route|file|download|gpx|tracks|routes))*$/i.test(item),
+            ) ?? "";
+            const displayLabel = distanceLabel
+              ? (headingDistance ? link.contextHeading!.slice(0, 200) : distanceLabel)
+              : visibleText
+                ? visibleText.slice(0, 200)
+                : fileName ?? `${target.hostname}${target.pathname}`.slice(0, 200);
+            if (fileName) evidence.push(`filename: ${fileName}`);
+            const existing = candidates.get(target.href);
+            if (existing) {
+              const labelsConflict = existing.distanceLabel && distanceLabel && existing.distanceLabel !== distanceLabel;
+              candidates.set(target.href, {
+                ...existing,
+                distanceLabel: labelsConflict ? null : existing.distanceLabel ?? distanceLabel,
+                displayLabel: labelsConflict ? fileName ?? existing.displayLabel : existing.displayLabel || displayLabel,
+                linkText: existing.linkText || link.text,
+                supportingEvidence: [...new Set([...existing.supportingEvidence, ...evidence])],
+              });
+            } else {
+              candidates.set(target.href, {
+                gpxUrl: target.href, sourcePageUrl: publicSourceUrl(sourceUrl), linkText: link.text,
+                displayLabel,
+                supportingEvidence: evidence.length ? evidence : ["URL path ends in .gpx"],
+                distanceLabel,
+                discoveryStatus: "link-evidence-only", ambiguity: null,
+              });
+            }
+          } else if (!gpxLink && queue.length + visited.size < OFFICIAL_GPX_DISCOVERY_LIMITS.maxPages &&
             target.origin === firstUrl.origin && isRelevantSubpage(link) && !visited.has(target.href) && !queue.some((item) => item.href === target.href)) {
             queue.push(target);
           }

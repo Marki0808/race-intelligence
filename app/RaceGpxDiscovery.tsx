@@ -10,6 +10,7 @@ type Candidate = {
   gpxUrl: string;
   sourcePageUrl: string;
   linkText: string;
+  displayLabel: string;
   supportingEvidence: string[];
   distanceLabel: string | null;
   discoveryStatus: "link-evidence-only";
@@ -53,6 +54,7 @@ export default function RaceGpxDiscovery() {
         const safeCandidates = result.candidates.filter((candidate) =>
           candidate && isSafeDisplayUrl(candidate.gpxUrl) && isSafeDisplayUrl(candidate.sourcePageUrl) &&
           candidate.discoveryStatus === "link-evidence-only" && typeof candidate.linkText === "string" &&
+          typeof candidate.displayLabel === "string" && candidate.displayLabel.length > 0 &&
           Array.isArray(candidate.supportingEvidence) && candidate.supportingEvidence.every((item) => typeof item === "string"),
         );
         if (safeCandidates.length) {
@@ -151,7 +153,7 @@ export default function RaceGpxDiscovery() {
               <span className="flex min-w-0 items-start gap-3">
                 <input type="radio" name="selected-gpx-candidate" value={candidate.gpxUrl} checked={selectedUrl === candidate.gpxUrl} onChange={() => setSelectedUrl(candidate.gpxUrl)} className="mt-1 accent-[#a7c957]" />
                 <span className="min-w-0 flex-1">
-                  <span className="block break-words font-semibold text-white">{(candidate.distanceLabel ?? candidate.linkText) || "GPX route link"}</span>
+                  <span className="block break-words font-semibold text-white">{candidate.displayLabel}</span>
                   <span className="mt-1 block break-all text-xs text-white/45">Source: {candidate.sourcePageUrl}</span>
                   {candidate.supportingEvidence.map((item, index) => <span key={`${index}-${item}`} className="mt-1 block break-words text-xs text-white/60">{item}</span>)}
                 </span>

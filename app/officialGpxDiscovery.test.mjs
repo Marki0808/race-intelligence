@@ -80,7 +80,8 @@ test("discovers one direct GPX link with evidence and an explicit distance label
   assert.equal(result.candidates.length, 1);
   assert.deepEqual(result.candidates[0], {
     gpxUrl: "https://race.example/files/course.gpx", sourcePageUrl: "https://race.example/event",
-    linkText: "110 km GPX download", supportingEvidence: ["link text: 110 km GPX download"],
+    linkText: "110 km GPX download", displayLabel: "110 km",
+    supportingEvidence: ["link text: 110 km GPX download", "filename: course"],
     distanceLabel: "110 km", discoveryStatus: "link-evidence-only", ambiguity: null,
   });
   assert.equal(calls.filter((call) => call.type === "request").length, 1);
@@ -91,6 +92,51 @@ test("keeps multiple distances ambiguous and never chooses a winner", async () =
   const result = await run("https://race.example/event");
   assert.equal(result.status, "success");
   assert.deepEqual(result.candidates.map(({ distanceLabel, ambiguity }) => [distanceLabel, ambiguity]), [["25 km", "multiple-candidates"], ["50 km", "multiple-candidates"]]);
+});
+
+test("extracts five course distances from associated headings and excludes the GPX index navigation link", async () => {
+  const html = [
+    '<nav><a href="/courses/gpx-tracks">GPX tracks</a></nav>',
+    '<article><h3>Istria100 - 168K</h3><a href="https://files.example/ISTRIA_168k_2027_a.gpx">GPX track</a></article>',
+    '<article><h3>Istria100 - 110K</h3><a href="https://files.example/ISTRIA_111k_2027_b.gpx">GPX track</a></article>',
+    '<article><h3>Istria100 - 69K</h3><a href="https://files.example/ISTRIA_69k_2027_c.gpx">GPX track</a></article>',
+    '<article><h3>Istria100 - 42K</h3><a href="https://files.example/ISTRIA_42k_2027_d.gpx">GPX track</a></article>',
+    '<article><h3>Istria100 - 21K</h3><a href="https://files.example/ISTRIA_21k_2027_e.gpx">GPX track</a></article>',
+  ].join("");
+  const pages = new Map([
+    ["https://race.example/event", page(html)],
+    ["https://race.example/courses/gpx-tracks", page('<p>Course files are listed on the main event page.</p>')],
+  ]);
+  const { run } = discovery(pages);
+  const result = await run("https://race.example/event");
+  assert.equal(result.status, "success");
+  assert.deepEqual(result.candidates.map(({ distanceLabel }) => distanceLabel), ["168K", "110K", "69K", "42K", "21K"]);
+  assert.deepEqual(result.candidates.map(({ displayLabel }) => displayLabel), [
+    "Istria100 - 168K", "Istria100 - 110K", "Istria100 - 69K", "Istria100 - 42K", "Istria100 - 21K",
+  ]);
+  assert.ok(result.candidates.every(({ gpxUrl }) => gpxUrl.endsWith(".gpx")));
+  assert.ok(result.candidates.every(({ supportingEvidence }) => supportingEvidence.some((item) => item.startsWith("associated heading: Istria100"))));
+  assert.equal(result.candidates.some(({ gpxUrl }) => gpxUrl.endsWith("/courses/gpx-tracks")), false);
+});
+
+test("uses distinguishable filename labels when distance evidence is absent", async () => {
+  const html = '<article><h3>Course files</h3><a href="/files/east_loop.gpx">GPX track</a><a href="/files/west_loop.gpx">GPX track</a></article>';
+  const { run } = discovery(new Map([[
+    "https://race.example/event", page(html),
+  ]]));
+  const result = await run("https://race.example/event");
+  assert.equal(result.status, "success");
+  assert.deepEqual(result.candidates.map(({ distanceLabel, displayLabel }) => [distanceLabel, displayLabel]), [
+    [null, "east loop"], [null, "west loop"],
+  ]);
+});
+
+test("does not guess a distance when one associated heading names multiple distances", async () => {
+  const html = '<article><h3>110K or 21K options</h3><a href="/files/course.gpx">GPX track</a></article>';
+  const { run } = discovery(new Map([["https://race.example/event", page(html)]]));
+  const result = await run("https://race.example/event");
+  assert.equal(result.status, "success");
+  assert.deepEqual(result.candidates.map(({ distanceLabel, displayLabel }) => [distanceLabel, displayLabel]), [[null, "course"]]);
 });
 
 test("follows relative same-origin course subpages and records the actual source page", async () => {
@@ -107,11 +153,14 @@ test("follows relative same-origin course subpages and records the actual source
 });
 
 test("deduplicates repeated links and does not inspect script text", async () => {
-  const html = '<a href="/course.gpx" title="Course > route">Course GPX</a><a href="/course.gpx">Course GPX duplicate</a><script data-note=">"><a href="/fake.gpx">Fake GPX</a></script>';
+  const html = '<a href="https://RACE.example:443/course.gpx#top" title="Course > route">Course GPX</a><a href="https://race.example/course.gpx#download">Course GPX duplicate</a><script data-note="><"><a href="/fake.gpx">Fake GPX</a></script>';
   const { run } = discovery(new Map([["https://race.example/event", page(html)]]));
   const result = await run("https://race.example/event");
   assert.equal(result.candidates.length, 1);
   assert.equal(result.candidates[0].gpxUrl, "https://race.example/course.gpx");
+  assert.deepEqual(result.candidates[0].supportingEvidence, [
+    "link text: Course GPX", "title: Course > route", "filename: course", "link text: Course GPX duplicate",
+  ]);
 });
 
 test("does not return sensitive query values in source URLs or signed candidate URLs", async () => {

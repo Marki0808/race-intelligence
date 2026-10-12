@@ -25,6 +25,8 @@ test("candidate UI requires explicit radio selection and confirmation even for o
   assert.match(discoveryUi, /disabled=\{!selectedUrl \|\| busy\}/);
   assert.match(discoveryUi, /link-evidence-only/);
   assert.match(discoveryUi, /unverified links/);
+  assert.match(discoveryUi, /candidate\.displayLabel/);
+  assert.match(discoveryUi, /typeof candidate\.displayLabel === "string"/);
 });
 
 test("no-results and failures offer the existing manual-upload route", () => {
