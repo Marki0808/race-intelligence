@@ -1,7 +1,7 @@
 # Race Intelligence — Project State
 
-**Last verified against:** `main` at `ad1a56fecb025023c38bfc9c534d899859c2513c`
-**Verification date:** 2026-10-11
+**Last verified against:** `main` at `8d0795557314e3c313894359d3d3e0ea272320a7`
+**Verification date:** 2026-10-12
 **Document scope:** Current repository architecture plus separately labeled Production facts supplied from completed operational verification.
 
 Sections 1–9 and 11–16 describe repository-derived implementation and status. Section 10 records operational facts from Production verification; it does not imply that every code path or external-provider persistence behavior was verified in Production.
@@ -15,7 +15,7 @@ Race Intelligence helps trail runners understand a route before running or racin
 
 Current analytical outputs include distance and elevation metrics, Route Dynamics, consolidated runner-facing Route Sections, Key Route Moments, optional surface/imagery evidence, and Course Brief. The deterministic V2 structural Course Brief is integrated into Race Mode and Route Mode; its separate V3 geographic presentation engine is not exposed. The V1 OpenAI API/provider flow remains separate and unchanged. GPX-derived outputs are distinct from external provider evidence. Race search remains statically registered rather than database-backed.
 
-The homepage offers two equal entry paths: Race Mode looks up races already in the static registry by name or official source URL, and Route Mode opens the existing local GPX upload flow. Pasting an arbitrary official race URL does not import its GPX. Official-URL discovery and edition-GPX loading beyond the current registry lookup is the next planned feature.
+The homepage offers two equal entry paths: Race Mode looks up races already in the static registry by name or official source URL, and Route Mode opens the existing local GPX upload flow. A server-side official race URL to GPX discovery engine and bounded API now exist, but they are not connected to the homepage or Race Mode. Pasting an arbitrary race URL does not yet import or analyze its GPX.
 
 ## 2. End-to-end data flow
 
@@ -34,6 +34,12 @@ The homepage offers two equal entry paths: Race Mode looks up races already in t
 Race Mode resolves a route parameter against the static `raceRegistry`, then supplies the resolved race record to data-driven page components. Its selected edition supplies the GPX reference and descriptive race intelligence. It is separate from arbitrary GPX upload in Route Mode.
 
 The selected edition's existing GPX loading and analysis result is passed to Course Brief; the Course Brief view does not load a second GPX or run a second route analysis. This does not establish trusted edition-to-analysis provenance for geographic enrichment.
+
+### Official race URL to GPX discovery — server-side first step
+
+`app/officialGpxDiscovery.ts` and `POST /api/race-gpx-discovery` accept an HTTPS race page URL and inspect bounded HTML anchor links for direct `.gpx` links or links explicitly labeled with GPX/download terms. The engine may follow a small number of relevant same-origin course/route subpages. It returns evidence-bearing candidate records and marks multiple candidates ambiguous; it does not choose a winner, download candidate GPX files, parse them, or bind a candidate to a registered race edition. Candidate status means link evidence only, not verified GPX content.
+
+The Node runtime fetches pages over HTTPS with redirects disabled at the transport layer and handled manually. Each connection resolves DNS, rejects the destination if any returned address is non-public, and pins the socket lookup to a validated address while TLS verifies the requested hostname. Every redirect and followed page is resolved and checked again. Requests are bounded by elapsed time, redirect/page counts, total HTML response bytes, candidate count, and a two-request in-process concurrency cap. HTML scripts are never executed. Automated discovery tests use mocked DNS/HTTP responses; no external race page has been manually tested. This endpoint is not yet UI-connected. The in-memory concurrency cap is per server process and is not a deployment-wide rate limit across independently scaled serverless instances.
 
 ### Course Phases and Narrative
 
@@ -351,6 +357,7 @@ For the isolated AI narrative prototype, focused prototype and V2 composition/re
 | Race registry scalability | **Current architectural limit.** Available race records are statically imported and listed in `raceRegistry.ts`; no database-backed registry or dynamic race ingestion exists. |
 | IndexedDB fallback | **Confirmed behavior.** Persistence is optional; failed/unavailable local storage falls back to computing analysis in memory. A blocked database upgrade may prevent caching during that attempt. |
 | Public OSM availability | **Provider-dependent limitation.** Overpass can time out, rate-limit, or return partial coverage. The UI and data model preserve unavailable/unknown ranges; successful classification depends on actual returned OSM ways and tags. |
+| Official race URL discovery | **Implemented but not UI-connected.** The first bounded server-side step returns actual HTML link evidence only. It follows same-origin subpages, supports HTML rather than arbitrary rendered JavaScript pages, does not verify/download candidate GPX content, and does not prove a link is the correct edition/course. Its concurrency cap is per Node process, not global across serverless instances; deployment-wide abuse/rate controls and manual source testing remain necessary before public UI exposure. |
 | Course Brief trust boundary | **Confirmed code limitation.** The endpoint strictly validates caller-submitted `CourseBriefInputV1` but does not independently derive its facts from trusted source data. It is ephemeral only; do not use submitted facts as authoritative shared persistent/cache data. |
 | Course Brief public access | **Confirmed code limitation.** The generation endpoint lacks durable authentication/rate-limit protection suitable for unrestricted public exposure. Abuse and cost controls are needed before broad exposure. |
 | Course Brief narrative density | **Current product limitation.** Complex routes with more than five nonredundant, non-alternating candidate stories can now produce more than five observations under the safe overflow policy. This preserves structural coverage but may make some briefs dense; overlapping selected observations can also read as separate fragments. No fixed paragraph target is imposed. |
@@ -358,7 +365,7 @@ For the isolated AI narrative prototype, focused prototype and V2 composition/re
 
 ## 14. Current priorities
 
-1. Implement official race URL discovery and edition-GPX loading beyond the current static exact-match registry, with explicit supported-source and edition validation.
+1. Validate official URL discovery against supported race sites and integrate it into Race Mode with explicit candidate choice, edition checks, and GPX content validation; arbitrary URL discovery is not yet connected to the UI.
 2. Assess Course Brief's product value and identify additional verifiable route information that could make its narrative more useful without adding unsupported claims or speculative features.
 3. Before enabling Phase 3D geographic presentation, establish trusted edition-GPX-to-RouteAnalysisData provenance during Race Mode's actual selected-edition GPX loading and analysis flow. Route Mode remains structural-only unless it gains an independent edition binding.
 4. Preserve the separation from the V1 OpenAI API/provider flow, and keep external evidence coverage and provenance explicit; do not infer terrain, imagery, or geographic position where evidence is absent.
