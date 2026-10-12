@@ -42,7 +42,7 @@ function discovery(pages, options = {}) {
     if (!result) throw new Error("missing fixture response");
     return result;
   });
-  return { run: createOfficialGpxDiscovery({ resolve, request }), calls };
+  return { run: createOfficialGpxDiscovery({ resolve, request }, undefined, options.onDiagnostic), calls };
 }
 
 test("accepts only credential-free HTTPS page URLs", () => {
@@ -212,6 +212,32 @@ test("course navigation with no GPX remains a bounded no-results state", async (
   assert.equal(calls.filter((call) => call.type === "request").length, 2);
 });
 
+test("a secondary page failure reports safe server diagnostics and preserves the all-or-nothing public failure", async () => {
+  const rootUrl = "https://race.example/hr";
+  const indexUrl = "https://race.example/gpx-tracks";
+  const unrelatedUrl = "https://race.example/courses/other-catalog";
+  const diagnostics = [];
+  const routeHtml = ["168K", "110K", "69K", "42K", "21K"].map((distance) =>
+    `<article><h3>Course ${distance}</h3><a href="https://files.example/${distance}.gpx">GPX track</a></article>`,
+  ).join("");
+  const pages = new Map([
+    [rootUrl, page('<a href="/gpx-tracks">GPX tracks</a>')],
+    [indexUrl, page(`${routeHtml}<a href="/courses/other-catalog">Courses</a>`, indexUrl)],
+    [unrelatedUrl, new Error("private response body and hostname")],
+  ]);
+  const { run, calls } = discovery(pages, { onDiagnostic: (diagnostic) => diagnostics.push(diagnostic) });
+  const result = await run(rootUrl);
+
+  assert.deepEqual(calls.filter((call) => call.type === "request").map((call) => call.url), [rootUrl, indexUrl, unrelatedUrl]);
+  assert.deepEqual(result, { status: "provider-failure", category: "unavailable", candidates: [] });
+  assert.deepEqual(diagnostics, [{
+    stage: "https-request", reason: "unavailable", pagesAttempted: 3, subpageDepth: 2, candidatesFound: 5,
+  }]);
+  assert.equal(JSON.stringify({ result, diagnostics }).includes("private response body and hostname"), false);
+  assert.equal(JSON.stringify({ result, diagnostics }).includes("files.example"), false);
+  assert.equal(JSON.stringify(result).includes("diagnostic"), false);
+});
+
 test("uses distinguishable filename labels when distance evidence is absent", async () => {
   const html = '<article><h3>Course files</h3><a href="/files/east_loop.gpx">GPX track</a><a href="/files/west_loop.gpx">GPX track</a></article>';
   const { run } = discovery(new Map([[
@@ -341,12 +367,19 @@ test("caps followed pages and redirect hops", async () => {
   assert.equal(calls.filter((call) => call.type === "request").length, 3);
 
   let redirects = 0;
-  const redirectRun = discovery(new Map(), { request: async () => {
-    redirects++;
-    return { statusCode: 302, headers: { location: `/hop-${redirects}` }, body: new Uint8Array() };
-  } });
+  const redirectDiagnostics = [];
+  const redirectRun = discovery(new Map(), {
+    onDiagnostic: (diagnostic) => redirectDiagnostics.push(diagnostic),
+    request: async () => {
+      redirects++;
+      return { statusCode: 302, headers: { location: `/hop-${redirects}` }, body: new Uint8Array() };
+    },
+  });
   assert.deepEqual(await redirectRun.run("https://race.example/event"), { status: "provider-failure", category: "unavailable", candidates: [] });
   assert.equal(redirects, 3);
+  assert.deepEqual(redirectDiagnostics, [{
+    stage: "redirect-validation", reason: "unavailable", pagesAttempted: 1, subpageDepth: 0, candidatesFound: 0,
+  }]);
 });
 
 test("enforces the per-process concurrent discovery cap", async () => {

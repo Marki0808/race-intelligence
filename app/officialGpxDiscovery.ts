@@ -30,11 +30,19 @@ export type OfficialGpxDiscoveryResult =
   | { status: "unsafe-destination"; candidates: [] }
   | { status: "provider-failure"; candidates: []; category: "timeout" | "unavailable" | "invalid-response" | "busy" };
 
+export type OfficialGpxDiscoveryDiagnostic = {
+  stage: "dns-resolution" | "https-request" | "http-response" | "response-read" | "redirect-validation" | "html-validation" | "page-processing" | "concurrency-guard";
+  reason: "timeout" | "unavailable" | "invalid-response" | "busy";
+  pagesAttempted: number;
+  subpageDepth: number;
+  candidatesFound: number;
+};
+
 export type SafeHttpsAddress = { address: string; family: 4 | 6 };
 export type SafeHttpsResponse = { statusCode: number; headers: Record<string, string | undefined>; body: Uint8Array };
 export type SafeHttpsDependencies = {
   resolve: (hostname: string) => Promise<SafeHttpsAddress[]>;
-  request: (url: URL, address: SafeHttpsAddress, maxBytes: number, timeoutMs: number, accept?: string) => Promise<SafeHttpsResponse>;
+  request: (url: URL, address: SafeHttpsAddress, maxBytes: number, timeoutMs: number, accept?: string, onStage?: (stage: OfficialGpxDiscoveryDiagnostic["stage"]) => void) => Promise<SafeHttpsResponse>;
 };
 
 const IPV4_BLOCKED: Array<[string, number]> = [
@@ -136,7 +144,7 @@ function withinTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   });
 }
 
-function requestPinnedHttps(url: URL, address: SafeHttpsAddress, maxBytes: number, timeoutMs: number, accept = "text/html"): Promise<SafeHttpsResponse> {
+function requestPinnedHttps(url: URL, address: SafeHttpsAddress, maxBytes: number, timeoutMs: number, accept = "text/html", onStage?: (stage: OfficialGpxDiscoveryDiagnostic["stage"]) => void): Promise<SafeHttpsResponse> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (error?: Error, value?: SafeHttpsResponse) => {
@@ -152,19 +160,22 @@ function requestPinnedHttps(url: URL, address: SafeHttpsAddress, maxBytes: numbe
       rejectUnauthorized: true, lookup: lookupPinned,
       headers: { accept, "user-agent": "RaceIntelligence-GpxDiscovery/1.0", "accept-encoding": "identity" },
     }, (res) => {
+      onStage?.("http-response");
       const chunks: Uint8Array[] = [];
       let length = 0;
-      res.on("aborted", () => finish(new Error("response-aborted")));
-      res.on("error", (error) => finish(error));
+      res.on("aborted", () => { onStage?.("response-read"); finish(new Error("response-aborted")); });
+      res.on("error", (error) => { onStage?.("response-read"); finish(error); });
       res.on("data", (chunk: Buffer) => {
         length += chunk.byteLength;
         if (length > maxBytes) {
+          onStage?.("response-read");
           req.destroy(new InvalidResponseError());
           return;
         }
         chunks.push(chunk);
       });
       res.on("end", () => {
+        onStage?.("http-response");
         const body = new Uint8Array(length);
         let offset = 0;
         for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
@@ -381,6 +392,7 @@ export async function fetchPublicHttps(
   input: string,
   options: { maxBytes: number; timeoutMs: number; maxRedirects: number; accept: string; sameOriginRedirects: boolean },
   dependencies: SafeHttpsDependencies = { resolve: resolvePublic, request: requestPinnedHttps },
+  onStage?: (stage: OfficialGpxDiscoveryDiagnostic["stage"]) => void,
 ): Promise<SafeHttpsResponse & { finalUrl: URL; bytesRead: number }> {
   const initialUrl = validateOfficialPageUrl(input);
   if (!initialUrl) throw new UnsafeDestinationError();
@@ -394,19 +406,23 @@ export async function fetchPublicHttps(
     if (remaining <= 0) throw new OfficialGpxDiscoveryTimeoutError();
     if (options.sameOriginRedirects && current.origin !== initialOrigin) throw new UnsafeDestinationError();
     const hostname = current.hostname.replace(/^\[|\]$/g, "");
+    onStage?.("dns-resolution");
     const addresses = await withinTimeout(dependencies.resolve(hostname), remaining);
     if (!addresses.length || addresses.some((item) => !isPublicAddress(item.address))) throw new UnsafeDestinationError();
 
     const requestRemaining = options.timeoutMs - (Date.now() - started);
     if (requestRemaining <= 0) throw new OfficialGpxDiscoveryTimeoutError();
+    onStage?.("https-request");
     const response = await withinTimeout(
-      dependencies.request(current, addresses[0], options.maxBytes - bytesRead, requestRemaining, options.accept),
+      dependencies.request(current, addresses[0], options.maxBytes - bytesRead, requestRemaining, options.accept, onStage),
       requestRemaining,
     );
+    onStage?.("http-response");
     bytesRead += response.body.byteLength;
     if (bytesRead > options.maxBytes) throw new InvalidResponseError();
 
     if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
+      onStage?.("redirect-validation");
       if (redirects >= options.maxRedirects) throw new Error("redirect-limit");
       const target = response.headers.location
         ? sanitizeWebUrl(response.headers.location, current, options.sameOriginRedirects)
@@ -439,11 +455,15 @@ let activeDiscoveries = 0;
 export function createOfficialGpxDiscovery(
   dependencies: SafeHttpsDependencies = { resolve: resolvePublic, request: requestPinnedHttps },
   limits: typeof OFFICIAL_GPX_DISCOVERY_LIMITS = OFFICIAL_GPX_DISCOVERY_LIMITS,
+  onDiagnostic?: (diagnostic: OfficialGpxDiscoveryDiagnostic) => void,
 ) {
   return async function discoverOfficialGpx(input: string): Promise<OfficialGpxDiscoveryResult> {
     const firstUrl = validateOfficialPageUrl(input);
     if (!firstUrl) return { status: "invalid-url", candidates: [] };
-    if (activeDiscoveries >= limits.maxConcurrentPerProcess) return { status: "provider-failure", candidates: [], category: "busy" };
+    if (activeDiscoveries >= limits.maxConcurrentPerProcess) {
+      onDiagnostic?.({ stage: "concurrency-guard", reason: "busy", pagesAttempted: 0, subpageDepth: 0, candidatesFound: 0 });
+      return { status: "provider-failure", candidates: [], category: "busy" };
+    }
     activeDiscoveries++;
     const started = Date.now();
     const candidates = new Map<string, GpxDiscoveryCandidate>();
@@ -451,6 +471,8 @@ export function createOfficialGpxDiscovery(
     const queue: QueuedPage[] = [{ url: firstUrl, depth: 0, priority: Number.POSITIVE_INFINITY, order: 0 }];
     let nextQueueOrder = 1;
     let responseBytes = 0;
+    let failureStage: OfficialGpxDiscoveryDiagnostic["stage"] = "page-processing";
+    let failureDepth = 0;
     const enqueuePage = (url: URL, depth: number, priority: number) => {
       if (depth > limits.maxSubpageDepth || visited.has(url.href)) return;
       const existingIndex = queue.findIndex((item) => item.url.href === url.href);
@@ -469,6 +491,7 @@ export function createOfficialGpxDiscovery(
         const pageUrl = currentPage.url;
         if (visited.has(pageUrl.href)) continue;
         visited.add(pageUrl.href);
+        failureDepth = currentPage.depth;
         if (queue.length > limits.maxPages - visited.size) queue.length = limits.maxPages - visited.size;
         const fetched = await fetchPublicHttps(pageUrl.href, {
           maxBytes: limits.maxResponseBytes - responseBytes,
@@ -476,8 +499,10 @@ export function createOfficialGpxDiscovery(
           maxRedirects: limits.maxRedirects,
           accept: "text/html",
           sameOriginRedirects: true,
-        }, dependencies);
+        }, dependencies, (stage) => { failureStage = stage; });
+        failureStage = "html-validation";
         const { html, sourceUrl } = validateHtmlResponse(fetched);
+        failureStage = "page-processing";
         responseBytes += fetched.bytesRead;
         const links = parseAnchorLinks(html);
         const candidatesBeforePage = candidates.size;
@@ -541,7 +566,17 @@ export function createOfficialGpxDiscovery(
       const results = [...candidates.values()].map((candidate) => ({ ...candidate, ambiguity: candidates.size > 1 ? "multiple-candidates" as const : null }));
       return results.length ? { status: "success", candidates: results } : { status: "no-results", candidates: [] };
     } catch (error) {
-      return safeError(error);
+      const result = safeError(error);
+      if (result.status === "provider-failure") {
+        onDiagnostic?.({
+          stage: failureStage,
+          reason: result.category,
+          pagesAttempted: visited.size,
+          subpageDepth: failureDepth,
+          candidatesFound: candidates.size,
+        });
+      }
+      return result;
     } finally {
       activeDiscoveries--;
     }
@@ -560,4 +595,6 @@ function validateHtmlResponse(response: SafeHttpsResponse & { finalUrl: URL }): 
   return { html: text, sourceUrl: response.finalUrl };
 }
 
-export const discoverOfficialGpx = createOfficialGpxDiscovery();
+export const discoverOfficialGpx = createOfficialGpxDiscovery(undefined, undefined, (diagnostic) => {
+  console.warn("[race-gpx-discovery] provider failure", diagnostic);
+});
