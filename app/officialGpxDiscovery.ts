@@ -7,7 +7,9 @@ export const OFFICIAL_GPX_DISCOVERY_LIMITS = {
   maxPages: 3,
   maxSubpageDepth: 2,
   maxRedirects: 2,
+  // Keep each page bounded while allowing a realistic multi-page discovery.
   maxResponseBytes: 1_000_000,
+  maxTotalResponseBytes: 2_000_000,
   maxCandidates: 20,
   maxConcurrentPerProcess: 2,
 } as const;
@@ -32,10 +34,11 @@ export type OfficialGpxDiscoveryResult =
 
 export type OfficialGpxDiscoveryDiagnostic = {
   stage: "dns-resolution" | "https-request" | "http-response" | "response-read" | "redirect-validation" | "html-validation" | "page-processing" | "concurrency-guard";
-  reason: "timeout" | "unavailable" | "invalid-response" | "busy";
+  reason: "timeout" | "unavailable" | "invalid-response" | "response-size-limit" | "busy";
   pagesAttempted: number;
   subpageDepth: number;
   candidatesFound: number;
+  aggregateBytesAccepted: number;
 };
 
 export type SafeHttpsAddress = { address: string; family: 4 | 6 };
@@ -133,6 +136,9 @@ class OfficialGpxDiscoveryTimeoutError extends Error {
 class InvalidResponseError extends Error {
   constructor() { super(); this.name = "InvalidResponseError"; }
 }
+class ResponseSizeLimitError extends InvalidResponseError {
+  constructor() { super(); this.name = "ResponseSizeLimitError"; }
+}
 
 function withinTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -169,7 +175,7 @@ function requestPinnedHttps(url: URL, address: SafeHttpsAddress, maxBytes: numbe
         length += chunk.byteLength;
         if (length > maxBytes) {
           onStage?.("response-read");
-          req.destroy(new InvalidResponseError());
+          req.destroy(new ResponseSizeLimitError());
           return;
         }
         chunks.push(chunk);
@@ -419,7 +425,7 @@ export async function fetchPublicHttps(
     );
     onStage?.("http-response");
     bytesRead += response.body.byteLength;
-    if (bytesRead > options.maxBytes) throw new InvalidResponseError();
+    if (bytesRead > options.maxBytes) throw new ResponseSizeLimitError();
 
     if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
       onStage?.("redirect-validation");
@@ -461,7 +467,7 @@ export function createOfficialGpxDiscovery(
     const firstUrl = validateOfficialPageUrl(input);
     if (!firstUrl) return { status: "invalid-url", candidates: [] };
     if (activeDiscoveries >= limits.maxConcurrentPerProcess) {
-      onDiagnostic?.({ stage: "concurrency-guard", reason: "busy", pagesAttempted: 0, subpageDepth: 0, candidatesFound: 0 });
+      onDiagnostic?.({ stage: "concurrency-guard", reason: "busy", pagesAttempted: 0, subpageDepth: 0, candidatesFound: 0, aggregateBytesAccepted: 0 });
       return { status: "provider-failure", candidates: [], category: "busy" };
     }
     activeDiscoveries++;
@@ -486,7 +492,7 @@ export function createOfficialGpxDiscovery(
       if (queue.length > available) queue.length = available;
     };
     try {
-      while (queue.length && visited.size < limits.maxPages && candidates.size < limits.maxCandidates && responseBytes < limits.maxResponseBytes) {
+      while (queue.length && visited.size < limits.maxPages && candidates.size < limits.maxCandidates && responseBytes < limits.maxTotalResponseBytes) {
         const currentPage = queue.shift()!;
         const pageUrl = currentPage.url;
         if (visited.has(pageUrl.href)) continue;
@@ -494,7 +500,7 @@ export function createOfficialGpxDiscovery(
         failureDepth = currentPage.depth;
         if (queue.length > limits.maxPages - visited.size) queue.length = limits.maxPages - visited.size;
         const fetched = await fetchPublicHttps(pageUrl.href, {
-          maxBytes: limits.maxResponseBytes - responseBytes,
+          maxBytes: Math.min(limits.maxResponseBytes, limits.maxTotalResponseBytes - responseBytes),
           timeoutMs: limits.timeoutMs - (Date.now() - started),
           maxRedirects: limits.maxRedirects,
           accept: "text/html",
@@ -570,10 +576,11 @@ export function createOfficialGpxDiscovery(
       if (result.status === "provider-failure") {
         onDiagnostic?.({
           stage: failureStage,
-          reason: result.category,
+          reason: error instanceof ResponseSizeLimitError ? "response-size-limit" : result.category,
           pagesAttempted: visited.size,
           subpageDepth: failureDepth,
           candidatesFound: candidates.size,
+          aggregateBytesAccepted: responseBytes,
         });
       }
       return result;

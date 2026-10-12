@@ -29,6 +29,18 @@ const page = (html, url = "https://race.example/event") => ({
   url,
 });
 
+function sizedPage(html, targetBytes, url = "https://race.example/event") {
+  const shell = `<!doctype html><html><body>${html}</body></html>`;
+  const paddingLength = targetBytes - Buffer.byteLength(shell);
+  assert.ok(paddingLength >= 0, "target size must fit the HTML fixture");
+  return {
+    statusCode: 200,
+    headers: { "content-type": "text/html; charset=utf-8" },
+    body: new TextEncoder().encode(`<!doctype html><html><body>${"x".repeat(paddingLength)}${html}</body></html>`),
+    url,
+  };
+}
+
 function discovery(pages, options = {}) {
   const calls = [];
   const resolve = options.resolve ?? (async (host) => {
@@ -232,6 +244,7 @@ test("a secondary page failure reports safe server diagnostics and preserves the
   assert.deepEqual(result, { status: "provider-failure", category: "unavailable", candidates: [] });
   assert.deepEqual(diagnostics, [{
     stage: "https-request", reason: "unavailable", pagesAttempted: 3, subpageDepth: 2, candidatesFound: 5,
+    aggregateBytesAccepted: pages.get(rootUrl).body.byteLength + pages.get(indexUrl).body.byteLength,
   }]);
   assert.equal(JSON.stringify({ result, diagnostics }).includes("private response body and hostname"), false);
   assert.equal(JSON.stringify({ result, diagnostics }).includes("files.example"), false);
@@ -302,8 +315,36 @@ test("reports malformed and non-HTML responses without exposing response content
   assert.deepEqual(await run("https://race.example/event"), { status: "provider-failure", category: "invalid-response", candidates: [] });
   const malformed = discovery(new Map([["https://race.example/event", { statusCode: 200, headers: { "content-type": "text/html" }, body: new TextEncoder().encode("not html") }]]));
   assert.deepEqual(await malformed.run("https://race.example/event"), { status: "provider-failure", category: "invalid-response", candidates: [] });
-  const oversized = discovery(new Map([["https://race.example/event", { statusCode: 200, headers: { "content-type": "text/html" }, body: new Uint8Array(1_000_001) }]]));
+  const invalidDiagnostics = [];
+  const htmlInvalid = discovery(new Map([["https://race.example/event", { statusCode: 200, headers: { "content-type": "application/json" }, body: new TextEncoder().encode("{}") }]]), {
+    onDiagnostic: (diagnostic) => invalidDiagnostics.push(diagnostic),
+  });
+  assert.deepEqual(await htmlInvalid.run("https://race.example/event"), { status: "provider-failure", category: "invalid-response", candidates: [] });
+  assert.equal(invalidDiagnostics[0].stage, "html-validation");
+  assert.equal(invalidDiagnostics[0].reason, "invalid-response");
+  const oversizedDiagnostics = [];
+  const oversized = discovery(new Map([["https://race.example/event", { statusCode: 200, headers: { "content-type": "text/html" }, body: new Uint8Array(1_000_001) }]]), {
+    onDiagnostic: (diagnostic) => oversizedDiagnostics.push(diagnostic),
+  });
   assert.deepEqual(await oversized.run("https://race.example/event"), { status: "provider-failure", category: "invalid-response", candidates: [] });
+  assert.equal(oversizedDiagnostics[0].reason, "response-size-limit");
+  assert.equal(oversizedDiagnostics[0].aggregateBytesAccepted, 0);
+});
+
+test("truncated response-read failures remain distinct from size-limit diagnostics", async () => {
+  const diagnostics = [];
+  const { run } = discovery(new Map(), {
+    onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    request: async (_url, _address, _maxBytes, _timeout, _accept, onStage) => {
+      onStage?.("response-read");
+      throw new Error("synthetic truncated stream detail");
+    },
+  });
+  assert.deepEqual(await run("https://race.example/event"), { status: "provider-failure", category: "unavailable", candidates: [] });
+  assert.deepEqual(diagnostics, [{
+    stage: "response-read", reason: "unavailable", pagesAttempted: 1, subpageDepth: 0, candidatesFound: 0,
+    aggregateBytesAccepted: 0,
+  }]);
 });
 
 test("returns safe timeout and provider failure categories", async () => {
@@ -378,7 +419,41 @@ test("caps followed pages and redirect hops", async () => {
   assert.deepEqual(await redirectRun.run("https://race.example/event"), { status: "provider-failure", category: "unavailable", candidates: [] });
   assert.equal(redirects, 3);
   assert.deepEqual(redirectDiagnostics, [{
-    stage: "redirect-validation", reason: "unavailable", pagesAttempted: 1, subpageDepth: 0, candidatesFound: 0,
+    stage: "redirect-validation", reason: "unavailable", pagesAttempted: 1, subpageDepth: 0, candidatesFound: 0, aggregateBytesAccepted: 0,
+  }]);
+});
+
+test("homepage and GPX index pages may together exceed the per-page limit while staying within the aggregate budget", async () => {
+  const rootUrl = "https://race.example/hr";
+  const indexUrl = "https://race.example/gpx-tracks";
+  const htmlByPage = new Map([
+    [rootUrl, sizedPage('<a href="/gpx-tracks">GPX tracks</a>', 650_000, rootUrl)],
+    [indexUrl, sizedPage('<article><h2>42K</h2><a href="https://files.example/42k.gpx">GPX download</a></article>', 650_000, indexUrl)],
+  ]);
+  const { run, calls } = discovery(htmlByPage);
+  const result = await run(rootUrl);
+  assert.equal(result.status, "success");
+  assert.equal(result.candidates[0].distanceLabel, "42K");
+  assert.deepEqual(calls.filter((call) => call.type === "request").map((call) => call.maxBytes), [1_000_000, 1_000_000]);
+  assert.equal(htmlByPage.get(rootUrl).body.byteLength + htmlByPage.get(indexUrl).body.byteLength, 1_300_000);
+});
+
+test("aggregate HTML byte limit rejects a crawl above two megabytes and reports safe byte counts", async () => {
+  const rootUrl = "https://race.example/hr";
+  const indexUrl = "https://race.example/course";
+  const detailUrl = "https://race.example/course/details";
+  const pages = new Map([
+    [rootUrl, sizedPage('<a href="/course">Course</a>', 700_000, rootUrl)],
+    [indexUrl, sizedPage('<a href="/course/details">Route details</a>', 700_000, indexUrl)],
+    [detailUrl, sizedPage('<a href="https://files.example/route.gpx">Download GPX</a>', 700_000, detailUrl)],
+  ]);
+  const diagnostics = [];
+  const { run, calls } = discovery(pages, { onDiagnostic: (diagnostic) => diagnostics.push(diagnostic) });
+  assert.deepEqual(await run(rootUrl), { status: "provider-failure", category: "invalid-response", candidates: [] });
+  assert.deepEqual(calls.filter((call) => call.type === "request").map((call) => call.maxBytes), [1_000_000, 1_000_000, 600_000]);
+  assert.deepEqual(diagnostics, [{
+    stage: "http-response", reason: "response-size-limit", pagesAttempted: 3, subpageDepth: 2, candidatesFound: 0,
+    aggregateBytesAccepted: 1_400_000,
   }]);
 });
 
@@ -412,7 +487,7 @@ test("the API rejects invalid and oversized requests without fetching", async ()
 
 test("bounds pages, redirects, bytes, candidates, timeout, and per-process concurrency", () => {
   assert.deepEqual(OFFICIAL_GPX_DISCOVERY_LIMITS, {
-    timeoutMs: 8_000, maxPages: 3, maxSubpageDepth: 2, maxRedirects: 2, maxResponseBytes: 1_000_000,
+    timeoutMs: 8_000, maxPages: 3, maxSubpageDepth: 2, maxRedirects: 2, maxResponseBytes: 1_000_000, maxTotalResponseBytes: 2_000_000,
     maxCandidates: 20, maxConcurrentPerProcess: 2,
   });
 });
