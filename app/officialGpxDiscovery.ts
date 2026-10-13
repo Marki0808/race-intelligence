@@ -272,11 +272,11 @@ function decodeEntities(value: string): string {
   });
 }
 
-type HtmlLink = { href: string; text: string; title: string; contextHeading: string | null };
+type HtmlLink = { href: string; text: string; title: string; contextHeading: string | null; isNavigation: boolean };
 function parseAnchorLinks(html: string): HtmlLink[] {
   const links: HtmlLink[] = [];
-  const scopes: Array<{ tag: string; heading: string | null }> = [];
-  let active: { href: string; title: string; pieces: string[]; contextHeading: string | null } | null = null;
+  const scopes: Array<{ tag: string; heading: string | null; isCard: boolean; isNavigation: boolean }> = [];
+  let active: { href: string; title: string; pieces: string[]; contextHeading: string | null; isNavigation: boolean } | null = null;
   let activeHeading: { tag: string; pieces: string[] } | null = null;
   let cursor = 0;
   const finishAnchor = () => {
@@ -285,6 +285,7 @@ function parseAnchorLinks(html: string): HtmlLink[] {
       title: active.title,
       text: decodeEntities(active.pieces.join(" ").replace(/\s+/g, " ").trim()).slice(0, 300),
       contextHeading: active.contextHeading,
+      isNavigation: active.isNavigation,
     });
     active = null;
   };
@@ -338,12 +339,14 @@ function parseAnchorLinks(html: string): HtmlLink[] {
     if (closingTag && activeHeading?.tag === closingTag) {
       const heading = decodeEntities(activeHeading.pieces.join(" ").replace(/\s+/g, " ").trim()).slice(0, 200);
       if (heading) {
-        const scope = [...scopes].reverse().find((item) => item.tag !== "html" && item.tag !== "body" && item.tag !== "main");
-        if (scope) scope.heading = heading;
+        const cardScope = [...scopes].reverse().find((item) => item.isCard);
+        const localScope = [...scopes].reverse().find((item) => item.tag !== "html" && item.tag !== "body" && item.tag !== "main");
+        if (cardScope) cardScope.heading = heading;
+        else if (localScope) localScope.heading = heading;
       }
       activeHeading = null;
     }
-    if (closingTag && ["div", "section", "article", "li", "tr", "td", "nav", "main", "body", "html"].includes(closingTag)) {
+    if (closingTag && ["div", "section", "article", "li", "tr", "td", "nav", "header", "footer", "main", "body", "html"].includes(closingTag)) {
       for (let index = scopes.length - 1; index >= 0; index--) {
         if (scopes[index].tag === closingTag) {
           scopes.length = index;
@@ -363,14 +366,26 @@ function parseAnchorLinks(html: string): HtmlLink[] {
         title: decodeEntities(attrs.title ?? ""),
         pieces: [],
         contextHeading: [...scopes].reverse().find((item) => item.heading)?.heading ?? null,
+        isNavigation: scopes.some((item) => item.isNavigation),
       } : null;
       if (/\/\s*>$/.test(tag)) finishAnchor();
       continue;
     }
     const openingTag = /^<\s*([a-z][\w:-]*)/i.exec(tag)?.[1]?.toLowerCase();
     if (!openingTag || /^<\s*!|^<\s*\?/i.test(tag)) continue;
-    if (["div", "section", "article", "li", "tr", "td", "nav", "main", "body", "html"].includes(openingTag) && !/\/\s*>$/.test(tag)) {
-      scopes.push({ tag: openingTag, heading: null });
+    if (["div", "section", "article", "li", "tr", "td", "nav", "header", "footer", "main", "body", "html"].includes(openingTag) && !/\/\s*>$/.test(tag)) {
+      const attributes = tag.replace(/^<\s*[a-z][\w:-]*/i, "").replace(/>\s*$/, "");
+      const role = /\brole\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attributes);
+      const className = /\b(?:class|id)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attributes);
+      const structuralCard = ["article", "li", "tr"].includes(openingTag) || /^(?:article|listitem)$/i.test(role?.[1] ?? role?.[2] ?? role?.[3] ?? "");
+      const labeledCard = /(?:^|\s)(?:card|tile)(?:$|\s)|(?:^|[\s_-])(?:event|race|course)[_-](?:card|tile|item)(?:$|[\s_-])/i
+        .test(className?.[1] ?? className?.[2] ?? className?.[3] ?? "");
+      scopes.push({
+        tag: openingTag,
+        heading: null,
+        isCard: structuralCard || labeledCard,
+        isNavigation: ["nav", "header", "footer"].includes(openingTag) || /^(?:navigation|contentinfo)$/i.test(role?.[1] ?? role?.[2] ?? role?.[3] ?? ""),
+      });
     }
     if (/^h[1-6]$/.test(openingTag)) activeHeading = { tag: openingTag, pieces: [] };
   }
@@ -435,6 +450,7 @@ function organizerEventChoices(
   let eventLinkProspects = 0;
   let meaningfulHeadingCount = 0;
   for (const link of links) {
+    if (link.isNavigation) continue;
     const target = sanitizeWebUrl(link.href, sourceUrl, true);
     if (!target || hasSensitiveQuery(target) || target.href === sourceUrl.href || isDistanceRoutePath(target.pathname)
       || isGpxEvidence(target, link) || unsupportedArchiveEvidence(target, link)) continue;

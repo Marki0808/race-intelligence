@@ -190,6 +190,68 @@ test("returns evidence-backed organizer event choices instead of crawling and mi
   assert.equal(calls.filter((call) => call.type === "request").length, 1, "event pages are not fetched before user selection");
 });
 
+test("associates organizer event-card sibling headings with generic learn-more links", async () => {
+  const rootUrl = "https://organizer.example/";
+  const html = [
+    '<main><article class="event-card"><h2>Forest Ultra</h2><div class="actions"><a href="/forest-ultra">Learn more</a></div></article>',
+    '<article class="event-card"><h2>Ridge Trail</h2><div class="actions"><a href="/ridge-trail">Saznaj više</a></div></article></main>',
+  ].join("");
+  const { run, calls } = discovery(new Map([[rootUrl, page(html, rootUrl)]]));
+  const result = await run(rootUrl);
+
+  assert.equal(result.status, "event-selection-required");
+  assert.deepEqual(result.events.map(({ displayName, url }) => [displayName, url]), [
+    ["Forest Ultra", "https://organizer.example/forest-ultra"],
+    ["Ridge Trail", "https://organizer.example/ridge-trail"],
+  ]);
+  assert.ok(result.events.every((event) => event.supportingEvidence.includes(`associated heading: ${event.displayName}`)));
+  assert.equal(calls.filter((call) => call.type === "request").length, 1);
+});
+
+test("associates a preceding heading through nested wrappers within the same semantic card", async () => {
+  const rootUrl = "https://organizer.example/";
+  const html = [
+    '<div class="race-card"><div class="card-content"><h3>Coastal Mountain Race</h3></div><div class="card-actions"><div><a href="/coastal-mountain">Details</a></div></div></div>',
+    '<div class="race-card"><div><h3>Valley Trail Event</h3></div><div><a href="/valley-trail">Find out more</a></div></div>',
+  ].join("");
+  const { run } = discovery(new Map([[rootUrl, page(html, rootUrl)]]));
+  const result = await run(rootUrl);
+
+  assert.equal(result.status, "event-selection-required");
+  assert.deepEqual(result.events.map((event) => event.displayName), ["Coastal Mountain Race", "Valley Trail Event"]);
+});
+
+test("does not borrow a heading from a neighboring card without its own heading", async () => {
+  const rootUrl = "https://organizer.example/";
+  const html = [
+    '<article><h2>Named Mountain Event</h2><a href="/named">Details</a></article>',
+    '<article><a href="/unlabeled">Learn more</a></article>',
+  ].join("");
+  const diagnostics = [];
+  const { run } = discovery(new Map([[rootUrl, page(html, rootUrl)]]), { onDiagnostic: (item) => diagnostics.push(item) });
+  const result = await run(rootUrl);
+
+  assert.deepEqual(result, { status: "no-results", candidates: [] });
+  assert.equal(diagnostics[0].eventDetection.meaningfulHeadingCount, 1);
+  assert.equal(diagnostics[0].eventDetection.finalDeduplicatedEventChoices, 1);
+});
+
+test("navigation and footer links are excluded from organizer event choices", async () => {
+  const rootUrl = "https://organizer.example/";
+  const html = [
+    '<header><div class="event-card"><h2>Header Navigation Race</h2><a href="/header-info">Details</a></div></header>',
+    '<main><p>No event cards here.</p></main>',
+    '<footer><article><h2>Footer Race</h2><a href="/footer-info">Learn more</a></article></footer>',
+  ].join("");
+  const diagnostics = [];
+  const { run } = discovery(new Map([[rootUrl, page(html, rootUrl)]]), { onDiagnostic: (item) => diagnostics.push(item) });
+  const result = await run(rootUrl);
+
+  assert.deepEqual(result, { status: "no-results", candidates: [] });
+  assert.equal(diagnostics[0].eventDetection.eventLinkProspects, 0);
+  assert.equal(diagnostics[0].eventDetection.finalDeduplicatedEventChoices, 0);
+});
+
 test("no-results diagnostics identify missing meaningful headings without recording page data", async () => {
   const rootUrl = "https://organizer.example/?tracking=private-query-value";
   const html = '<main><a href="/ultra-one">Saznaj više private-label-one</a><a href="/vertical-two">Saznaj više private-label-two</a><a href="https://external.example/event">External event</a></main>';
