@@ -25,6 +25,18 @@ export type GpxDiscoveryCandidate = {
   ambiguity: "multiple-candidates" | null;
 };
 
+export type GpxArchiveCandidate = {
+  archiveUrl: string;
+  sourcePageUrl: string;
+  linkText: string;
+  displayLabel: string;
+  supportingEvidence: string[];
+  distanceLabel: string | null;
+  resourceType: "zip-archive";
+  discoveryStatus: "archive-link-evidence-only";
+  ambiguity: "multiple-candidates" | null;
+};
+
 export type OfficialGpxEventChoice = {
   url: string;
   sourcePageUrl: string;
@@ -42,7 +54,7 @@ export type UnsupportedGpxResource = {
 };
 
 export type OfficialGpxDiscoveryResult =
-  | { status: "success"; candidates: GpxDiscoveryCandidate[] }
+  | { status: "success"; candidates: GpxDiscoveryCandidate[]; archives?: GpxArchiveCandidate[] }
   | { status: "event-selection-required"; events: OfficialGpxEventChoice[] }
   | { status: "unsupported-resources"; resources: UnsupportedGpxResource[] }
   | { status: "no-results"; candidates: [] }
@@ -607,7 +619,7 @@ function organizerEventChoices(
 }
 
 function unsupportedArchiveEvidence(url: URL, link: HtmlLink): boolean {
-  return /\.zip$/i.test(url.pathname) && /\bgpx\b/i.test(`${link.text} ${link.title}`);
+  return /\.zip$/i.test(url.pathname) && /\bgpx\b/i.test(`${link.text} ${link.title} ${link.contextHeading ?? ""}`);
 }
 
 function safeContentType(value: string | undefined): OfficialGpxEventDetectionDiagnostic["rootContentType"] {
@@ -739,7 +751,7 @@ export function createOfficialGpxDiscovery(
     activeDiscoveries++;
     const started = Date.now();
     const candidates = new Map<string, GpxDiscoveryCandidate>();
-    const unsupportedResources = new Map<string, UnsupportedGpxResource>();
+    const archiveCandidates = new Map<string, GpxArchiveCandidate>();
     const visited = new Set<string>();
     const queue: QueuedPage[] = [{ url: firstUrl, depth: 0, priority: Number.POSITIVE_INFINITY, order: 0 }];
     let nextQueueOrder = 1;
@@ -774,7 +786,7 @@ export function createOfficialGpxDiscovery(
       if (queue.length > available) queue.length = available;
     };
     try {
-      while (queue.length && visited.size < limits.maxPages && candidates.size < limits.maxCandidates && responseBytes < limits.maxTotalResponseBytes) {
+      while (queue.length && visited.size < limits.maxPages && candidates.size + archiveCandidates.size < limits.maxCandidates && responseBytes < limits.maxTotalResponseBytes) {
         const currentPage = queue.shift()!;
         const pageUrl = currentPage.url;
         if (visited.has(pageUrl.href)) continue;
@@ -824,7 +836,8 @@ export function createOfficialGpxDiscovery(
             link.title && `title: ${link.title}`,
             link.contextHeading && `associated heading: ${link.contextHeading}`,
           ].filter(Boolean) as string[];
-          const gpxLink = isGpxEvidence(target, link);
+          const zipLink = unsupportedArchiveEvidence(target, link) && !hasSensitiveQuery(target);
+          const gpxLink = !zipLink && isGpxEvidence(target, link);
           if (gpxLink && !hasSensitiveQuery(target)) {
             const headingDistance = link.contextHeading ? distanceIn(link.contextHeading) : null;
             const linkDistance = distanceIn(`${link.text} ${link.title}`);
@@ -858,30 +871,41 @@ export function createOfficialGpxDiscovery(
                 discoveryStatus: "link-evidence-only", ambiguity: null,
               });
             }
-          } else if (unsupportedArchiveEvidence(target, link) && !hasSensitiveQuery(target)) {
+          } else if (zipLink) {
             const heading = link.contextHeading?.trim();
             const fileName = fileNameFromUrl(target);
-            const distance = distanceIn(`${heading ?? ""} ${link.text} ${link.title} ${fileName ?? ""}`);
+            const distance = distanceIn(`${heading ?? ""} ${link.text} ${link.title}`);
+            const linkLabel = [link.text, link.title].map((item) => item.trim()).find((item) =>
+              item && !/^(?:gpx|track|route|download)(?:\s+(?:track|route|file|download|gpx|tracks|routes))*$/i.test(item),
+            );
             const displayLabel = heading && !GENERIC_EVENT_LABEL.test(heading)
               ? heading.slice(0, 200)
-              : distance ?? fileName ?? "GPX archive";
-            const resource: UnsupportedGpxResource = {
+              : linkLabel?.slice(0, 200) ?? (fileName ? `GPX archive · ${fileName}` : "GPX archive (ZIP)");
+            const evidence = [
+              link.text && `link text: ${link.text}`,
+              link.title && `title: ${link.title}`,
+              heading && `associated heading: ${heading}`,
+              "resource format: ZIP archive; contained GPX not yet verified",
+            ].filter(Boolean) as string[];
+            const existing = archiveCandidates.get(target.href);
+            const conflictingDistances = existing?.distanceLabel && distance && existing.distanceLabel !== distance;
+            const resource: GpxArchiveCandidate = {
+              archiveUrl: target.href,
               sourcePageUrl: publicSourceUrl(sourceUrl),
-              displayLabel,
               linkText: link.text,
-              supportingEvidence: [
-                link.text && `link text: ${link.text}`,
-                heading && `associated heading: ${heading}`,
-                `resource format: ZIP archive`,
-              ].filter(Boolean) as string[],
-              format: "zip",
+              displayLabel: conflictingDistances ? (fileName ? `GPX archive · ${fileName}` : "GPX archive (ZIP)") : existing?.displayLabel ?? displayLabel,
+              supportingEvidence: [...new Set([...(existing?.supportingEvidence ?? []), ...evidence])],
+              distanceLabel: conflictingDistances ? null : existing?.distanceLabel ?? distance,
+              resourceType: "zip-archive",
+              discoveryStatus: "archive-link-evidence-only",
+              ambiguity: null,
             };
-            unsupportedResources.set(target.href, resource);
+            archiveCandidates.set(target.href, resource);
           } else if (!gpxLink && target.origin === firstUrl.origin && currentPage.depth < limits.maxSubpageDepth) {
             const priority = subpagePriority(link, target);
             if (priority > 0) enqueuePage(target, currentPage.depth + 1, priority);
           }
-          if (candidates.size >= limits.maxCandidates) break;
+          if (candidates.size + archiveCandidates.size >= limits.maxCandidates) break;
         }
         if (currentPage.depth === 0) {
           const eventScan = organizerEventChoices(links, sourceUrl, parsedAnchors.headingElements, parsedAnchors.meaningfulHeadingElements);
@@ -914,13 +938,9 @@ export function createOfficialGpxDiscovery(
           }
         }
       }
-      const results = [...candidates.values()].map((candidate) => ({ ...candidate, ambiguity: candidates.size > 1 ? "multiple-candidates" as const : null }));
-      if (results.length) return { status: "success", candidates: results };
-      if (unsupportedResources.size) {
-        eventDetection.decisionReason = "unsupported-resources-found";
-        onDiagnostic?.({ stage: "page-processing", reason: "unsupported-resources", pagesAttempted: visited.size, subpageDepth: failureDepth, candidatesFound: 0, aggregateBytesAccepted: responseBytes, eventDetection });
-        return { status: "unsupported-resources", resources: [...unsupportedResources.values()] };
-      }
+      const results = [...candidates.values()].map((candidate) => ({ ...candidate, ambiguity: candidates.size + archiveCandidates.size > 1 ? "multiple-candidates" as const : null }));
+      const archives = [...archiveCandidates.values()].map((archive) => ({ ...archive, ambiguity: candidates.size + archiveCandidates.size > 1 ? "multiple-candidates" as const : null }));
+      if (results.length || archives.length) return { status: "success", candidates: results, ...(archives.length ? { archives } : {}) };
       if (eventDetection.decisionReason === "root-fetch-failure") eventDetection.decisionReason = "no-supported-gpx-after-crawl";
       onDiagnostic?.({ stage: "page-processing", reason: "no-results", pagesAttempted: visited.size, subpageDepth: failureDepth, candidatesFound: 0, aggregateBytesAccepted: responseBytes, eventDetection });
       return { status: "no-results", candidates: [] };
@@ -939,7 +959,7 @@ export function createOfficialGpxDiscovery(
           reason: error instanceof ResponseSizeLimitError ? "response-size-limit" : result.category,
           pagesAttempted: visited.size,
           subpageDepth: failureDepth,
-          candidatesFound: candidates.size,
+          candidatesFound: candidates.size + archiveCandidates.size,
           aggregateBytesAccepted: responseBytes,
           eventDetection,
         });

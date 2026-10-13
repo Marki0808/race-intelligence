@@ -409,31 +409,36 @@ test("root response diagnostics use bounded safe reason codes for unsuitable HTM
   }
 });
 
-test("selected organizer event gets a fresh scoped discovery and GPX-labeled ZIP is reported unsupported", async () => {
+test("selected organizer event gets scoped discovery and exposes explicitly GPX-labeled ZIP as an archive choice", async () => {
   const rootUrl = "https://organizer.example/";
   const eventUrl = "https://organizer.example/ultra-trail-ucka";
   const pages = new Map([
     [rootUrl, page('<main><article><h2>Ultra Trail Učka</h2><a href="/ultra-trail-ucka">Saznaj više</a></article><article><h2>Rika Vertikal</h2><a href="/rika-vertikal">Saznaj više</a></article><article><h2>Drenova Trail</h2><a href="/drenova-trail">Saznaj više</a></article></main>', rootUrl)],
-    [eventUrl, page('<section><h2>UTU 85km / 4600m+</h2><a href="/uploads/utu-course.zip">GPX</a></section>', eventUrl)],
+    [eventUrl, page('<section><h2>UTU 85km / 4600m+</h2><a href="/uploads/utu-course.zip">DOWNLOAD GPX</a></section>', eventUrl)],
   ]);
   const { run, calls } = discovery(pages);
   const choices = await run(rootUrl);
   assert.equal(choices.status, "event-selection-required");
   const scoped = await run(choices.events[0].url);
   assert.deepEqual(scoped, {
-    status: "unsupported-resources",
-    resources: [{
+    status: "success",
+    candidates: [],
+    archives: [{
+      archiveUrl: "https://organizer.example/uploads/utu-course.zip",
       sourcePageUrl: eventUrl,
       displayLabel: "UTU 85km / 4600m+",
-      linkText: "GPX",
-      supportingEvidence: ["link text: GPX", "associated heading: UTU 85km / 4600m+", "resource format: ZIP archive"],
-      format: "zip",
+      linkText: "DOWNLOAD GPX",
+      supportingEvidence: ["link text: DOWNLOAD GPX", "associated heading: UTU 85km / 4600m+", "resource format: ZIP archive; contained GPX not yet verified"],
+      distanceLabel: "85 km",
+      resourceType: "zip-archive",
+      discoveryStatus: "archive-link-evidence-only",
+      ambiguity: null,
     }],
   });
   assert.deepEqual(calls.filter((call) => call.type === "request").map((call) => call.url), [rootUrl, eventUrl]);
 });
 
-test("multiple distance archives on one event page are reported as unsupported resources, not separate events", async () => {
+test("multiple distance archives on one event page become distinct archive-backed course choices", async () => {
   const eventUrl = "https://organizer.example/ultra-trail-ucka";
   const html = [
     '<section><h2>UTU 85km / 4600m+</h2><a href="/uploads/utu.zip">GPX</a></section>',
@@ -442,10 +447,13 @@ test("multiple distance archives on one event page are reported as unsupported r
   ].join("");
   const { run } = discovery(new Map([[eventUrl, page(html, eventUrl)]]));
   const result = await run(eventUrl);
-  assert.equal(result.status, "unsupported-resources");
-  assert.deepEqual(result.resources.map((resource) => resource.displayLabel), [
+  assert.equal(result.status, "success");
+  assert.deepEqual(result.archives.map((resource) => resource.displayLabel), [
     "UTU 85km / 4600m+", "ULC 42km / 2200m+", "ULA 22km / 1200m+",
   ]);
+  assert.deepEqual(result.archives.map((resource) => resource.distanceLabel), ["85 km", "42 km", "22 km"]);
+  assert.equal(result.archives.every((resource) => resource.discoveryStatus === "archive-link-evidence-only"), true);
+  assert.equal(result.archives.every((resource) => resource.ambiguity === "multiple-candidates"), true);
 });
 
 test("two distinct event cards are sufficient to request explicit event selection", async () => {

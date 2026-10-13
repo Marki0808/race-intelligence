@@ -6,8 +6,8 @@ const MAX_REQUEST_BYTES = 8_192;
 
 function failureResponse(result: Exclude<OfficialGpxDownloadResult, { status: "success" }>) {
   const status = result.status === "invalid-url" || result.status === "unsafe-destination" ? 400
-    : result.status === "candidate-not-found" ? 409
-      : result.status === "invalid-gpx" ? 422
+    : result.status === "candidate-not-found" || result.status === "archive-changed" ? 409
+      : ["invalid-gpx", "invalid-archive", "unsafe-archive", "archive-too-large", "no-gpx-in-archive"].includes(result.status) ? 422
         : result.status === "provider-failure" && result.category === "busy" ? 429
           : result.status === "provider-failure" && result.category === "timeout" ? 504 : 502;
   return Response.json({ status: result.status, ...(result.status === "provider-failure" ? { category: result.category } : {}) }, {
@@ -43,13 +43,28 @@ export function createRaceGpxDownloadPost(download = downloadDiscoveredGpx) {
     } catch {
       return Response.json({ status: "invalid-request" }, { status: 400 });
     }
-    if (!body || typeof body !== "object" || !("sourcePageUrl" in body) || !("gpxUrl" in body) ||
-      typeof body.sourcePageUrl !== "string" || typeof body.gpxUrl !== "string" ||
-      body.sourcePageUrl.length > 2_048 || body.gpxUrl.length > 2_048) {
+    if (!body || typeof body !== "object" || !("sourcePageUrl" in body) ||
+      typeof body.sourcePageUrl !== "string" || body.sourcePageUrl.length > 2_048) {
       return Response.json({ status: "invalid-request" }, { status: 400 });
     }
 
-    const result = await download(body.sourcePageUrl, body.gpxUrl);
+    const resourceType = "resourceType" in body ? body.resourceType : "gpx";
+    const resourceUrl = (resourceType === "zip" || resourceType === "zip-entry") && "archiveUrl" in body ? body.archiveUrl
+      : resourceType === "gpx" && "gpxUrl" in body ? body.gpxUrl : undefined;
+    const archiveDigest = "archiveDigest" in body ? body.archiveDigest : undefined;
+    const entryId = "entryId" in body ? body.entryId : undefined;
+    if ((resourceType !== "gpx" && resourceType !== "zip" && resourceType !== "zip-entry") || typeof resourceUrl !== "string" || resourceUrl.length > 2_048 ||
+      (resourceType === "zip-entry" && (typeof archiveDigest !== "string" || typeof entryId !== "string"))) {
+      return Response.json({ status: "invalid-request" }, { status: 400 });
+    }
+
+    const result = await download(body.sourcePageUrl, resourceUrl, resourceType, archiveDigest as string | undefined, entryId as string | undefined);
+    if (result.status === "archive-choices") {
+      return Response.json({ status: result.status, archiveDigest: result.archiveDigest, files: result.files }, {
+        status: 200,
+        headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
+      });
+    }
     if (result.status !== "success") return failureResponse(result);
     return new Response(result.text, {
       status: 200,
