@@ -80,6 +80,13 @@ export type OfficialGpxEventDetectionDiagnostic = {
   sameOriginAnchors: number;
   eventLinkProspects: number;
   meaningfulHeadingCount: number;
+  qualifyingLabelsBySource: {
+    sharedHeading: number;
+    anchorText: number;
+    ariaOrTitle: number;
+    imageAlt: number;
+    semanticCardContext: number;
+  };
   finalDeduplicatedEventChoices: number;
   gpxCandidatePrecedenceSuppressed: boolean;
   explicitGpxIndexPrecedenceSuppressed: boolean;
@@ -147,6 +154,10 @@ function emptyOrganizerEventStructureDiagnostic(): OrganizerEventStructureDiagno
     prospectsByAncestorCategory: { semanticCard: 0, section: 0, listOrTable: 0, divContainer: 0, other: 0 },
     maxProspectNestingDepth: 0,
   };
+}
+
+function emptyQualifyingLabelsBySource(): OfficialGpxEventDetectionDiagnostic["qualifyingLabelsBySource"] {
+  return { sharedHeading: 0, anchorText: 0, ariaOrTitle: 0, imageAlt: 0, semanticCardContext: 0 };
 }
 
 export type SafeHttpsAddress = { address: string; family: 4 | 6 };
@@ -579,7 +590,7 @@ const EVENT_NAME_HINT = /\b(?:trail|ultra|race|run(?:ning)?|marathon|utrk\w*|ver
 
 function credibleFallbackName(
   link: HtmlLink,
-): { name: string; evidenceLabel: string } | null {
+): { name: string; evidenceLabel: string; source: Exclude<keyof OfficialGpxEventDetectionDiagnostic["qualifyingLabelsBySource"], "sharedHeading"> } | null {
   const options: Array<{ name: string; evidenceLabel: string; kind: "anchor" | "attribute" | "image" | "card" }> = [
     { name: link.text, evidenceLabel: `link text: ${link.text}`, kind: "anchor" },
     { name: link.ariaLabel, evidenceLabel: `aria-label: ${link.ariaLabel}`, kind: "attribute" },
@@ -594,7 +605,10 @@ function credibleFallbackName(
     if ((option.kind === "attribute" || option.kind === "image" || option.kind === "card") &&
       (!link.insideSemanticCard || !EVENT_NAME_HINT.test(name))) continue;
     if (option.kind === "card" && (name.split(/\s+/).length > 6 || /[.!?,;:]/.test(name))) continue;
-    return { name, evidenceLabel: option.evidenceLabel };
+    const source = option.kind === "anchor" ? "anchorText"
+      : option.kind === "attribute" ? "ariaOrTitle"
+        : option.kind === "image" ? "imageAlt" : "semanticCardContext";
+    return { name, evidenceLabel: option.evidenceLabel, source };
   }
   return null;
 }
@@ -605,11 +619,12 @@ function organizerEventChoices(
   headingElements: number,
   meaningfulHeadingElements: number,
   maxChoices = 8,
-): { choices: OfficialGpxEventChoice[]; eventLinkProspects: number; meaningfulHeadingCount: number; meaningfulFallbackLabelCount: number; structure: OrganizerEventStructureDiagnostic } {
+): { choices: OfficialGpxEventChoice[]; eventLinkProspects: number; meaningfulHeadingCount: number; meaningfulFallbackLabelCount: number; qualifyingLabelsBySource: OfficialGpxEventDetectionDiagnostic["qualifyingLabelsBySource"]; structure: OrganizerEventStructureDiagnostic } {
   const choices = new Map<string, OfficialGpxEventChoice>();
   let eventLinkProspects = 0;
   let meaningfulHeadingCount = 0;
   let meaningfulFallbackLabelCount = 0;
+  const qualifyingLabelsBySource = emptyQualifyingLabelsBySource();
   const structure = emptyOrganizerEventStructureDiagnostic();
   structure.headingElements = boundedDiagnosticCount(headingElements);
   structure.meaningfulHeadingElements = boundedDiagnosticCount(meaningfulHeadingElements);
@@ -647,8 +662,13 @@ function organizerEventChoices(
       structure.prospectsRejectedWithNonMeaningfulHeading = incrementDiagnosticCount(structure.prospectsRejectedWithNonMeaningfulHeading);
       continue;
     }
-    if (headingBacked) meaningfulHeadingCount = incrementDiagnosticCount(meaningfulHeadingCount);
-    else meaningfulFallbackLabelCount = incrementDiagnosticCount(meaningfulFallbackLabelCount);
+    if (headingBacked) {
+      meaningfulHeadingCount = incrementDiagnosticCount(meaningfulHeadingCount);
+      qualifyingLabelsBySource.sharedHeading = incrementDiagnosticCount(qualifyingLabelsBySource.sharedHeading);
+    } else if (fallback) {
+      meaningfulFallbackLabelCount = incrementDiagnosticCount(meaningfulFallbackLabelCount);
+      qualifyingLabelsBySource[fallback.source] = incrementDiagnosticCount(qualifyingLabelsBySource[fallback.source]);
+    }
     const evidence = [
       link.text && `link text: ${link.text}`,
       link.title && `title: ${link.title}`,
@@ -671,7 +691,7 @@ function organizerEventChoices(
       });
     }
   }
-  return { choices: [...choices.values()], eventLinkProspects, meaningfulHeadingCount, meaningfulFallbackLabelCount, structure };
+  return { choices: [...choices.values()], eventLinkProspects, meaningfulHeadingCount, meaningfulFallbackLabelCount, qualifyingLabelsBySource, structure };
 }
 
 function unsupportedArchiveEvidence(url: URL, link: HtmlLink): boolean {
@@ -822,6 +842,7 @@ export function createOfficialGpxDiscovery(
       sameOriginAnchors: 0,
       eventLinkProspects: 0,
       meaningfulHeadingCount: 0,
+      qualifyingLabelsBySource: emptyQualifyingLabelsBySource(),
       finalDeduplicatedEventChoices: 0,
       gpxCandidatePrecedenceSuppressed: false,
       explicitGpxIndexPrecedenceSuppressed: false,
@@ -967,6 +988,7 @@ export function createOfficialGpxDiscovery(
           const eventScan = organizerEventChoices(links, sourceUrl, parsedAnchors.headingElements, parsedAnchors.meaningfulHeadingElements);
           eventDetection.eventLinkProspects = eventScan.eventLinkProspects;
           eventDetection.meaningfulHeadingCount = eventScan.meaningfulHeadingCount;
+          eventDetection.qualifyingLabelsBySource = eventScan.qualifyingLabelsBySource;
           eventDetection.finalDeduplicatedEventChoices = eventScan.choices.length;
           eventDetection.structure = eventScan.structure;
           eventDetection.gpxCandidatePrecedenceSuppressed = candidates.size > 0;

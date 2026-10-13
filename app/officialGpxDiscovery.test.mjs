@@ -84,6 +84,13 @@ function eventDiagnostic(overrides = {}) {
     sameOriginAnchors: 0,
     eventLinkProspects: 0,
     meaningfulHeadingCount: 0,
+    qualifyingLabelsBySource: {
+      sharedHeading: 0,
+      anchorText: 0,
+      ariaOrTitle: 0,
+      imageAlt: 0,
+      semanticCardContext: 0,
+    },
     finalDeduplicatedEventChoices: 0,
     gpxCandidatePrecedenceSuppressed: false,
     explicitGpxIndexPrecedenceSuppressed: false,
@@ -388,6 +395,13 @@ test("no-results diagnostics identify missing meaningful headings without record
     sameOriginAnchors: 2,
     eventLinkProspects: 2,
     meaningfulHeadingCount: 0,
+    qualifyingLabelsBySource: {
+      sharedHeading: 0,
+      anchorText: 0,
+      ariaOrTitle: 0,
+      imageAlt: 0,
+      semanticCardContext: 0,
+    },
     finalDeduplicatedEventChoices: 0,
     gpxCandidatePrecedenceSuppressed: false,
     explicitGpxIndexPrecedenceSuppressed: false,
@@ -422,6 +436,13 @@ test("structural event diagnostics distinguish heading and explicit link evidenc
   assert.equal(diagnostics.length, 1);
   assert.equal(diagnostics[0].eventDetection.eventLinkProspects, 4);
   assert.equal(diagnostics[0].eventDetection.meaningfulHeadingCount, 1);
+  assert.deepEqual(diagnostics[0].eventDetection.qualifyingLabelsBySource, {
+    sharedHeading: 1,
+    anchorText: 0,
+    ariaOrTitle: 0,
+    imageAlt: 0,
+    semanticCardContext: 0,
+  });
   assert.equal(diagnostics[0].eventDetection.structure.headingElements, 3);
   assert.equal(diagnostics[0].eventDetection.structure.meaningfulHeadingElements, 2);
   assert.equal(diagnostics[0].eventDetection.structure.prospectsWithMeaningfulAnchorText, 1);
@@ -441,6 +462,35 @@ test("structural event diagnostics distinguish heading and explicit link evidenc
     assert.equal(serialized.includes(privateValue), false, privateValue);
   }
   assert.ok(serialized.length < 1800, "fixed counter payload remains small");
+});
+
+test("unsuccessful discovery counts qualifying label source without retaining labels", async () => {
+  const rootUrl = "https://organizer.example/";
+  const html = [
+    '<article><h2>Alpine Trail Event</h2><a href="/same">Learn more</a></article>',
+    '<a href="/same">Ultra Trail One</a>',
+    '<article><a href="/same" aria-label="Ultra Trail Two">Learn more</a></article>',
+    '<article><a href="/same"><img alt="Mountain Trail Race"></a></article>',
+    '<article>Forest Trail Event Four<a href="/same">Learn more</a></article>',
+  ].join("");
+  const diagnostics = [];
+  const { run } = discovery(new Map([[rootUrl, page(html, rootUrl)]]), { onDiagnostic: (item) => diagnostics.push(item) });
+
+  assert.deepEqual(await run(rootUrl), { status: "no-results", candidates: [] });
+  assert.equal(diagnostics.length, 1);
+  assert.deepEqual(diagnostics[0].eventDetection.qualifyingLabelsBySource, {
+    sharedHeading: 1,
+    anchorText: 1,
+    ariaOrTitle: 1,
+    imageAlt: 1,
+    semanticCardContext: 1,
+  });
+  assert.equal(diagnostics[0].eventDetection.finalDeduplicatedEventChoices, 1);
+  const serialized = JSON.stringify(diagnostics);
+  for (const privateValue of ["Alpine Trail Event", "Ultra Trail One", "Ultra Trail Two", "Mountain Trail Race", "Forest Trail Event Four", "/same", "organizer.example"]) {
+    assert.equal(serialized.includes(privateValue), false, privateValue);
+  }
+  assert.ok(serialized.length < 2_000, "source counters keep the diagnostic payload bounded");
 });
 
 test("structural event counters and nesting depth are capped for dense pages", async () => {
