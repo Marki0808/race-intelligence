@@ -59,9 +59,11 @@ test("no-results and failures offer the existing manual-upload route", () => {
   assert.match(discoveryUi, /upload a GPX file instead/i);
   assert.match(discoveryUi, /Open manual GPX upload/);
   assert.match(discoveryUi, /href="\/route"/);
-  assert.match(discoveryUi, /No route links or distinct event choices could be identified/);
-  assert.match(discoveryUi, /try its direct event or course page/);
+  assert.match(discoveryUi, /We couldn&apos;t find a route on this page\./);
+  assert.match(discoveryUi, /If this is an organizer&apos;s homepage, open the specific race or course page and paste its URL here\./);
+  assert.match(discoveryUi, /upload a GPX file directly\./);
   assert.match(discoveryUi, /We couldn’t inspect usable page content/);
+  assert.match(discoveryUi, /if \(result\.status === "no-results"\) \{\s*setStatus\("no-results"\);\s*return;\s*\}\s*setMessage\(result\.status/);
 });
 
 test("confirmed GPX enters the existing RouteMode parser and analysis path in memory", () => {

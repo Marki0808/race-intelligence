@@ -289,7 +289,15 @@ export default function RaceGpxDiscovery() {
       {status === "loading" && <p aria-live="polite" className="mt-3 text-sm text-white/65">Checking the page for route links…</p>}
       {status === "downloading" && <p aria-live="polite" className="mt-3 text-sm text-white/65">Retrieving and validating the selected GPX…</p>}
       {status === "downloading" && selectedArchiveUrl && <p aria-live="polite" className="mt-1 text-xs text-white/45">Opening the confirmed ZIP in memory and checking its contents. Nothing is extracted to disk.</p>}
-      {status === "no-results" && <div role="status" className="mt-3 text-sm leading-6 text-white/70">No route links or distinct event choices could be identified on that page. If you pasted an organizer homepage, try its direct event or course page; or <Link href="/route" className="font-semibold text-[#a7c957] underline">upload a GPX file instead.</Link></div>}
+      {status === "no-results" && (
+        <div role="status" className="mt-3 text-white/70">
+          <h2 className="text-base font-semibold leading-6 text-white">We couldn&apos;t find a route on this page.</h2>
+          <p className="mt-1 text-sm leading-6">
+            If this is an organizer&apos;s homepage, open the specific race or course page and paste its URL here. You can also{" "}
+            <Link href="/route" className="font-semibold text-[#a7c957] underline">upload a GPX file directly.</Link>
+          </p>
+        </div>
+      )}
       {status === "unsupported" && <div role="status" className="mt-3 text-sm leading-6 text-white/70">{message} <Link href="/route" className="font-semibold text-[#a7c957] underline">Open manual GPX upload.</Link></div>}
       {(status === "error" || status === "ready") && <div role="status" className="mt-3 text-sm leading-6 text-white/70">{message} {status === "error" && <Link href="/route" className="font-semibold text-[#a7c957] underline">Open manual GPX upload.</Link>}</div>}
 
