@@ -227,6 +227,103 @@ test("associates organizer event-card sibling headings with generic learn-more l
   assert.equal(calls.filter((call) => call.type === "request").length, 1);
 });
 
+test("discovers distinct event choices from descriptive same-origin card links without headings", async () => {
+  const rootUrl = "https://organizer.example/";
+  const html = [
+    '<main><article><a href="/coastal-ultra">Coastal Ultra Trail</a></article>',
+    '<article><a href="/forest-vertical">Forest Vertical Race</a></article>',
+    '<article><a href="/coastal-ultra">Coastal Ultra Trail</a></article></main>',
+    '<nav><a href="/about">About the Organizer</a></nav>',
+  ].join("");
+  const { run, calls } = discovery(new Map([[rootUrl, page(html, rootUrl)]]));
+  const result = await run(rootUrl);
+
+  assert.equal(result.status, "event-selection-required");
+  assert.deepEqual(result.events.map(({ displayName, url }) => [displayName, url]), [
+    ["Coastal Ultra Trail", "https://organizer.example/coastal-ultra"],
+    ["Forest Vertical Race", "https://organizer.example/forest-vertical"],
+  ]);
+  assert.ok(result.events.every((event) => event.supportingEvidence.some((item) => item.startsWith("link text:"))));
+  assert.equal(calls.filter((call) => call.type === "request").length, 1);
+});
+
+test("uses a bounded semantic-card label for generic event actions and supports image and accessible labels", async () => {
+  const rootUrl = "https://organizer.example/";
+  const html = [
+    '<main><article class="event-card"><div>Mountain Ultra Challenge</div><a href="/mountain-ultra">Saznaj više</a></article>',
+    '<article class="event-card"><a href="/ridge-trail" aria-label="Ridge Trail Race"><img alt="Ridge Trail Race event"></a></article>',
+    '<article class="event-card"><div class="event-title">Valley Trail Festival</div><a href="/valley-trail" title="Valley Trail Festival">Details</a></article></main>',
+  ].join("");
+  const { run } = discovery(new Map([[rootUrl, page(html, rootUrl)]]));
+  const result = await run(rootUrl);
+
+  assert.equal(result.status, "event-selection-required");
+  assert.deepEqual(result.events.map((event) => event.displayName), [
+    "Mountain Ultra Challenge", "Ridge Trail Race", "Valley Trail Festival",
+  ]);
+  assert.ok(result.events[0].supportingEvidence.includes("associated card label: Mountain Ultra Challenge"));
+  assert.ok(result.events[1].supportingEvidence.includes("aria-label: Ridge Trail Race"));
+  assert.ok(result.events[2].supportingEvidence.includes("title: Valley Trail Festival"));
+});
+
+test("RIKA-style named event cards without headings use their local labels instead of generic CTAs", async () => {
+  const rootUrl = "https://organizer.example/";
+  const html = [
+    '<main><article class="event-card"><div>Ultra Trail Učka</div><a href="/event-a">Saznaj više</a></article>',
+    '<article class="event-card"><div>Rika Vertikal</div><a href="/event-b">Saznaj više</a></article>',
+    '<article class="event-card"><div>Drenova Trail</div><a href="/event-c">Saznaj više</a></article></main>',
+  ].join("");
+  const { run, calls } = discovery(new Map([[rootUrl, page(html, rootUrl)]]));
+  const result = await run(rootUrl);
+
+  assert.equal(result.status, "event-selection-required");
+  assert.deepEqual(result.events.map((event) => event.displayName), ["Ultra Trail Učka", "Rika Vertikal", "Drenova Trail"]);
+  assert.ok(result.events.every((event) => event.linkText === "Saznaj više"));
+  assert.equal(calls.filter((call) => call.type === "request").length, 1);
+});
+
+test("does not promote generic links, non-card labels, or distance-specific pages to event choices", async () => {
+  const rootUrl = "https://organizer.example/";
+  const html = [
+    '<main><a href="/join" title="Join Our Community">Learn more</a>',
+    '<article><a href="/races/100M">100M Ultra Trail</a></article>',
+    '<div><span>Unrelated Mountain Race</span><a href="/unlabeled">Saznaj vise</a></div>',
+    '<article><a href="/real-ultra">Real Ultra Trail Event</a></article></main>',
+    '<footer><article><a href="/footer-race">Footer Mountain Race</a></article></footer>',
+  ].join("");
+  const diagnostics = [];
+  const { run } = discovery(new Map([
+    [rootUrl, page(html, rootUrl)],
+    ["https://organizer.example/races/100M", page("<main><p>No route resources here.</p></main>", "https://organizer.example/races/100M")],
+    ["https://organizer.example/real-ultra", page("<main><p>No route resources here.</p></main>", "https://organizer.example/real-ultra")],
+  ]), { onDiagnostic: (item) => diagnostics.push(item) });
+  const result = await run(rootUrl);
+
+  assert.equal(result.status, "no-results", JSON.stringify({ result, diagnostics }));
+});
+
+test("deduplicates no-heading event links and retains the strongest available label", async () => {
+  const rootUrl = "https://organizer.example/";
+  const html = '<main><article><a href="/one">Coastal Trail Race</a><a href="/one" title="Coastal Trail">Details</a><a href="/two">Forest Ultra Event</a></article></main>';
+  const { run } = discovery(new Map([[rootUrl, page(html, rootUrl)]]));
+  const result = await run(rootUrl);
+
+  assert.equal(result.status, "event-selection-required");
+  assert.equal(result.events.filter((event) => event.url === "https://organizer.example/one").length, 1);
+  assert.equal(result.events[0].displayName, "Coastal Trail Race");
+  assert.ok(result.events[0].supportingEvidence.includes("title: Coastal Trail"));
+});
+
+test("unusable short HTTP 202 HTML returns no-results without attempting to bypass the response", async () => {
+  const rootUrl = "https://organizer.example/";
+  const body = new TextEncoder().encode("<!doctype html><html><body>Page temporarily unavailable</body></html>");
+  const response = { statusCode: 202, headers: { "content-type": "text/html; charset=utf-8" }, body, url: rootUrl };
+  const { run, calls } = discovery(new Map([[rootUrl, response]]));
+
+  assert.deepEqual(await run(rootUrl), { status: "no-results", candidates: [] });
+  assert.equal(calls.filter((call) => call.type === "request").length, 1);
+});
+
 test("associates a preceding heading through nested wrappers within the same semantic card", async () => {
   const rootUrl = "https://organizer.example/";
   const html = [

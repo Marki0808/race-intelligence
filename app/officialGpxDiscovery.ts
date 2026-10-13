@@ -335,6 +335,9 @@ type HtmlLink = {
   href: string;
   text: string;
   title: string;
+  ariaLabel: string;
+  imageAlt: string;
+  cardContext: string | null;
   contextHeading: string | null;
   isNavigation: boolean;
   meaningfulAnchorText: boolean;
@@ -352,9 +355,10 @@ type ParsedHtmlAnchors = {
 };
 function parseAnchorLinks(html: string): ParsedHtmlAnchors {
   const links: HtmlLink[] = [];
-  const scopes: Array<{ tag: string; heading: string | null; isCard: boolean; isNavigation: boolean }> = [];
+  const scopes: Array<{ tag: string; heading: string | null; text: string[]; isCard: boolean; isNavigation: boolean }> = [];
   let active: {
-    href: string; title: string; pieces: string[]; contextHeading: string | null; isNavigation: boolean;
+    href: string; title: string; ariaLabel: string; imageAlt: string; cardContext: string | null;
+    pieces: string[]; contextHeading: string | null; isNavigation: boolean;
     meaningfulAriaOrTitle: boolean; meaningfulImageAlt: boolean; insideSemanticCard: boolean;
     headingInSharedContainer: boolean; ancestorCategory: HtmlLink["ancestorCategory"]; nestingDepth: number;
   } | null = null;
@@ -366,6 +370,9 @@ function parseAnchorLinks(html: string): ParsedHtmlAnchors {
     if (active) links.push({
       href: decodeEntities(active.href).trim(),
       title: active.title,
+      ariaLabel: active.ariaLabel,
+      imageAlt: active.imageAlt,
+      cardContext: active.cardContext,
       text: decodeEntities(active.pieces.join(" ").replace(/\s+/g, " ").trim()).slice(0, 300),
       contextHeading: active.contextHeading,
       isNavigation: active.isNavigation,
@@ -383,9 +390,12 @@ function parseAnchorLinks(html: string): ParsedHtmlAnchors {
     const start = html.indexOf("<", cursor);
     if (start < 0) {
       if (active) active.pieces.push(html.slice(cursor));
+      else if (!activeHeading) appendCardText(scopes, html.slice(cursor));
       break;
     }
-    if (active) active.pieces.push(html.slice(cursor, start));
+    const textBetweenTags = html.slice(cursor, start);
+    if (active) active.pieces.push(textBetweenTags);
+    else if (!activeHeading) appendCardText(scopes, textBetweenTags);
     if (html.startsWith("<!--", start)) {
       const close = html.indexOf("-->", start + 4);
       if (close < 0) break;
@@ -409,7 +419,6 @@ function parseAnchorLinks(html: string): ParsedHtmlAnchors {
     }
     if (end >= html.length) break;
     const tag = html.slice(start, end + 1);
-    const textBetweenTags = html.slice(cursor, start);
     if (activeHeading) activeHeading.pieces.push(textBetweenTags);
     cursor = end + 1;
     if (/^<\s*(script|style)\b/i.test(tag) && !/\/\s*>$/.test(tag)) {
@@ -459,7 +468,10 @@ function parseAnchorLinks(html: string): ParsedHtmlAnchors {
             : scopes.some((item) => item.tag === "div") ? "divContainer" : "other";
       active = attrs.href ? {
         href: attrs.href,
-        title: decodeEntities(attrs.title ?? ""),
+        title: decodeEntities(attrs.title ?? "").trim().slice(0, 160),
+        ariaLabel: decodeEntities(attrs["aria-label"] ?? "").trim().slice(0, 160),
+        imageAlt: "",
+        cardContext: [...scopes].reverse().find((item) => item.isCard)?.text.join(" ").replace(/\s+/g, " ").trim().slice(0, 160) || null,
         pieces: [],
         contextHeading: [...scopes].reverse().find((item) => item.heading)?.heading ?? null,
         isNavigation: scopes.some((item) => item.isNavigation),
@@ -477,7 +489,10 @@ function parseAnchorLinks(html: string): ParsedHtmlAnchors {
     if (active && /^<\s*img\b/i.test(tag)) {
       const alt = /\balt\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(tag);
       const altText = decodeEntities(alt?.[1] ?? alt?.[2] ?? alt?.[3] ?? "").trim().slice(0, 160);
-      if (hasMeaningfulEventHeading(altText)) active.meaningfulImageAlt = true;
+      if (hasMeaningfulEventHeading(altText)) {
+        active.meaningfulImageAlt = true;
+        active.imageAlt = altText;
+      }
     }
     const openingTag = /^<\s*([a-z][\w:-]*)/i.exec(tag)?.[1]?.toLowerCase();
     if (!openingTag || /^<\s*!|^<\s*\?/i.test(tag)) continue;
@@ -491,6 +506,7 @@ function parseAnchorLinks(html: string): ParsedHtmlAnchors {
       scopes.push({
         tag: openingTag,
         heading: null,
+        text: [],
         isCard: structuralCard || labeledCard,
         isNavigation: ["nav", "header", "footer"].includes(openingTag) || /^(?:navigation|contentinfo)$/i.test(role?.[1] ?? role?.[2] ?? role?.[3] ?? ""),
       });
@@ -502,6 +518,13 @@ function parseAnchorLinks(html: string): ParsedHtmlAnchors {
   }
   finishAnchor();
   return { links, headingElements: boundedDiagnosticCount(headingElements), meaningfulHeadingElements: boundedDiagnosticCount(meaningfulHeadingElements) };
+}
+
+function appendCardText(scopes: Array<{ text: string[]; isCard: boolean }>, value: string): void {
+  const card = [...scopes].reverse().find((item) => item.isCard);
+  if (!card || card.text.join(" ").length >= 160) return;
+  const text = decodeEntities(value).replace(/\s+/g, " ").trim();
+  if (text) card.text.push(text.slice(0, Math.max(0, 160 - card.text.join(" ").length)));
 }
 
 const DISTANCE = /(?:^|[^a-z0-9])(\d{1,3}(?:[.,]\d{1,2})?\s*(?:km|k|mi|mile|miles))(?![a-z])/i;
@@ -552,16 +575,41 @@ function hasMeaningfulEventHeading(name: string): boolean {
     && name.split(/\s+/).filter(Boolean).length >= 2);
 }
 
+const EVENT_NAME_HINT = /\b(?:trail|ultra|race|run(?:ning)?|marathon|utrk\w*|vertikal|mountain|skyrace|skyrunning|event)\b/i;
+
+function credibleFallbackName(
+  link: HtmlLink,
+): { name: string; evidenceLabel: string } | null {
+  const options: Array<{ name: string; evidenceLabel: string; kind: "anchor" | "attribute" | "image" | "card" }> = [
+    { name: link.text, evidenceLabel: `link text: ${link.text}`, kind: "anchor" },
+    { name: link.ariaLabel, evidenceLabel: `aria-label: ${link.ariaLabel}`, kind: "attribute" },
+    { name: link.title, evidenceLabel: `title: ${link.title}`, kind: "attribute" },
+    { name: link.imageAlt, evidenceLabel: `image alt: ${link.imageAlt}`, kind: "image" },
+    { name: link.cardContext ?? "", evidenceLabel: `associated card label: ${link.cardContext ?? ""}`, kind: "card" },
+  ];
+  for (const option of options) {
+    const name = option.name.replace(/\s+/g, " ").trim().slice(0, 160);
+    if (!hasMeaningfulEventHeading(name) || distanceIn(name)) continue;
+    if (option.kind === "anchor" && !EVENT_NAME_HINT.test(name)) continue;
+    if ((option.kind === "attribute" || option.kind === "image" || option.kind === "card") &&
+      (!link.insideSemanticCard || !EVENT_NAME_HINT.test(name))) continue;
+    if (option.kind === "card" && (name.split(/\s+/).length > 6 || /[.!?,;:]/.test(name))) continue;
+    return { name, evidenceLabel: option.evidenceLabel };
+  }
+  return null;
+}
+
 function organizerEventChoices(
   links: HtmlLink[],
   sourceUrl: URL,
   headingElements: number,
   meaningfulHeadingElements: number,
   maxChoices = 8,
-): { choices: OfficialGpxEventChoice[]; eventLinkProspects: number; meaningfulHeadingCount: number; structure: OrganizerEventStructureDiagnostic } {
+): { choices: OfficialGpxEventChoice[]; eventLinkProspects: number; meaningfulHeadingCount: number; meaningfulFallbackLabelCount: number; structure: OrganizerEventStructureDiagnostic } {
   const choices = new Map<string, OfficialGpxEventChoice>();
   let eventLinkProspects = 0;
   let meaningfulHeadingCount = 0;
+  let meaningfulFallbackLabelCount = 0;
   const structure = emptyOrganizerEventStructureDiagnostic();
   structure.headingElements = boundedDiagnosticCount(headingElements);
   structure.meaningfulHeadingElements = boundedDiagnosticCount(meaningfulHeadingElements);
@@ -583,22 +631,30 @@ function organizerEventChoices(
     if (link.headingInSharedContainer) structure.prospectsWithHeadingInSharedContainer = incrementDiagnosticCount(structure.prospectsWithHeadingInSharedContainer);
     structure.prospectsByAncestorCategory[link.ancestorCategory] = incrementDiagnosticCount(structure.prospectsByAncestorCategory[link.ancestorCategory]);
     structure.maxProspectNestingDepth = Math.max(structure.maxProspectNestingDepth, Math.min(32, link.nestingDepth));
-    const name = link.contextHeading?.trim() ?? "";
-    // An enclosing card/section heading is required. Bare navigation labels
-    // are too weak to distinguish organizer events from ordinary site menus.
-    if (!link.headingInSharedContainer) {
-      structure.prospectsRejectedWithoutSharedHeading = incrementDiagnosticCount(structure.prospectsRejectedWithoutSharedHeading);
+    const heading = link.contextHeading?.trim() ?? "";
+    const fallback = credibleFallbackName(link);
+    const headingBacked = link.headingInSharedContainer && hasMeaningfulEventHeading(heading);
+    const name = headingBacked ? heading : fallback?.name ?? "";
+    if (!name) {
+      if (!link.headingInSharedContainer) {
+        structure.prospectsRejectedWithoutSharedHeading = incrementDiagnosticCount(structure.prospectsRejectedWithoutSharedHeading);
+      } else {
+        structure.prospectsRejectedWithNonMeaningfulHeading = incrementDiagnosticCount(structure.prospectsRejectedWithNonMeaningfulHeading);
+      }
       continue;
     }
-    if (!hasMeaningfulEventHeading(name)) {
+    if (!headingBacked && !fallback) {
       structure.prospectsRejectedWithNonMeaningfulHeading = incrementDiagnosticCount(structure.prospectsRejectedWithNonMeaningfulHeading);
       continue;
     }
-    meaningfulHeadingCount = incrementDiagnosticCount(meaningfulHeadingCount);
+    if (headingBacked) meaningfulHeadingCount = incrementDiagnosticCount(meaningfulHeadingCount);
+    else meaningfulFallbackLabelCount = incrementDiagnosticCount(meaningfulFallbackLabelCount);
     const evidence = [
       link.text && `link text: ${link.text}`,
       link.title && `title: ${link.title}`,
-      `associated heading: ${name}`,
+      link.ariaLabel && `aria-label: ${link.ariaLabel}`,
+      link.imageAlt && `image alt: ${link.imageAlt}`,
+      headingBacked ? `associated heading: ${name}` : fallback?.evidenceLabel,
     ].filter(Boolean) as string[];
     const existing = choices.get(target.href);
     if (existing) {
@@ -615,7 +671,7 @@ function organizerEventChoices(
       });
     }
   }
-  return { choices: [...choices.values()], eventLinkProspects, meaningfulHeadingCount, structure };
+  return { choices: [...choices.values()], eventLinkProspects, meaningfulHeadingCount, meaningfulFallbackLabelCount, structure };
 }
 
 function unsupportedArchiveEvidence(url: URL, link: HtmlLink): boolean {
@@ -923,7 +979,7 @@ export function createOfficialGpxDiscovery(
             return { status: "event-selection-required", events: eventScan.choices };
           } else if (eventScan.eventLinkProspects === 0) {
             eventDetection.decisionReason = "no-event-link-prospects";
-          } else if (eventScan.meaningfulHeadingCount === 0) {
+          } else if (eventScan.meaningfulHeadingCount === 0 && eventScan.meaningfulFallbackLabelCount === 0) {
             eventDetection.decisionReason = "no-meaningful-headings";
           } else {
             eventDetection.decisionReason = "fewer-than-two-distinct-event-choices";

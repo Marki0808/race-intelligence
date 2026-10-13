@@ -130,6 +130,8 @@ export default function RaceGpxDiscovery() {
       }
       setMessage(result.status === "invalid-url"
         ? "Enter a valid HTTPS race webpage URL."
+        : result.status === "provider-failure" && result.category === "invalid-response"
+          ? "We couldn’t inspect usable page content. Try the event’s direct course page, or upload a GPX file instead."
         : "We couldn’t discover a route from that page. You can upload a GPX file instead.");
       setStatus("error");
     } catch {
@@ -287,7 +289,7 @@ export default function RaceGpxDiscovery() {
       {status === "loading" && <p aria-live="polite" className="mt-3 text-sm text-white/65">Checking the page for route links…</p>}
       {status === "downloading" && <p aria-live="polite" className="mt-3 text-sm text-white/65">Retrieving and validating the selected GPX…</p>}
       {status === "downloading" && selectedArchiveUrl && <p aria-live="polite" className="mt-1 text-xs text-white/45">Opening the confirmed ZIP in memory and checking its contents. Nothing is extracted to disk.</p>}
-      {status === "no-results" && <div role="status" className="mt-3 text-sm leading-6 text-white/70">No GPX route links were found on that page. <Link href="/route" className="font-semibold text-[#a7c957] underline">Upload a GPX file instead.</Link></div>}
+      {status === "no-results" && <div role="status" className="mt-3 text-sm leading-6 text-white/70">No route links or distinct event choices could be identified on that page. If you pasted an organizer homepage, try its direct event or course page; or <Link href="/route" className="font-semibold text-[#a7c957] underline">upload a GPX file instead.</Link></div>}
       {status === "unsupported" && <div role="status" className="mt-3 text-sm leading-6 text-white/70">{message} <Link href="/route" className="font-semibold text-[#a7c957] underline">Open manual GPX upload.</Link></div>}
       {(status === "error" || status === "ready") && <div role="status" className="mt-3 text-sm leading-6 text-white/70">{message} {status === "error" && <Link href="/route" className="font-semibold text-[#a7c957] underline">Open manual GPX upload.</Link>}</div>}
 

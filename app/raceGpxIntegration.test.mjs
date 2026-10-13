@@ -56,9 +56,12 @@ test("GPX-labeled ZIP archives have explicit confirmation and validated inner-fi
 test("no-results and failures offer the existing manual-upload route", () => {
   assert.match(discoveryUi, /status === "no-results"/);
   assert.match(discoveryUi, /status === "error"/);
-  assert.match(discoveryUi, /Upload a GPX file instead/);
+  assert.match(discoveryUi, /upload a GPX file instead/i);
   assert.match(discoveryUi, /Open manual GPX upload/);
   assert.match(discoveryUi, /href="\/route"/);
+  assert.match(discoveryUi, /No route links or distinct event choices could be identified/);
+  assert.match(discoveryUi, /try its direct event or course page/);
+  assert.match(discoveryUi, /We couldn’t inspect usable page content/);
 });
 
 test("confirmed GPX enters the existing RouteMode parser and analysis path in memory", () => {
