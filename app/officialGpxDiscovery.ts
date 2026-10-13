@@ -349,6 +349,7 @@ type HtmlLink = {
   ariaLabel: string;
   imageAlt: string;
   cardContext: string | null;
+  insideEventCard: boolean;
   contextHeading: string | null;
   isNavigation: boolean;
   meaningfulAnchorText: boolean;
@@ -366,9 +367,9 @@ type ParsedHtmlAnchors = {
 };
 function parseAnchorLinks(html: string): ParsedHtmlAnchors {
   const links: HtmlLink[] = [];
-  const scopes: Array<{ tag: string; heading: string | null; text: string[]; isCard: boolean; isNavigation: boolean }> = [];
+  const scopes: Array<{ tag: string; heading: string | null; text: string[]; isCard: boolean; isEventCard: boolean; isNavigation: boolean }> = [];
   let active: {
-    href: string; title: string; ariaLabel: string; imageAlt: string; cardContext: string | null;
+    href: string; title: string; ariaLabel: string; imageAlt: string; cardContext: string | null; insideEventCard: boolean;
     pieces: string[]; contextHeading: string | null; isNavigation: boolean;
     meaningfulAriaOrTitle: boolean; meaningfulImageAlt: boolean; insideSemanticCard: boolean;
     headingInSharedContainer: boolean; ancestorCategory: HtmlLink["ancestorCategory"]; nestingDepth: number;
@@ -384,6 +385,7 @@ function parseAnchorLinks(html: string): ParsedHtmlAnchors {
       ariaLabel: active.ariaLabel,
       imageAlt: active.imageAlt,
       cardContext: active.cardContext,
+      insideEventCard: active.insideEventCard,
       text: decodeEntities(active.pieces.join(" ").replace(/\s+/g, " ").trim()).slice(0, 300),
       contextHeading: active.contextHeading,
       isNavigation: active.isNavigation,
@@ -473,6 +475,7 @@ function parseAnchorLinks(html: string): ParsedHtmlAnchors {
       const attrPattern = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
       for (const attr of remainder.matchAll(attrPattern)) attrs[attr[1].toLowerCase()] = attr[2] ?? attr[3] ?? attr[4] ?? "";
       const card = scopes.some((item) => item.isCard);
+      const eventCard = scopes.some((item) => item.isEventCard);
       const ancestorCategory: HtmlLink["ancestorCategory"] = card ? "semanticCard"
         : scopes.some((item) => item.tag === "section") ? "section"
           : scopes.some((item) => ["li", "tr", "td"].includes(item.tag)) ? "listOrTable"
@@ -483,6 +486,7 @@ function parseAnchorLinks(html: string): ParsedHtmlAnchors {
         ariaLabel: decodeEntities(attrs["aria-label"] ?? "").trim().slice(0, 160),
         imageAlt: "",
         cardContext: [...scopes].reverse().find((item) => item.isCard)?.text.join(" ").replace(/\s+/g, " ").trim().slice(0, 160) || null,
+        insideEventCard: eventCard,
         pieces: [],
         contextHeading: [...scopes].reverse().find((item) => item.heading)?.heading ?? null,
         isNavigation: scopes.some((item) => item.isNavigation),
@@ -512,13 +516,15 @@ function parseAnchorLinks(html: string): ParsedHtmlAnchors {
       const role = /\brole\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attributes);
       const className = /\b(?:class|id)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attributes);
       const structuralCard = ["article", "li", "tr"].includes(openingTag) || /^(?:article|listitem)$/i.test(role?.[1] ?? role?.[2] ?? role?.[3] ?? "");
-      const labeledCard = /(?:^|\s)(?:card|tile)(?:$|\s)|(?:^|[\s_-])(?:event|race|course)[_-](?:card|tile|item)(?:$|[\s_-])/i
-        .test(className?.[1] ?? className?.[2] ?? className?.[3] ?? "");
+      const cardLabel = className?.[1] ?? className?.[2] ?? className?.[3] ?? "";
+      const eventLabeledCard = /(?:^|[\s_-])(?:event|race|course)[_-]?(?:card|tile|item)(?:$|[\s_-])/i.test(cardLabel);
+      const labeledCard = /(?:^|\s)(?:card|tile)(?:$|\s)/i.test(cardLabel) || eventLabeledCard;
       scopes.push({
         tag: openingTag,
         heading: null,
         text: [],
         isCard: structuralCard || labeledCard,
+        isEventCard: eventLabeledCard,
         isNavigation: ["nav", "header", "footer"].includes(openingTag) || /^(?:navigation|contentinfo)$/i.test(role?.[1] ?? role?.[2] ?? role?.[3] ?? ""),
       });
     }
@@ -601,9 +607,9 @@ function credibleFallbackName(
   for (const option of options) {
     const name = option.name.replace(/\s+/g, " ").trim().slice(0, 160);
     if (!hasMeaningfulEventHeading(name) || distanceIn(name)) continue;
-    if (option.kind === "anchor" && !EVENT_NAME_HINT.test(name)) continue;
+    if (option.kind === "anchor" && !EVENT_NAME_HINT.test(name) && !link.insideEventCard) continue;
     if ((option.kind === "attribute" || option.kind === "image" || option.kind === "card") &&
-      (!link.insideSemanticCard || !EVENT_NAME_HINT.test(name))) continue;
+      (!link.insideSemanticCard || (!EVENT_NAME_HINT.test(name) && !link.insideEventCard))) continue;
     if (option.kind === "card" && (name.split(/\s+/).length > 6 || /[.!?,;:]/.test(name))) continue;
     const source = option.kind === "anchor" ? "anchorText"
       : option.kind === "attribute" ? "ariaOrTitle"

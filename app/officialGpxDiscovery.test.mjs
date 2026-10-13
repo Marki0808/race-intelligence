@@ -289,6 +289,36 @@ test("RIKA-style named event cards without headings use their local labels inste
   assert.equal(calls.filter((call) => call.type === "request").length, 1);
 });
 
+test("explicit event-card evidence permits meaningful local event names without English race keywords", async () => {
+  const rootUrl = "https://organizer.example/";
+  const html = [
+    '<main><article class="event-card"><a href="/event-a">Učka Gathering</a></article>',
+    '<article class="race-card"><div>Drenova Celebration</div><a href="/event-b">Learn more</a></article></main>',
+  ].join("");
+  const { run } = discovery(new Map([[rootUrl, page(html, rootUrl)]]));
+  const result = await run(rootUrl);
+
+  assert.equal(result.status, "event-selection-required");
+  assert.deepEqual(result.events.map((event) => event.displayName), ["Učka Gathering", "Drenova Celebration"]);
+  assert.ok(result.events[0].supportingEvidence.includes("link text: Učka Gathering"));
+  assert.ok(result.events[1].supportingEvidence.includes("associated card label: Drenova Celebration"));
+});
+
+test("event-name keywords remain required outside explicit event cards and generic cards need event evidence", async () => {
+  const rootUrl = "https://organizer.example/";
+  const html = [
+    '<main><article class="card"><a href="/news-one">Community Update</a></article>',
+    '<article class="card"><a href="/news-two">Volunteer Gathering</a></article>',
+    '<article><a href="/ordinary-one">Local Celebration</a></article>',
+    '<article><a href="/ordinary-two">Village Weekend</a></article>',
+    '<article class="event-card"><a href="/empty-one">Learn more</a></article>',
+    '<article class="event-card"><a href="/empty-two">Details</a></article></main>',
+  ].join("");
+  const { run } = discovery(new Map([[rootUrl, page(html, rootUrl)]]));
+
+  assert.deepEqual(await run(rootUrl), { status: "no-results", candidates: [] });
+});
+
 test("does not promote generic links, non-card labels, or distance-specific pages to event choices", async () => {
   const rootUrl = "https://organizer.example/";
   const html = [
