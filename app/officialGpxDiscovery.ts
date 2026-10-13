@@ -71,6 +71,7 @@ export type OfficialGpxEventDetectionDiagnostic = {
   finalDeduplicatedEventChoices: number;
   gpxCandidatePrecedenceSuppressed: boolean;
   explicitGpxIndexPrecedenceSuppressed: boolean;
+  structure: OrganizerEventStructureDiagnostic;
   decisionReason:
     | "root-fetch-failure"
     | "root-http-status"
@@ -89,6 +90,52 @@ export type OfficialGpxEventDetectionDiagnostic = {
     | "unsupported-resources-found"
     | "no-supported-gpx-after-crawl";
 };
+
+export type OrganizerEventStructureDiagnostic = {
+  headingElements: number;
+  meaningfulHeadingElements: number;
+  prospectsWithMeaningfulAnchorText: number;
+  prospectsWithMeaningfulAriaOrTitle: number;
+  prospectsWithMeaningfulImageAlt: number;
+  prospectsInsideSemanticCards: number;
+  prospectsWithHeadingInSharedContainer: number;
+  prospectsRejectedWithoutSharedHeading: number;
+  prospectsRejectedWithNonMeaningfulHeading: number;
+  prospectsExcludedByNavigation: number;
+  prospectsByAncestorCategory: {
+    semanticCard: number;
+    section: number;
+    listOrTable: number;
+    divContainer: number;
+    other: number;
+  };
+  maxProspectNestingDepth: number;
+};
+
+const DIAGNOSTIC_COUNT_CAP = 1000;
+function boundedDiagnosticCount(value: number): number {
+  return Math.min(DIAGNOSTIC_COUNT_CAP, Math.max(0, Math.trunc(value)));
+}
+function incrementDiagnosticCount(value: number): number {
+  return boundedDiagnosticCount(value + 1);
+}
+
+function emptyOrganizerEventStructureDiagnostic(): OrganizerEventStructureDiagnostic {
+  return {
+    headingElements: 0,
+    meaningfulHeadingElements: 0,
+    prospectsWithMeaningfulAnchorText: 0,
+    prospectsWithMeaningfulAriaOrTitle: 0,
+    prospectsWithMeaningfulImageAlt: 0,
+    prospectsInsideSemanticCards: 0,
+    prospectsWithHeadingInSharedContainer: 0,
+    prospectsRejectedWithoutSharedHeading: 0,
+    prospectsRejectedWithNonMeaningfulHeading: 0,
+    prospectsExcludedByNavigation: 0,
+    prospectsByAncestorCategory: { semanticCard: 0, section: 0, listOrTable: 0, divContainer: 0, other: 0 },
+    maxProspectNestingDepth: 0,
+  };
+}
 
 export type SafeHttpsAddress = { address: string; family: 4 | 6 };
 export type SafeHttpsResponse = { statusCode: number; headers: Record<string, string | undefined>; body: Uint8Array };
@@ -272,12 +319,36 @@ function decodeEntities(value: string): string {
   });
 }
 
-type HtmlLink = { href: string; text: string; title: string; contextHeading: string | null; isNavigation: boolean };
-function parseAnchorLinks(html: string): HtmlLink[] {
+type HtmlLink = {
+  href: string;
+  text: string;
+  title: string;
+  contextHeading: string | null;
+  isNavigation: boolean;
+  meaningfulAnchorText: boolean;
+  meaningfulAriaOrTitle: boolean;
+  meaningfulImageAlt: boolean;
+  insideSemanticCard: boolean;
+  headingInSharedContainer: boolean;
+  ancestorCategory: "semanticCard" | "section" | "listOrTable" | "divContainer" | "other";
+  nestingDepth: number;
+};
+type ParsedHtmlAnchors = {
+  links: HtmlLink[];
+  headingElements: number;
+  meaningfulHeadingElements: number;
+};
+function parseAnchorLinks(html: string): ParsedHtmlAnchors {
   const links: HtmlLink[] = [];
   const scopes: Array<{ tag: string; heading: string | null; isCard: boolean; isNavigation: boolean }> = [];
-  let active: { href: string; title: string; pieces: string[]; contextHeading: string | null; isNavigation: boolean } | null = null;
+  let active: {
+    href: string; title: string; pieces: string[]; contextHeading: string | null; isNavigation: boolean;
+    meaningfulAriaOrTitle: boolean; meaningfulImageAlt: boolean; insideSemanticCard: boolean;
+    headingInSharedContainer: boolean; ancestorCategory: HtmlLink["ancestorCategory"]; nestingDepth: number;
+  } | null = null;
   let activeHeading: { tag: string; pieces: string[] } | null = null;
+  let headingElements = 0;
+  let meaningfulHeadingElements = 0;
   let cursor = 0;
   const finishAnchor = () => {
     if (active) links.push({
@@ -286,6 +357,13 @@ function parseAnchorLinks(html: string): HtmlLink[] {
       text: decodeEntities(active.pieces.join(" ").replace(/\s+/g, " ").trim()).slice(0, 300),
       contextHeading: active.contextHeading,
       isNavigation: active.isNavigation,
+      meaningfulAnchorText: hasMeaningfulEventHeading(decodeEntities(active.pieces.join(" ").replace(/\s+/g, " ").trim()).slice(0, 160)),
+      meaningfulAriaOrTitle: active.meaningfulAriaOrTitle,
+      meaningfulImageAlt: active.meaningfulImageAlt,
+      insideSemanticCard: active.insideSemanticCard,
+      headingInSharedContainer: active.headingInSharedContainer,
+      ancestorCategory: active.ancestorCategory,
+      nestingDepth: active.nestingDepth,
     });
     active = null;
   };
@@ -339,6 +417,7 @@ function parseAnchorLinks(html: string): HtmlLink[] {
     if (closingTag && activeHeading?.tag === closingTag) {
       const heading = decodeEntities(activeHeading.pieces.join(" ").replace(/\s+/g, " ").trim()).slice(0, 200);
       if (heading) {
+        if (hasMeaningfulEventHeading(heading)) meaningfulHeadingElements++;
         const cardScope = [...scopes].reverse().find((item) => item.isCard);
         const localScope = [...scopes].reverse().find((item) => item.tag !== "html" && item.tag !== "body" && item.tag !== "main");
         if (cardScope) cardScope.heading = heading;
@@ -361,15 +440,32 @@ function parseAnchorLinks(html: string): HtmlLink[] {
       const remainder = tag.replace(/^<\s*a\b/i, "").replace(/>\s*$/, "");
       const attrPattern = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
       for (const attr of remainder.matchAll(attrPattern)) attrs[attr[1].toLowerCase()] = attr[2] ?? attr[3] ?? attr[4] ?? "";
+      const card = scopes.some((item) => item.isCard);
+      const ancestorCategory: HtmlLink["ancestorCategory"] = card ? "semanticCard"
+        : scopes.some((item) => item.tag === "section") ? "section"
+          : scopes.some((item) => ["li", "tr", "td"].includes(item.tag)) ? "listOrTable"
+            : scopes.some((item) => item.tag === "div") ? "divContainer" : "other";
       active = attrs.href ? {
         href: attrs.href,
         title: decodeEntities(attrs.title ?? ""),
         pieces: [],
         contextHeading: [...scopes].reverse().find((item) => item.heading)?.heading ?? null,
         isNavigation: scopes.some((item) => item.isNavigation),
+        meaningfulAriaOrTitle: [attrs["aria-label"], attrs.title]
+          .some((label) => hasMeaningfulEventHeading(decodeEntities(label ?? "").trim().slice(0, 160))),
+        meaningfulImageAlt: false,
+        insideSemanticCard: card,
+        headingInSharedContainer: scopes.some((item) => item.heading !== null),
+        ancestorCategory,
+        nestingDepth: Math.min(32, scopes.length),
       } : null;
       if (/\/\s*>$/.test(tag)) finishAnchor();
       continue;
+    }
+    if (active && /^<\s*img\b/i.test(tag)) {
+      const alt = /\balt\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(tag);
+      const altText = decodeEntities(alt?.[1] ?? alt?.[2] ?? alt?.[3] ?? "").trim().slice(0, 160);
+      if (hasMeaningfulEventHeading(altText)) active.meaningfulImageAlt = true;
     }
     const openingTag = /^<\s*([a-z][\w:-]*)/i.exec(tag)?.[1]?.toLowerCase();
     if (!openingTag || /^<\s*!|^<\s*\?/i.test(tag)) continue;
@@ -387,10 +483,13 @@ function parseAnchorLinks(html: string): HtmlLink[] {
         isNavigation: ["nav", "header", "footer"].includes(openingTag) || /^(?:navigation|contentinfo)$/i.test(role?.[1] ?? role?.[2] ?? role?.[3] ?? ""),
       });
     }
-    if (/^h[1-6]$/.test(openingTag)) activeHeading = { tag: openingTag, pieces: [] };
+    if (/^h[1-6]$/.test(openingTag)) {
+      headingElements++;
+      activeHeading = { tag: openingTag, pieces: [] };
+    }
   }
   finishAnchor();
-  return links;
+  return { links, headingElements: boundedDiagnosticCount(headingElements), meaningfulHeadingElements: boundedDiagnosticCount(meaningfulHeadingElements) };
 }
 
 const DISTANCE = /(?:^|[^a-z0-9])(\d{1,3}(?:[.,]\d{1,2})?\s*(?:km|k|mi|mile|miles))(?![a-z])/i;
@@ -444,24 +543,46 @@ function hasMeaningfulEventHeading(name: string): boolean {
 function organizerEventChoices(
   links: HtmlLink[],
   sourceUrl: URL,
+  headingElements: number,
+  meaningfulHeadingElements: number,
   maxChoices = 8,
-): { choices: OfficialGpxEventChoice[]; eventLinkProspects: number; meaningfulHeadingCount: number } {
+): { choices: OfficialGpxEventChoice[]; eventLinkProspects: number; meaningfulHeadingCount: number; structure: OrganizerEventStructureDiagnostic } {
   const choices = new Map<string, OfficialGpxEventChoice>();
   let eventLinkProspects = 0;
   let meaningfulHeadingCount = 0;
+  const structure = emptyOrganizerEventStructureDiagnostic();
+  structure.headingElements = boundedDiagnosticCount(headingElements);
+  structure.meaningfulHeadingElements = boundedDiagnosticCount(meaningfulHeadingElements);
   for (const link of links) {
-    if (link.isNavigation) continue;
     const target = sanitizeWebUrl(link.href, sourceUrl, true);
     if (!target || hasSensitiveQuery(target) || target.href === sourceUrl.href || isDistanceRoutePath(target.pathname)
       || isGpxEvidence(target, link) || unsupportedArchiveEvidence(target, link)) continue;
     const priority = subpagePriority(link, target);
     if (priority >= 80 || IRRELEVANT_NAV.test(`${link.text} ${link.title}`)) continue;
-    eventLinkProspects++;
+    if (link.isNavigation) {
+      structure.prospectsExcludedByNavigation = incrementDiagnosticCount(structure.prospectsExcludedByNavigation);
+      continue;
+    }
+    eventLinkProspects = incrementDiagnosticCount(eventLinkProspects);
+    if (link.meaningfulAnchorText) structure.prospectsWithMeaningfulAnchorText = incrementDiagnosticCount(structure.prospectsWithMeaningfulAnchorText);
+    if (link.meaningfulAriaOrTitle) structure.prospectsWithMeaningfulAriaOrTitle = incrementDiagnosticCount(structure.prospectsWithMeaningfulAriaOrTitle);
+    if (link.meaningfulImageAlt) structure.prospectsWithMeaningfulImageAlt = incrementDiagnosticCount(structure.prospectsWithMeaningfulImageAlt);
+    if (link.insideSemanticCard) structure.prospectsInsideSemanticCards = incrementDiagnosticCount(structure.prospectsInsideSemanticCards);
+    if (link.headingInSharedContainer) structure.prospectsWithHeadingInSharedContainer = incrementDiagnosticCount(structure.prospectsWithHeadingInSharedContainer);
+    structure.prospectsByAncestorCategory[link.ancestorCategory] = incrementDiagnosticCount(structure.prospectsByAncestorCategory[link.ancestorCategory]);
+    structure.maxProspectNestingDepth = Math.max(structure.maxProspectNestingDepth, Math.min(32, link.nestingDepth));
     const name = link.contextHeading?.trim() ?? "";
     // An enclosing card/section heading is required. Bare navigation labels
     // are too weak to distinguish organizer events from ordinary site menus.
-    if (!hasMeaningfulEventHeading(name)) continue;
-    meaningfulHeadingCount++;
+    if (!link.headingInSharedContainer) {
+      structure.prospectsRejectedWithoutSharedHeading = incrementDiagnosticCount(structure.prospectsRejectedWithoutSharedHeading);
+      continue;
+    }
+    if (!hasMeaningfulEventHeading(name)) {
+      structure.prospectsRejectedWithNonMeaningfulHeading = incrementDiagnosticCount(structure.prospectsRejectedWithNonMeaningfulHeading);
+      continue;
+    }
+    meaningfulHeadingCount = incrementDiagnosticCount(meaningfulHeadingCount);
     const evidence = [
       link.text && `link text: ${link.text}`,
       link.title && `title: ${link.title}`,
@@ -482,7 +603,7 @@ function organizerEventChoices(
       });
     }
   }
-  return { choices: [...choices.values()], eventLinkProspects, meaningfulHeadingCount };
+  return { choices: [...choices.values()], eventLinkProspects, meaningfulHeadingCount, structure };
 }
 
 function unsupportedArchiveEvidence(url: URL, link: HtmlLink): boolean {
@@ -636,6 +757,7 @@ export function createOfficialGpxDiscovery(
       finalDeduplicatedEventChoices: 0,
       gpxCandidatePrecedenceSuppressed: false,
       explicitGpxIndexPrecedenceSuppressed: false,
+      structure: emptyOrganizerEventStructureDiagnostic(),
       decisionReason: "root-fetch-failure",
     };
     let rootResponseReceived = false;
@@ -681,12 +803,13 @@ export function createOfficialGpxDiscovery(
         const { html, sourceUrl } = validateHtmlResponse(fetched);
         failureStage = "page-processing";
         responseBytes += fetched.bytesRead;
-        const links = parseAnchorLinks(html);
+        const parsedAnchors = parseAnchorLinks(html);
+        const links = parsedAnchors.links;
         if (currentPage.depth === 0) {
           eventDetection.rootHtmlBytesAccepted = Math.max(0, Math.min(limits.maxResponseBytes, fetched.bytesRead));
-          eventDetection.parsedAnchors = links.length;
-          eventDetection.sameOriginAnchors = links.reduce((count, link) =>
-            count + (sanitizeWebUrl(link.href, sourceUrl, true) ? 1 : 0), 0);
+          eventDetection.parsedAnchors = boundedDiagnosticCount(links.length);
+          eventDetection.sameOriginAnchors = boundedDiagnosticCount(links.reduce((count, link) =>
+            count + (sanitizeWebUrl(link.href, sourceUrl, true) ? 1 : 0), 0));
         }
         const candidatesBeforePage = candidates.size;
         const routeIndexEvidence = links.some((link) => {
@@ -761,10 +884,11 @@ export function createOfficialGpxDiscovery(
           if (candidates.size >= limits.maxCandidates) break;
         }
         if (currentPage.depth === 0) {
-          const eventScan = organizerEventChoices(links, sourceUrl);
+          const eventScan = organizerEventChoices(links, sourceUrl, parsedAnchors.headingElements, parsedAnchors.meaningfulHeadingElements);
           eventDetection.eventLinkProspects = eventScan.eventLinkProspects;
           eventDetection.meaningfulHeadingCount = eventScan.meaningfulHeadingCount;
           eventDetection.finalDeduplicatedEventChoices = eventScan.choices.length;
+          eventDetection.structure = eventScan.structure;
           eventDetection.gpxCandidatePrecedenceSuppressed = candidates.size > 0;
           eventDetection.explicitGpxIndexPrecedenceSuppressed = candidates.size === 0 && routeIndexEvidence;
           if (candidates.size > 0) {

@@ -57,6 +57,24 @@ function discovery(pages, options = {}) {
   return { run: createOfficialGpxDiscovery({ resolve, request }, undefined, options.onDiagnostic), calls };
 }
 
+function eventStructure(overrides = {}) {
+  return {
+    headingElements: 0,
+    meaningfulHeadingElements: 0,
+    prospectsWithMeaningfulAnchorText: 0,
+    prospectsWithMeaningfulAriaOrTitle: 0,
+    prospectsWithMeaningfulImageAlt: 0,
+    prospectsInsideSemanticCards: 0,
+    prospectsWithHeadingInSharedContainer: 0,
+    prospectsRejectedWithoutSharedHeading: 0,
+    prospectsRejectedWithNonMeaningfulHeading: 0,
+    prospectsExcludedByNavigation: 0,
+    prospectsByAncestorCategory: { semanticCard: 0, section: 0, listOrTable: 0, divContainer: 0, other: 0 },
+    maxProspectNestingDepth: 0,
+    ...overrides,
+  };
+}
+
 function eventDiagnostic(overrides = {}) {
   return {
     rootResponseStatus: null,
@@ -69,6 +87,7 @@ function eventDiagnostic(overrides = {}) {
     finalDeduplicatedEventChoices: 0,
     gpxCandidatePrecedenceSuppressed: false,
     explicitGpxIndexPrecedenceSuppressed: false,
+    structure: eventStructure(),
     decisionReason: "root-fetch-failure",
     ...overrides,
   };
@@ -254,7 +273,7 @@ test("navigation and footer links are excluded from organizer event choices", as
 
 test("no-results diagnostics identify missing meaningful headings without recording page data", async () => {
   const rootUrl = "https://organizer.example/?tracking=private-query-value";
-  const html = '<main><a href="/ultra-one">Saznaj više private-label-one</a><a href="/vertical-two">Saznaj više private-label-two</a><a href="https://external.example/event">External event</a></main>';
+  const html = '<main><a href="/ultra-one">Saznaj više</a><a href="/vertical-two">Saznaj više</a><a href="https://external.example/event">External event</a></main>';
   const diagnostics = [];
   const { run } = discovery(new Map([[rootUrl, page(html, rootUrl)]]), {
     onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
@@ -275,12 +294,74 @@ test("no-results diagnostics identify missing meaningful headings without record
     finalDeduplicatedEventChoices: 0,
     gpxCandidatePrecedenceSuppressed: false,
     explicitGpxIndexPrecedenceSuppressed: false,
+    structure: eventStructure({
+      headingElements: 0,
+      meaningfulHeadingElements: 0,
+      prospectsRejectedWithoutSharedHeading: 2,
+      prospectsByAncestorCategory: { semanticCard: 0, section: 0, listOrTable: 0, divContainer: 0, other: 2 },
+      maxProspectNestingDepth: 3,
+    }),
     decisionReason: "no-meaningful-headings",
   });
   const serialized = JSON.stringify(diagnostics);
   for (const privateValue of ["private-query-value", "private-label-one", "private-label-two", "/ultra-one", "organizer.example"]) {
     assert.equal(serialized.includes(privateValue), false, privateValue);
   }
+});
+
+test("structural event diagnostics distinguish heading and explicit link evidence without retaining labels", async () => {
+  const rootUrl = "https://organizer.example/";
+  const html = [
+    '<nav><h2>Upcoming Races</h2><a href="/nav-link">Learn more</a></nav>',
+    '<article><h2>Mountain Ultra</h2><div><a href="/one">Learn more</a></div></article>',
+    '<article><h3>More</h3><a href="/two">Learn more</a></article>',
+    '<div><a href="/three" aria-label="Coastal Trail Race" title="Coastal Trail details"><img alt="Coastal Trail event"></a></div>',
+    '<div><a href="/four">Forest Gathering Details</a></div>',
+  ].join("");
+  const diagnostics = [];
+  const { run } = discovery(new Map([[rootUrl, page(html, rootUrl)]]), { onDiagnostic: (item) => diagnostics.push(item) });
+
+  assert.deepEqual(await run(rootUrl), { status: "no-results", candidates: [] });
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0].eventDetection.eventLinkProspects, 4);
+  assert.equal(diagnostics[0].eventDetection.meaningfulHeadingCount, 1);
+  assert.equal(diagnostics[0].eventDetection.structure.headingElements, 3);
+  assert.equal(diagnostics[0].eventDetection.structure.meaningfulHeadingElements, 2);
+  assert.equal(diagnostics[0].eventDetection.structure.prospectsWithMeaningfulAnchorText, 1);
+  assert.equal(diagnostics[0].eventDetection.structure.prospectsWithMeaningfulAriaOrTitle, 1);
+  assert.equal(diagnostics[0].eventDetection.structure.prospectsWithMeaningfulImageAlt, 1);
+  assert.equal(diagnostics[0].eventDetection.structure.prospectsInsideSemanticCards, 2);
+  assert.equal(diagnostics[0].eventDetection.structure.prospectsWithHeadingInSharedContainer, 2);
+  assert.equal(diagnostics[0].eventDetection.structure.prospectsRejectedWithoutSharedHeading, 2);
+  assert.equal(diagnostics[0].eventDetection.structure.prospectsRejectedWithNonMeaningfulHeading, 1);
+  assert.equal(diagnostics[0].eventDetection.structure.prospectsExcludedByNavigation, 1);
+  assert.deepEqual(diagnostics[0].eventDetection.structure.prospectsByAncestorCategory, {
+    semanticCard: 2, section: 0, listOrTable: 0, divContainer: 2, other: 0,
+  });
+  assert.equal(diagnostics[0].eventDetection.structure.maxProspectNestingDepth, 4);
+  const serialized = JSON.stringify(diagnostics);
+  for (const privateValue of ["Mountain Ultra", "Coastal Trail Race", "Forest Gathering Details", "/three", "organizer.example"]) {
+    assert.equal(serialized.includes(privateValue), false, privateValue);
+  }
+  assert.ok(serialized.length < 1800, "fixed counter payload remains small");
+});
+
+test("structural event counters and nesting depth are capped for dense pages", async () => {
+  const rootUrl = "https://organizer.example/";
+  const deepAction = `${"<div>".repeat(40)}<a href="/details">Learn more</a>${"</div>".repeat(40)}`;
+  const denseMarkup = Array.from({ length: 1100 }, () => `<article><h2>Mountain Event</h2>${deepAction}</article>`).join("");
+  const diagnostics = [];
+  const { run } = discovery(new Map([[rootUrl, page(denseMarkup, rootUrl)]]), { onDiagnostic: (item) => diagnostics.push(item) });
+
+  assert.deepEqual(await run(rootUrl), { status: "no-results", candidates: [] });
+  const diagnostic = diagnostics[0].eventDetection;
+  assert.equal(diagnostic.parsedAnchors, 1000);
+  assert.equal(diagnostic.sameOriginAnchors, 1000);
+  assert.equal(diagnostic.eventLinkProspects, 1000);
+  assert.equal(diagnostic.structure.headingElements, 1000);
+  assert.equal(diagnostic.structure.meaningfulHeadingElements, 1000);
+  assert.equal(diagnostic.structure.maxProspectNestingDepth, 32);
+  assert.ok(JSON.stringify(diagnostic).length < 1800);
 });
 
 test("no-results diagnostics show when an explicit GPX index takes precedence over event choices", async () => {
