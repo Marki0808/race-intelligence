@@ -52,11 +52,42 @@ export type OfficialGpxDiscoveryResult =
 
 export type OfficialGpxDiscoveryDiagnostic = {
   stage: "dns-resolution" | "https-request" | "http-response" | "response-read" | "redirect-validation" | "html-validation" | "page-processing" | "concurrency-guard";
-  reason: "timeout" | "unavailable" | "invalid-response" | "response-size-limit" | "busy";
+  reason: "timeout" | "unavailable" | "invalid-response" | "response-size-limit" | "busy" | "no-results" | "unsupported-resources";
   pagesAttempted: number;
   subpageDepth: number;
   candidatesFound: number;
   aggregateBytesAccepted: number;
+  eventDetection?: OfficialGpxEventDetectionDiagnostic;
+};
+
+export type OfficialGpxEventDetectionDiagnostic = {
+  rootResponseStatus: number | null;
+  rootContentType: "text/html" | "application/xhtml+xml" | "other" | "missing" | null;
+  rootHtmlBytesAccepted: number;
+  parsedAnchors: number;
+  sameOriginAnchors: number;
+  eventLinkProspects: number;
+  meaningfulHeadingCount: number;
+  finalDeduplicatedEventChoices: number;
+  gpxCandidatePrecedenceSuppressed: boolean;
+  explicitGpxIndexPrecedenceSuppressed: boolean;
+  decisionReason:
+    | "root-fetch-failure"
+    | "root-http-status"
+    | "root-non-html-content-type"
+    | "root-unsupported-content-encoding"
+    | "root-empty-body"
+    | "root-invalid-utf8"
+    | "root-invalid-html-document"
+    | "root-response-size-limit"
+    | "gpx-candidate-precedence"
+    | "explicit-gpx-index-precedence"
+    | "no-event-link-prospects"
+    | "no-meaningful-headings"
+    | "fewer-than-two-distinct-event-choices"
+    | "provider-failure-during-crawl"
+    | "unsupported-resources-found"
+    | "no-supported-gpx-after-crawl";
 };
 
 export type SafeHttpsAddress = { address: string; family: 4 | 6 };
@@ -390,19 +421,31 @@ function isDistanceRoutePath(pathname: string): boolean {
     || (/^(?:races?|events?|courses?)$/i.test(segments.at(-2) ?? "") && /^\d{1,3}(?:km|k|m|mi)$/i.test(leaf));
 }
 
-function organizerEventChoices(links: HtmlLink[], sourceUrl: URL, maxChoices = 8): OfficialGpxEventChoice[] {
+function hasMeaningfulEventHeading(name: string): boolean {
+  return Boolean(name && name.length <= 160 && !GENERIC_EVENT_LABEL.test(name) && !IRRELEVANT_NAV.test(name)
+    && name.split(/\s+/).filter(Boolean).length >= 2);
+}
+
+function organizerEventChoices(
+  links: HtmlLink[],
+  sourceUrl: URL,
+  maxChoices = 8,
+): { choices: OfficialGpxEventChoice[]; eventLinkProspects: number; meaningfulHeadingCount: number } {
   const choices = new Map<string, OfficialGpxEventChoice>();
+  let eventLinkProspects = 0;
+  let meaningfulHeadingCount = 0;
   for (const link of links) {
     const target = sanitizeWebUrl(link.href, sourceUrl, true);
     if (!target || hasSensitiveQuery(target) || target.href === sourceUrl.href || isDistanceRoutePath(target.pathname)
       || isGpxEvidence(target, link) || unsupportedArchiveEvidence(target, link)) continue;
+    const priority = subpagePriority(link, target);
+    if (priority >= 80 || IRRELEVANT_NAV.test(`${link.text} ${link.title}`)) continue;
+    eventLinkProspects++;
     const name = link.contextHeading?.trim() ?? "";
     // An enclosing card/section heading is required. Bare navigation labels
     // are too weak to distinguish organizer events from ordinary site menus.
-    if (!name || name.length > 160 || GENERIC_EVENT_LABEL.test(name) || IRRELEVANT_NAV.test(name)) continue;
-    if (name.split(/\s+/).filter(Boolean).length < 2) continue;
-    const priority = subpagePriority(link, target);
-    if (priority >= 80 || IRRELEVANT_NAV.test(`${link.text} ${link.title}`)) continue;
+    if (!hasMeaningfulEventHeading(name)) continue;
+    meaningfulHeadingCount++;
     const evidence = [
       link.text && `link text: ${link.text}`,
       link.title && `title: ${link.title}`,
@@ -423,11 +466,30 @@ function organizerEventChoices(links: HtmlLink[], sourceUrl: URL, maxChoices = 8
       });
     }
   }
-  return [...choices.values()];
+  return { choices: [...choices.values()], eventLinkProspects, meaningfulHeadingCount };
 }
 
 function unsupportedArchiveEvidence(url: URL, link: HtmlLink): boolean {
   return /\.zip$/i.test(url.pathname) && /\bgpx\b/i.test(`${link.text} ${link.title}`);
+}
+
+function safeContentType(value: string | undefined): OfficialGpxEventDetectionDiagnostic["rootContentType"] {
+  if (!value) return "missing";
+  const type = value.split(";")[0].trim().toLowerCase();
+  return type === "text/html" || type === "application/xhtml+xml" ? type : "other";
+}
+
+function rootHtmlProblem(response: SafeHttpsResponse): OfficialGpxEventDetectionDiagnostic["decisionReason"] | null {
+  if (response.statusCode < 200 || response.statusCode >= 300) return "root-http-status";
+  const contentType = safeContentType(response.headers["content-type"]);
+  if (contentType !== "text/html" && contentType !== "application/xhtml+xml") return "root-non-html-content-type";
+  const encoding = response.headers["content-encoding"]?.toLowerCase();
+  if (encoding && encoding !== "identity") return "root-unsupported-content-encoding";
+  if (response.body.byteLength === 0) return "root-empty-body";
+  let text: string;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(response.body); } catch { return "root-invalid-utf8"; }
+  if (!/<(?:!doctype\s+html|html)\b/i.test(text)) return "root-invalid-html-document";
+  return null;
 }
 
 function subpagePriority(link: HtmlLink, target: URL): number {
@@ -547,6 +609,20 @@ export function createOfficialGpxDiscovery(
     let responseBytes = 0;
     let failureStage: OfficialGpxDiscoveryDiagnostic["stage"] = "page-processing";
     let failureDepth = 0;
+    const eventDetection: OfficialGpxEventDetectionDiagnostic = {
+      rootResponseStatus: null,
+      rootContentType: null,
+      rootHtmlBytesAccepted: 0,
+      parsedAnchors: 0,
+      sameOriginAnchors: 0,
+      eventLinkProspects: 0,
+      meaningfulHeadingCount: 0,
+      finalDeduplicatedEventChoices: 0,
+      gpxCandidatePrecedenceSuppressed: false,
+      explicitGpxIndexPrecedenceSuppressed: false,
+      decisionReason: "root-fetch-failure",
+    };
+    let rootResponseReceived = false;
     const enqueuePage = (url: URL, depth: number, priority: number) => {
       if (depth > limits.maxSubpageDepth || visited.has(url.href)) return;
       const existingIndex = queue.findIndex((item) => item.url.href === url.href);
@@ -575,10 +651,27 @@ export function createOfficialGpxDiscovery(
           sameOriginRedirects: true,
         }, dependencies, (stage) => { failureStage = stage; });
         failureStage = "html-validation";
+        if (currentPage.depth === 0) {
+          rootResponseReceived = true;
+          eventDetection.rootResponseStatus = Number.isInteger(fetched.statusCode) && fetched.statusCode >= 100 && fetched.statusCode <= 599
+            ? fetched.statusCode : null;
+          eventDetection.rootContentType = safeContentType(fetched.headers["content-type"]);
+          const rootIssue = rootHtmlProblem(fetched);
+          if (rootIssue) {
+            eventDetection.decisionReason = rootIssue;
+            throw new InvalidResponseError();
+          }
+        }
         const { html, sourceUrl } = validateHtmlResponse(fetched);
         failureStage = "page-processing";
         responseBytes += fetched.bytesRead;
         const links = parseAnchorLinks(html);
+        if (currentPage.depth === 0) {
+          eventDetection.rootHtmlBytesAccepted = Math.max(0, Math.min(limits.maxResponseBytes, fetched.bytesRead));
+          eventDetection.parsedAnchors = links.length;
+          eventDetection.sameOriginAnchors = links.reduce((count, link) =>
+            count + (sanitizeWebUrl(link.href, sourceUrl, true) ? 1 : 0), 0);
+        }
         const candidatesBeforePage = candidates.size;
         const routeIndexEvidence = links.some((link) => {
           const target = sanitizeWebUrl(link.href, pageUrl, true);
@@ -651,9 +744,26 @@ export function createOfficialGpxDiscovery(
           }
           if (candidates.size >= limits.maxCandidates) break;
         }
-        if (currentPage.depth === 0 && candidates.size === 0 && !routeIndexEvidence) {
-          const events = organizerEventChoices(links, sourceUrl);
-          if (events.length >= 2) return { status: "event-selection-required", events };
+        if (currentPage.depth === 0) {
+          const eventScan = organizerEventChoices(links, sourceUrl);
+          eventDetection.eventLinkProspects = eventScan.eventLinkProspects;
+          eventDetection.meaningfulHeadingCount = eventScan.meaningfulHeadingCount;
+          eventDetection.finalDeduplicatedEventChoices = eventScan.choices.length;
+          eventDetection.gpxCandidatePrecedenceSuppressed = candidates.size > 0;
+          eventDetection.explicitGpxIndexPrecedenceSuppressed = candidates.size === 0 && routeIndexEvidence;
+          if (candidates.size > 0) {
+            eventDetection.decisionReason = "gpx-candidate-precedence";
+          } else if (routeIndexEvidence) {
+            eventDetection.decisionReason = "explicit-gpx-index-precedence";
+          } else if (eventScan.choices.length >= 2) {
+            return { status: "event-selection-required", events: eventScan.choices };
+          } else if (eventScan.eventLinkProspects === 0) {
+            eventDetection.decisionReason = "no-event-link-prospects";
+          } else if (eventScan.meaningfulHeadingCount === 0) {
+            eventDetection.decisionReason = "no-meaningful-headings";
+          } else {
+            eventDetection.decisionReason = "fewer-than-two-distinct-event-choices";
+          }
         }
         if (candidates.size > candidatesBeforePage) {
           // Once an explicit route page has produced selectable GPX links,
@@ -666,11 +776,24 @@ export function createOfficialGpxDiscovery(
       }
       const results = [...candidates.values()].map((candidate) => ({ ...candidate, ambiguity: candidates.size > 1 ? "multiple-candidates" as const : null }));
       if (results.length) return { status: "success", candidates: results };
-      if (unsupportedResources.size) return { status: "unsupported-resources", resources: [...unsupportedResources.values()] };
+      if (unsupportedResources.size) {
+        eventDetection.decisionReason = "unsupported-resources-found";
+        onDiagnostic?.({ stage: "page-processing", reason: "unsupported-resources", pagesAttempted: visited.size, subpageDepth: failureDepth, candidatesFound: 0, aggregateBytesAccepted: responseBytes, eventDetection });
+        return { status: "unsupported-resources", resources: [...unsupportedResources.values()] };
+      }
+      if (eventDetection.decisionReason === "root-fetch-failure") eventDetection.decisionReason = "no-supported-gpx-after-crawl";
+      onDiagnostic?.({ stage: "page-processing", reason: "no-results", pagesAttempted: visited.size, subpageDepth: failureDepth, candidatesFound: 0, aggregateBytesAccepted: responseBytes, eventDetection });
       return { status: "no-results", candidates: [] };
     } catch (error) {
       const result = safeError(error);
       if (result.status === "provider-failure") {
+        if (rootResponseReceived && failureDepth > 0) {
+          eventDetection.decisionReason = "provider-failure-during-crawl";
+        } else if (eventDetection.decisionReason === "root-fetch-failure") {
+          eventDetection.decisionReason = !rootResponseReceived && error instanceof ResponseSizeLimitError
+            ? "root-response-size-limit"
+            : rootResponseReceived ? "provider-failure-during-crawl" : "root-fetch-failure";
+        }
         onDiagnostic?.({
           stage: failureStage,
           reason: error instanceof ResponseSizeLimitError ? "response-size-limit" : result.category,
@@ -678,6 +801,7 @@ export function createOfficialGpxDiscovery(
           subpageDepth: failureDepth,
           candidatesFound: candidates.size,
           aggregateBytesAccepted: responseBytes,
+          eventDetection,
         });
       }
       return result;
@@ -700,5 +824,6 @@ function validateHtmlResponse(response: SafeHttpsResponse & { finalUrl: URL }): 
 }
 
 export const discoverOfficialGpx = createOfficialGpxDiscovery(undefined, undefined, (diagnostic) => {
-  console.warn("[race-gpx-discovery] provider failure", diagnostic);
+  if (diagnostic.reason === "no-results" || diagnostic.reason === "unsupported-resources") console.info("[race-gpx-discovery] unsuccessful discovery", diagnostic);
+  else console.warn("[race-gpx-discovery] provider failure", diagnostic);
 });

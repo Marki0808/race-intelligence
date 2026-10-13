@@ -57,6 +57,23 @@ function discovery(pages, options = {}) {
   return { run: createOfficialGpxDiscovery({ resolve, request }, undefined, options.onDiagnostic), calls };
 }
 
+function eventDiagnostic(overrides = {}) {
+  return {
+    rootResponseStatus: null,
+    rootContentType: null,
+    rootHtmlBytesAccepted: 0,
+    parsedAnchors: 0,
+    sameOriginAnchors: 0,
+    eventLinkProspects: 0,
+    meaningfulHeadingCount: 0,
+    finalDeduplicatedEventChoices: 0,
+    gpxCandidatePrecedenceSuppressed: false,
+    explicitGpxIndexPrecedenceSuppressed: false,
+    decisionReason: "root-fetch-failure",
+    ...overrides,
+  };
+}
+
 test("accepts only credential-free HTTPS page URLs", () => {
   assert.equal(validateOfficialPageUrl("http://race.example/event"), null);
   assert.equal(validateOfficialPageUrl("https://user:pass@race.example/event"), null);
@@ -171,6 +188,82 @@ test("returns evidence-backed organizer event choices instead of crawling and mi
   ]);
   assert.ok(result.events.every((event) => event.sourcePageUrl === rootUrl && event.supportingEvidence.includes(`associated heading: ${event.displayName}`)));
   assert.equal(calls.filter((call) => call.type === "request").length, 1, "event pages are not fetched before user selection");
+});
+
+test("no-results diagnostics identify missing meaningful headings without recording page data", async () => {
+  const rootUrl = "https://organizer.example/?tracking=private-query-value";
+  const html = '<main><a href="/ultra-one">Saznaj više private-label-one</a><a href="/vertical-two">Saznaj više private-label-two</a><a href="https://external.example/event">External event</a></main>';
+  const diagnostics = [];
+  const { run } = discovery(new Map([[rootUrl, page(html, rootUrl)]]), {
+    onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+  });
+
+  const result = await run(rootUrl);
+  assert.deepEqual(result, { status: "no-results", candidates: [] });
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0].reason, "no-results");
+  assert.deepEqual(diagnostics[0].eventDetection, {
+    rootResponseStatus: 200,
+    rootContentType: "text/html",
+    rootHtmlBytesAccepted: Buffer.byteLength(`<!doctype html><html><body>${html}</body></html>`),
+    parsedAnchors: 3,
+    sameOriginAnchors: 2,
+    eventLinkProspects: 2,
+    meaningfulHeadingCount: 0,
+    finalDeduplicatedEventChoices: 0,
+    gpxCandidatePrecedenceSuppressed: false,
+    explicitGpxIndexPrecedenceSuppressed: false,
+    decisionReason: "no-meaningful-headings",
+  });
+  const serialized = JSON.stringify(diagnostics);
+  for (const privateValue of ["private-query-value", "private-label-one", "private-label-two", "/ultra-one", "organizer.example"]) {
+    assert.equal(serialized.includes(privateValue), false, privateValue);
+  }
+});
+
+test("no-results diagnostics show when an explicit GPX index takes precedence over event choices", async () => {
+  const rootUrl = "https://organizer.example/";
+  const indexUrl = "https://organizer.example/gpx-tracks";
+  const html = '<nav><a href="/gpx-tracks">GPX tracks</a></nav><article><h2>Mountain Event One</h2><a href="/mountain-one">Details</a></article><article><h2>Mountain Event Two</h2><a href="/mountain-two">Details</a></article>';
+  const diagnostics = [];
+  const { run, calls } = discovery(new Map([
+    [rootUrl, page(html, rootUrl)],
+    [indexUrl, page("<main><h1>Course downloads</h1></main>", indexUrl)],
+  ]), { onDiagnostic: (diagnostic) => diagnostics.push(diagnostic) });
+
+  assert.deepEqual(await run(rootUrl), { status: "no-results", candidates: [] });
+  assert.deepEqual(calls.filter((call) => call.type === "request").map((call) => call.url), [rootUrl, indexUrl]);
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0].eventDetection.decisionReason, "explicit-gpx-index-precedence");
+  assert.equal(diagnostics[0].eventDetection.explicitGpxIndexPrecedenceSuppressed, true);
+  assert.equal(diagnostics[0].eventDetection.gpxCandidatePrecedenceSuppressed, false);
+  assert.equal(diagnostics[0].eventDetection.eventLinkProspects, 2);
+  assert.equal(diagnostics[0].eventDetection.meaningfulHeadingCount, 2);
+  assert.equal(diagnostics[0].eventDetection.finalDeduplicatedEventChoices, 2);
+});
+
+test("root response diagnostics use bounded safe reason codes for unsuitable HTML", async () => {
+  const cases = [
+    ["http status", { statusCode: 403, headers: { "content-type": "text/html" }, body: new TextEncoder().encode("blocked") }, "root-http-status", "text/html"],
+    ["content type", { statusCode: 200, headers: { "content-type": "application/json; private=secret" }, body: new TextEncoder().encode("{}") }, "root-non-html-content-type", "other"],
+    ["missing content type", { statusCode: 200, headers: {}, body: new TextEncoder().encode("<!doctype html><html></html>") }, "root-non-html-content-type", "missing"],
+    ["empty body", { statusCode: 200, headers: { "content-type": "text/html" }, body: new Uint8Array() }, "root-empty-body", "text/html"],
+    ["unsupported encoding", { statusCode: 200, headers: { "content-type": "text/html", "content-encoding": "gzip" }, body: new TextEncoder().encode("<!doctype html><html></html>") }, "root-unsupported-content-encoding", "text/html"],
+    ["malformed document", { statusCode: 200, headers: { "content-type": "text/html" }, body: new TextEncoder().encode("not html") }, "root-invalid-html-document", "text/html"],
+  ];
+
+  for (const [label, response, reason, contentType] of cases) {
+    const diagnostics = [];
+    const { run } = discovery(new Map([["https://race.example/event", response]]), {
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+    assert.deepEqual(await run("https://race.example/event"), { status: "provider-failure", category: "invalid-response", candidates: [] }, label);
+    assert.equal(diagnostics.length, 1, label);
+    assert.equal(diagnostics[0].eventDetection.rootContentType, contentType, label);
+    assert.equal(diagnostics[0].eventDetection.decisionReason, reason, label);
+    assert.equal(diagnostics[0].eventDetection.rootHtmlBytesAccepted, 0, label);
+    assert.equal(JSON.stringify(diagnostics).includes("secret"), false, label);
+  }
 });
 
 test("selected organizer event gets a fresh scoped discovery and GPX-labeled ZIP is reported unsupported", async () => {
@@ -345,6 +438,11 @@ test("a secondary page failure reports safe server diagnostics and preserves the
   assert.deepEqual(diagnostics, [{
     stage: "https-request", reason: "unavailable", pagesAttempted: 3, subpageDepth: 2, candidatesFound: 5,
     aggregateBytesAccepted: pages.get(rootUrl).body.byteLength + pages.get(indexUrl).body.byteLength,
+    eventDetection: eventDiagnostic({
+      rootResponseStatus: 200, rootContentType: "text/html", rootHtmlBytesAccepted: pages.get(rootUrl).body.byteLength,
+      parsedAnchors: 1, sameOriginAnchors: 1, explicitGpxIndexPrecedenceSuppressed: true,
+      decisionReason: "provider-failure-during-crawl",
+    }),
   }]);
   assert.equal(JSON.stringify({ result, diagnostics }).includes("private response body and hostname"), false);
   assert.equal(JSON.stringify({ result, diagnostics }).includes("files.example"), false);
@@ -444,6 +542,7 @@ test("truncated response-read failures remain distinct from size-limit diagnosti
   assert.deepEqual(diagnostics, [{
     stage: "response-read", reason: "unavailable", pagesAttempted: 1, subpageDepth: 0, candidatesFound: 0,
     aggregateBytesAccepted: 0,
+    eventDetection: eventDiagnostic(),
   }]);
 });
 
@@ -520,6 +619,7 @@ test("caps followed pages and redirect hops", async () => {
   assert.equal(redirects, 3);
   assert.deepEqual(redirectDiagnostics, [{
     stage: "redirect-validation", reason: "unavailable", pagesAttempted: 1, subpageDepth: 0, candidatesFound: 0, aggregateBytesAccepted: 0,
+    eventDetection: eventDiagnostic(),
   }]);
 });
 
@@ -554,6 +654,11 @@ test("aggregate HTML byte limit rejects a crawl above two megabytes and reports 
   assert.deepEqual(diagnostics, [{
     stage: "http-response", reason: "response-size-limit", pagesAttempted: 3, subpageDepth: 2, candidatesFound: 0,
     aggregateBytesAccepted: 1_400_000,
+    eventDetection: eventDiagnostic({
+      rootResponseStatus: 200, rootContentType: "text/html", rootHtmlBytesAccepted: 700_000,
+      parsedAnchors: 1, sameOriginAnchors: 1, explicitGpxIndexPrecedenceSuppressed: true,
+      decisionReason: "provider-failure-during-crawl",
+    }),
   }]);
 });
 
