@@ -1,7 +1,7 @@
 # Race Intelligence — Project State
 
-**Last verified against:** `main` at `4350f23c1934f64de9dc0e18f1c0ad775ea25af6`
-**Verification date:** 2026-10-12
+**Last verified against:** `main` at `1f11ee6ddb940afbb29c919bf19abce6c6f04499`
+**Verification date:** 2026-10-14
 **Document scope:** Current repository architecture plus separately labeled Production facts supplied from completed operational verification.
 
 Sections 1–9 and 11–16 describe repository-derived implementation and status. Section 10 records operational facts from Production verification; it does not imply that every code path or external-provider persistence behavior was verified in Production.
@@ -28,6 +28,16 @@ The homepage offers two equal entry paths: Race Mode looks up races already in t
 5. Optional evidence requests run separately from deterministic Route Analysis. Route Mode can request OSM evidence through the application Geo Enrichment API and Mapillary imagery through the application Mapillary API for local/noncanonical uploads as well as registered routes. OSM evidence is classified from returned OSM ways; Mapillary searches are built per Route Section. Requests may fail or return partial/no usable evidence, and neither provider defines Route Section boundaries.
 6. For local/noncanonical routes, compatible analysis and enrichment/cache data can be stored in browser IndexedDB. For registered physical routes that meet shared-route eligibility rules, the same evidence flow can additionally reuse or persist compatible data through the server-side shared store. External evidence availability is independent of shared-persistence eligibility: a route may request/use provider evidence without being eligible for shared persistence. The UI presents route-derived analysis and clearly scoped evidence/coverage states.
 7. Course Brief composes from that same completed `RouteAnalysisData` and displays its ordered structural observations. It does not reparse the GPX or refetch/recompute route analysis. Composition failure is isolated from existing route analysis and course content.
+
+### Route Analysis UX — Phase 1
+
+The shared `CourseExplorer` presents the full-route, component-separated elevation profile as its dominant visual, followed by preserved route metrics and a compact map that starts collapsed. Its accessible expand/collapse control preserves the parent selection; Leaflet is created at the expanded size and invalidates its size after opening/resizing. Selecting a Route Section highlights only that component's full-precision distance interval in the profile and map, dims the remaining geometry without hiding it, and never joins disconnected components.
+
+`RouteSectionBrowser` provides the same ordered, touch-friendly section list in Route Mode and Race Mode. The initial list is compact; one selected section's former detailed card appears below the complete list and can be closed. Its detail retains the section mini-profile, component map, embedded events, and available OSM/Mapillary evidence. Section selection is identified by `(segmentIndex, section.id)`. Selecting a Key Moment clears the selected section and uses the existing map focus; selecting a section clears the Key Moment focus. These states do not conflict. This is local implementation and automated verification; no browser or Production acceptance is claimed here.
+
+Aid-station extraction/segmentation and its UI, plus separate “What to expect” / “How to approach it” content, remain future work. No station toggle is shown because reliable route-positioned station data is unavailable. This phase adds no terrain-technicality claims or running advice and does not change route-analysis algorithms, evidence contracts, or provider flows.
+
+Local verification for this Phase 1 change: **58 focused Route Section/UX tests passed** and **627 serial Node tests passed**; TypeScript, ESLint, production build, and `git diff --check` passed. Browser/mobile and Production acceptance remain unverified.
 
 ### Race Mode
 
@@ -372,10 +382,11 @@ For the isolated AI narrative prototype, focused prototype and V2 composition/re
 
 ## 14. Current priorities
 
-1. Focus the next development work on core Route Analysis UX and visual design; assess Course Brief product value and additional verifiable route information without unsupported claims or speculative features.
+1. Manually verify the Route Analysis profile, collapsible map, section selection/highlighting, Race Mode section list, Key Moment coexistence, and mobile behavior in a browser using both connected and disconnected GPX routes. This redesign has local automated verification only so far.
 2. Keep multi-event organizer homepage detection best-effort and defer further detection changes. Before unrestricted public launch, decide and implement deployment-wide abuse/rate controls for discovery and download, and communicate that discovered GPX analysis does not prove a registered edition or correct course.
 3. Before enabling Phase 3D geographic presentation, establish trusted edition-GPX-to-RouteAnalysisData provenance during Race Mode's actual selected-edition GPX loading and analysis flow. Route Mode remains structural-only unless it gains an independent edition binding.
-4. Preserve the separation from the V1 OpenAI API/provider flow, and keep external evidence coverage and provenance explicit; do not infer terrain, imagery, or geographic position where evidence is absent.
+4. In a later bounded product phase, assess whether reliable route-positioned aid-station data is available and whether separate “What to expect” / “How to approach it” content can be supported without unsupported claims. Do not show an Aid Stations toggle until that data is reliable.
+5. Preserve the separation from the V1 OpenAI API/provider flow, and keep external evidence coverage and provenance explicit; do not infer terrain, imagery, or geographic position where evidence is absent.
 
 ## 15. Safe development workflow
 

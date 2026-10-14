@@ -493,7 +493,9 @@ test("OSM evidence attaches by overlap without defining Route Section boundaries
 
 test("Route Sections contain the only course segmentation presentation", () => {
   const source = readFileSync(new URL("./RouteAnalysisView.tsx", import.meta.url), "utf8");
-  assert.equal((source.match(/title="Route Sections"/g) ?? []).length, 1);
+  const browserSource = readFileSync(new URL("./RouteSectionBrowser.tsx", import.meta.url), "utf8");
+  assert.equal((browserSource.match(/>Route Sections<\/h2>/g) ?? []).length, 1);
+  assert.match(source, /<RouteSectionBrowser[\s\S]*?sections=\{displayedSections\}/);
   assert.doesNotMatch(source, /title="Terrain Evidence"|<h[1-6][^>]*>Terrain Evidence<\/h[1-6]>/);
 });
 
@@ -511,8 +513,8 @@ test("section maps depend only on GPX geometry across all OSM and Mapillary stat
   }
   const mapSource = readFileSync(new URL("./TerrainSectionMap.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(mapSource, /Mapillary|images|selectedImage|onSelectImage/);
-  const viewSource = readFileSync(new URL("./RouteAnalysisView.tsx", import.meta.url), "utf8");
-  assert.equal((viewSource.match(/<TerrainSectionMap /g) ?? []).length, 1);
+  const browserSource = readFileSync(new URL("./RouteSectionBrowser.tsx", import.meta.url), "utf8");
+  assert.equal((browserSource.match(/<TerrainSectionMap /g) ?? []).length, 1);
 });
 
 test("separated OSM ranges attach by clipped distance and normalize surfaces among mapped evidence", () => {

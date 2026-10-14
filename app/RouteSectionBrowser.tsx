@@ -1,0 +1,200 @@
+"use client";
+
+import type { ReactNode } from "react";
+import type { MapillaryImageEvidence, MapillarySectionEvidence } from "./mapillaryTerrainProof";
+import type { RouteSection } from "./routeSectionEngine";
+import { getRouteImageryPresentation, getSurfaceEvidencePresentation, numberRouteSectionsForDisplay } from "./routeSectionPresentation";
+import { routeSectionSelectionKey } from "./routeSectionSelection";
+import { sortRouteEmbeddedEventsForDisplay } from "./routeSectionEngine";
+import TerrainSectionMap from "./TerrainSectionMap";
+
+const rhythmLabels: Record<RouteSection["dominantRhythm"], string> = {
+  climb: "Climb",
+  descent: "Descent",
+  rolling: "Rolling",
+  flat: "Flat",
+};
+
+export default function RouteSectionBrowser({
+  sections,
+  selectedSectionKey,
+  onSelectSection,
+  imageEvidence = new Map(),
+  onSelectImage = () => undefined,
+}: {
+  sections: readonly RouteSection[];
+  selectedSectionKey: string | null;
+  onSelectSection: (section: RouteSection | null) => void;
+  imageEvidence?: ReadonlyMap<string, MapillarySectionEvidence | null>;
+  onSelectImage?: (image: MapillaryImageEvidence) => void;
+}) {
+  const orderedSections = numberRouteSectionsForDisplay(sections);
+  const selected = orderedSections.find(({ section }) => routeSectionSelectionKey(section) === selectedSectionKey);
+
+  return (
+    <div>
+      {sections.length ? (
+        <>
+          <ol className="divide-y divide-black/10 overflow-hidden rounded-2xl border border-black/10 bg-white" aria-label="Ordered route sections">
+            {orderedSections.map(({ section, ordinal }) => {
+              const isSelected = routeSectionSelectionKey(section) === selectedSectionKey;
+              return (
+                <li key={routeSectionSelectionKey(section)}>
+                  <button
+                    type="button"
+                    aria-pressed={isSelected}
+                    onClick={() => onSelectSection(section)}
+                    className={`flex min-h-[68px] w-full items-center justify-between gap-3 px-4 py-3 text-left transition focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#71805d] sm:px-5 ${isSelected ? "bg-[#e9eddf]" : "hover:bg-[#f4f2ed]"}`}
+                  >
+                    <span className="flex min-w-0 items-center gap-3">
+                      <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-semibold ${isSelected ? "bg-[#71805d] text-white" : "bg-[#f4f2ed] text-black/60"}`}>{ordinal}</span>
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-semibold text-[#17211c]">{rhythmLabels[section.dominantRhythm]} · {section.startKm}–{section.endKm} km</span>
+                        <span className="mt-1 block text-xs tabular-nums text-black/45">{section.distanceKm} km · +{section.ascentM} m / −{section.descentM} m</span>
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-xs font-semibold text-[#71805d]">{isSelected ? "Selected" : "Details"}</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
+          {selected && (
+            <div className="mt-5" aria-live="polite">
+              <SectionDetail
+                section={selected.section}
+                ordinal={selected.ordinal}
+                imageEvidence={imageEvidence.get(routeSectionSelectionKey(selected.section)) ?? null}
+                onSelectImage={onSelectImage}
+                onClose={() => onSelectSection(null)}
+              />
+            </div>
+          )}
+        </>
+      ) : (
+        <p className="text-sm text-black/45">No stable route rhythm could be distinguished from this GPX elevation profile.</p>
+      )}
+    </div>
+  );
+}
+
+export function RouteSectionBrowserHeading({ action }: { action?: ReactNode }) {
+  return (
+    <div className="mb-8">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.25em] text-[#71805d]">GPX-derived · primary route segmentation</p>
+          <h2 className="mt-3 text-3xl font-semibold tracking-[-0.035em] sm:text-4xl">Route Sections</h2>
+        </div>
+        {action}
+      </div>
+      <p className="mt-4 max-w-2xl text-sm leading-6 text-black/50">Choose a section to explore its profile, route and available evidence.</p>
+    </div>
+  );
+}
+
+function SectionDetail({
+  section,
+  ordinal,
+  imageEvidence,
+  onSelectImage,
+  onClose,
+}: {
+  section: RouteSection;
+  ordinal: number;
+  imageEvidence: MapillarySectionEvidence | null;
+  onSelectImage: (image: MapillaryImageEvidence) => void;
+  onClose: () => void;
+}) {
+  const title = rhythmLabels[section.dominantRhythm];
+  const surface = getSurfaceEvidencePresentation(section, section.terrainEvidenceCoveragePercent !== undefined);
+  const imagery = getRouteImageryPresentation(imageEvidence);
+
+  return (
+    <article className="rounded-3xl border border-[#71805d]/30 bg-[#f4f2ed] p-5 sm:p-8" aria-label={`Route Section ${ordinal} details`}>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#71805d]">Route Section {ordinal} · {section.segmentIndex === 0 ? "Track segment 1" : `Track segment ${section.segmentIndex + 1}`}</p>
+          <h3 className="mt-2 text-2xl font-semibold">{title} · {section.startKm}–{section.endKm} km</h3>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-black/55">{section.description}</p>
+        </div>
+        <button type="button" aria-label={`Close Route Section ${ordinal} details`} onClick={onClose} className="min-h-11 rounded-full border border-black/15 bg-white px-4 text-sm font-semibold text-black/70 hover:bg-[#e9eddf] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d]">Close details</button>
+      </div>
+      <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <SectionMetric label="Ascent" value={`+${section.ascentM} m`} />
+        <SectionMetric label="Descent" value={`−${section.descentM} m`} />
+        <SectionMetric label="Elevation range" value={`${section.elevationMinM}–${section.elevationMaxM} m`} />
+        <SectionMetric label="Running rhythm" value={title} />
+      </div>
+      <MiniProfile section={section} />
+      {section.embeddedEvents.length > 0 && (
+        <details className="mt-5 rounded-2xl border border-black/10 bg-white/75 p-4">
+          <summary className="cursor-pointer text-sm font-semibold">Notable changes within this section ({section.embeddedEvents.length})</summary>
+          <ul className="mt-3 space-y-2 text-sm text-black/55">
+            {sortRouteEmbeddedEventsForDisplay(section.embeddedEvents).map((event) => <li key={event.id}>{event.startKm}–{event.endKm} km · {event.distanceKm} km {event.rhythm} · +{event.ascentM} m / −{event.descentM} m</li>)}
+          </ul>
+        </details>
+      )}
+      <div className="mt-6 border-t border-black/10 pt-5">
+        <SectionSubheading>Section map · GPX-derived</SectionSubheading>
+        <TerrainSectionMap points={section.mapData ?? []} startDistanceKm={section.startKm} endDistanceKm={section.endKm} />
+      </div>
+      <section className="mt-6 min-w-0 border-t border-black/10 pt-5" aria-label="Surface evidence">
+        <SectionSubheading>Surface evidence · OpenStreetMap</SectionSubheading>
+        {surface.status === "mapped" ? (
+          <div className="mt-2">
+            <p className="text-sm font-medium text-black/70">{surface.coverageLabel}</p>
+            <p className="mt-3 text-xs text-black/45">{surface.distributionLabel}</p>
+            <ul className="mt-2 grid grid-cols-1 gap-x-6 gap-y-1.5 text-sm text-black/60 sm:grid-cols-2">
+              {surface.categories.map((item) => <li key={item.label} className="flex min-w-0 justify-between gap-3"><span className="truncate">{item.label}</span><span className="shrink-0 tabular-nums">{item.sharePercent}%</span></li>)}
+            </ul>
+            <p className="mt-3 text-[11px] text-black/35">© OpenStreetMap contributors</p>
+          </div>
+        ) : <p className="mt-2 text-sm text-black/45">{surface.message}</p>}
+      </section>
+      {imagery && (
+        <section className="mt-6 min-w-0 border-t border-black/10 pt-5" aria-label="Route imagery">
+          <SectionSubheading>Route imagery · Mapillary</SectionSubheading>
+          {imagery.status === "available" ? (
+            <>
+              <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {imagery.images.map((image) => (
+                  <button key={image.id} type="button" onClick={() => onSelectImage(image)} aria-label={`Open Mapillary image around ${image.distanceAlongRouteKm.toFixed(2)} km`} className="group min-w-0 min-h-11 overflow-hidden rounded-xl border border-black/10 bg-white text-left transition hover:border-[#71805d] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d]">
+                    <span className="block aspect-[4/3] bg-[#e7e8e2] bg-cover bg-center" style={image.thumbnailUrl ? { backgroundImage: `url("${image.thumbnailUrl}")` } : undefined} />
+                    <span className="block truncate px-2.5 py-2 text-xs text-black/55">~{image.distanceAlongRouteKm.toFixed(2)} km · © Mapillary</span>
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 text-[11px] text-black/35">© Mapillary</p>
+            </>
+          ) : <p className="mt-2 text-sm text-black/40">{imagery.message}</p>}
+        </section>
+      )}
+    </article>
+  );
+}
+
+function MiniProfile({ section }: { section: RouteSection }) {
+  const width = 900;
+  const height = 100;
+  const points = section.elevationProfile;
+  if (points.length < 2) return null;
+  const elevations = points.map((point) => point.elevationM);
+  const min = Math.min(...elevations);
+  const max = Math.max(...elevations);
+  const range = Math.max(1, max - min);
+  const line = points.map((point, index) => {
+    const x = (index / (points.length - 1)) * width;
+    const y = height - ((point.elevationM - min) / range) * (height - 8) - 4;
+    return `${x},${y}`;
+  }).join(" ");
+  return <svg viewBox={`0 0 ${width} ${height}`} className="mt-6 h-20 w-full rounded-xl bg-white/70 p-2" preserveAspectRatio="none" role="img" aria-label={`${section.dominantRhythm} elevation profile for ${section.startKm} to ${section.endKm} km`}><polyline points={line} fill="none" stroke="#71805d" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+}
+
+function SectionMetric({ label, value }: { label: string; value: string }) {
+  return <div><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-black/40">{label}</p><p className="mt-1 text-sm font-semibold text-black/70">{value}</p></div>;
+}
+
+function SectionSubheading({ children }: { children: ReactNode }) {
+  return <h4 className="text-xs font-semibold uppercase tracking-[0.18em] text-black/45">{children}</h4>;
+}

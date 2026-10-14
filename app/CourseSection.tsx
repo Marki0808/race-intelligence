@@ -3,10 +3,13 @@
 import { useEffect, useState } from "react";
 import CourseExplorer from "./CourseExplorer";
 import CourseBriefView from "./CourseBriefView";
+import RouteSectionBrowser, { RouteSectionBrowserHeading } from "./RouteSectionBrowser";
 import KeyMoment from "./KeyMoment";
 import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis";
 import type { RouteAnalysisData } from "./gpxAnalysis";
 import type { RaceRecordData } from "./raceTypes";
+import type { RouteSection } from "./routeSectionEngine";
+import { routeSectionSelectionKey } from "./routeSectionSelection";
 
 export default function CourseSection({
   raceRecord,
@@ -14,7 +17,9 @@ export default function CourseSection({
   raceRecord: RaceRecordData;
 }) {
   const editionKey = JSON.stringify([raceRecord.race.id, raceRecord.edition.year, raceRecord.edition.gpxPath]);
-  const [selectedMoment, setSelectedMoment] = useState<string | null>(null);
+  const [selection, setSelection] = useState<{ editionKey: string; moment: string | null; sectionKey: string | null }>(() => ({ editionKey, moment: null, sectionKey: null }));
+  const selectedMoment = selection.editionKey === editionKey ? selection.moment : null;
+  const selectedSectionKey = selection.editionKey === editionKey ? selection.sectionKey : null;
   const [loadState, setLoadState] = useState<
     | { editionKey: string; status: "ready"; analysis: RouteAnalysisData }
     | { editionKey: string; status: "error"; message: string }
@@ -53,10 +58,23 @@ export default function CourseSection({
     };
   }, [editionKey, raceRecord.edition.gpxPath, raceRecord.edition.year, raceRecord.race.name]);
 
+  function selectMoment(title: string) {
+    setSelection({ editionKey, moment: title, sectionKey: null });
+  }
+
+  function selectSection(section: RouteSection | null) {
+    setSelection((current) => ({
+      editionKey,
+      moment: section ? null : current.editionKey === editionKey ? current.moment : null,
+      sectionKey: section ? routeSectionSelectionKey(section) : null,
+    }));
+  }
+
   return (
     <div>
       <CourseExplorer
         selectedMoment={selectedMoment}
+        selectedSectionKey={selectedSectionKey}
         routeName={`${raceRecord.race.name} · ${raceRecord.edition.year}`}
         startLocation={raceRecord.edition.startLocation}
         finishLocation={raceRecord.edition.finishLocation}
@@ -71,6 +89,16 @@ export default function CourseSection({
         routeAnalysis={routeAnalysis}
         loading={isLoading}
       />
+      {routeAnalysis && (
+        <section className="mt-12">
+          <RouteSectionBrowserHeading />
+          <RouteSectionBrowser
+            sections={routeAnalysis.routeSections}
+            selectedSectionKey={selectedSectionKey}
+            onSelectSection={selectSection}
+          />
+        </section>
+      )}
       <p className="mt-4 text-sm text-black/50">
         Selected: {selectedMoment ?? "None"}
       </p>
@@ -80,7 +108,7 @@ export default function CourseSection({
           <KeyMoment
             key={item.id}
             title={item.title}
-            onSelect={() => setSelectedMoment(item.title)}
+            onSelect={() => selectMoment(item.title)}
             distance={item.distance}
             focusStartKm={item.focusStartKm}
             focusEndKm={item.focusEndKm}
