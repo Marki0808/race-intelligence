@@ -4,7 +4,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import type { MapillaryImageEvidence, MapillarySectionEvidence } from "./mapillaryTerrainProof";
 import type { RouteSection } from "./routeSectionEngine";
 import type { GradientIntelligenceV1 } from "./gradientIntelligence";
-import { presentRouteSectionNarrativeV1 } from "./routeSectionNarrative";
+import { presentRouteSectionNarrativeV2 } from "./routeSectionNarrativeV2";
 import { getRouteImageryPresentation, getSurfaceEvidencePresentation, numberRouteSectionsForDisplay } from "./routeSectionPresentation";
 import { routeSectionSelectionKey } from "./routeSectionSelection";
 import { sortRouteEmbeddedEventsForDisplay } from "./routeSectionEngine";
@@ -135,7 +135,7 @@ function SectionDetail({
   const title = rhythmLabels[section.dominantRhythm];
   const surface = getSurfaceEvidencePresentation(section, section.terrainEvidenceCoveragePercent !== undefined);
   const imagery = getRouteImageryPresentation(imageEvidence);
-  const expectation = presentRouteSectionNarrativeV1(gradientIntelligence, routeSections, section);
+  const expectation = presentRouteSectionNarrativeV2(gradientIntelligence, routeSections, section);
 
   return (
     <article className="rounded-3xl border border-[#71805d]/30 bg-[#f4f2ed] p-5 sm:p-8" aria-label={`Route Section ${ordinal} details`}>
@@ -150,7 +150,7 @@ function SectionDetail({
       <section className="mt-5 rounded-2xl border border-[#71805d]/20 bg-white/80 p-4 sm:p-5" aria-label="What to expect from the elevation profile">
         <SectionSubheading>What to expect · GPX elevation profile</SectionSubheading>
         <div className="mt-2 space-y-2 text-sm leading-6 text-black/65">
-          {expectation.sentences.map((sentence, index) => <p key={`${expectation.sectionId}-${expectation.segmentIndex}-${index}`}>{sentence}</p>)}
+          {expectation.paragraphs.map((paragraph, index) => <p key={`${expectation.sectionId}-${expectation.segmentIndex}-${index}`}>{paragraph}</p>)}
         </div>
       </section>
       <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
