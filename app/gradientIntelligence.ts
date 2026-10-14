@@ -3,7 +3,7 @@ import type { RouteSection } from "./routeSectionEngine.ts";
 
 /** Characterization over Route Dynamics' component-scoped, already-smoothed 100 m profile. */
 export const GRADIENT_INTELLIGENCE_SCHEMA_VERSION = 1;
-export const GRADIENT_INTELLIGENCE_ALGORITHM_VERSION = 1;
+export const GRADIENT_INTELLIGENCE_ALGORITHM_VERSION = 2;
 
 export const GRADIENT_INTELLIGENCE_RULES = {
   minimumIntervalM: 500,
@@ -18,12 +18,17 @@ export const GRADIENT_INTELLIGENCE_RULES = {
   gentleMaximumGradePct: 2,
   moderateMaximumGradePct: 5,
   steepMinimumGradePct: 10,
+  verySteepMinimumGradePct: 15,
+  extremeGradeMinimumGradePct: 20,
+  sustainedIntervalMinimumM: 1500,
   variableSpreadPercentagePoints: 4,
   meaningfulProgressionDeltaPercentagePoints: 2,
 } as const;
 
 export type GradientDirection = "climb" | "descent" | "rolling" | "low-vertical-movement" | "unknown";
-export type GradientBand = "near-level" | "gentle" | "moderate" | "steep" | null;
+export type GradientBand = "near-level" | "gentle" | "moderate" | "steep" | "very-steep" | "extreme-grade" | null;
+export type GradientIntervalUnknownReason = "below-directional-intensity-threshold" | "low-directional-strength";
+export type GradientSectionRelationship = "aligned" | "opposite-direction" | "not-directional" | "unknown";
 export type GradientIntervalCharacter =
   | "low-vertical-movement"
   | "rolling"
@@ -58,6 +63,11 @@ export type GradientIntervalV1 = {
   gradientBand: GradientBand;
   character: GradientIntervalCharacter;
   confidence: "high" | "moderate" | "unknown";
+  /** Additive V1.1 dimensions. Optional so older serialized V1 intervals remain readable. */
+  intervalLengthClass?: "short" | "sustained";
+  sectionRelationship?: GradientSectionRelationship;
+  measurementAvailability?: "available";
+  unknownReasons?: GradientIntervalUnknownReason[];
 };
 
 export type GradientSectionV1 = {
@@ -81,7 +91,7 @@ export type GradientSectionV1 = {
 
 export type GradientIntelligenceV1 = {
   schemaVersion: 1;
-  algorithmVersion: 1;
+  algorithmVersion: 1 | 2;
   source: "route-dynamics-smoothed-profile";
   assumptions: { resampleIntervalM: number; medianFilterRadiusM: number; movingAverageRadiusM: number };
   sections: GradientSectionV1[];
@@ -99,6 +109,12 @@ type Cell = {
   intensity: number;
   direction: GradientDirection;
   band: GradientBand;
+  unknownReason?: GradientIntervalUnknownReason;
+};
+
+type DirectionClassification = {
+  direction: GradientDirection;
+  unknownReason?: GradientIntervalUnknownReason;
 };
 
 export function buildGradientIntelligenceV1(
@@ -107,7 +123,7 @@ export function buildGradientIntelligenceV1(
 ): GradientIntelligenceV1 {
   return {
     schemaVersion: 1,
-    algorithmVersion: 1,
+    algorithmVersion: GRADIENT_INTELLIGENCE_ALGORITHM_VERSION,
     source: "route-dynamics-smoothed-profile",
     assumptions: {
       resampleIntervalM: DEFAULT_ROUTE_DYNAMICS_CONFIG.resampleIntervalM,
@@ -233,22 +249,25 @@ function makeCells(profile: readonly ProfilePoint[]): Cell[] {
     const endElevationM = samples.at(-1)!.smoothedElevationM;
     const gradientPct = (endElevationM - startElevationM) / distanceM * 100;
     const intensity = (ascentM + descentM) / (distanceM / 1000);
-    const direction = directionFor(ascentM, descentM, intensity);
+    const classification = directionFor(ascentM, descentM, intensity);
+    const direction = classification.direction;
     return [{
       startDistanceM: cellStart, endDistanceM: cellEnd, startElevationM, endElevationM,
       ascentM, descentM, gradientPct, intensity, direction, band: bandFor(gradientPct, direction),
+      ...classification.unknownReason ? { unknownReason: classification.unknownReason } : {},
     }];
   });
 }
 
-function directionFor(ascentM: number, descentM: number, intensity: number): GradientDirection {
+function directionFor(ascentM: number, descentM: number, intensity: number): DirectionClassification {
   const vertical = ascentM + descentM;
   const strength = vertical > 0 ? Math.abs(ascentM - descentM) / vertical : 0;
-  if (intensity <= GRADIENT_INTELLIGENCE_RULES.lowVerticalMaximumMPerKm) return "low-vertical-movement";
+  if (intensity <= GRADIENT_INTELLIGENCE_RULES.lowVerticalMaximumMPerKm) return { direction: "low-vertical-movement" };
   if (intensity >= GRADIENT_INTELLIGENCE_RULES.rollingMinimumMPerKm && strength <= GRADIENT_INTELLIGENCE_RULES.rollingMaximumDirectionStrength &&
-    ascentM / vertical >= GRADIENT_INTELLIGENCE_RULES.rollingMinimumDirectionShare && descentM / vertical >= GRADIENT_INTELLIGENCE_RULES.rollingMinimumDirectionShare) return "rolling";
-  if (intensity < GRADIENT_INTELLIGENCE_RULES.directionalMinimumMPerKm || strength < GRADIENT_INTELLIGENCE_RULES.directionalMinimumStrength) return "unknown";
-  return ascentM > descentM ? "climb" : "descent";
+    ascentM / vertical >= GRADIENT_INTELLIGENCE_RULES.rollingMinimumDirectionShare && descentM / vertical >= GRADIENT_INTELLIGENCE_RULES.rollingMinimumDirectionShare) return { direction: "rolling" };
+  if (intensity < GRADIENT_INTELLIGENCE_RULES.directionalMinimumMPerKm) return { direction: "unknown", unknownReason: "below-directional-intensity-threshold" };
+  if (strength < GRADIENT_INTELLIGENCE_RULES.directionalMinimumStrength) return { direction: "unknown", unknownReason: "low-directional-strength" };
+  return { direction: ascentM > descentM ? "climb" : "descent" };
 }
 
 function bandFor(gradientPct: number, direction: GradientDirection): GradientBand {
@@ -257,7 +276,9 @@ function bandFor(gradientPct: number, direction: GradientDirection): GradientBan
   if (grade < GRADIENT_INTELLIGENCE_RULES.gentleMaximumGradePct) return "near-level";
   if (grade < GRADIENT_INTELLIGENCE_RULES.moderateMaximumGradePct) return "gentle";
   if (grade < GRADIENT_INTELLIGENCE_RULES.steepMinimumGradePct) return "moderate";
-  return "steep";
+  if (grade < GRADIENT_INTELLIGENCE_RULES.verySteepMinimumGradePct) return "steep";
+  if (grade < GRADIENT_INTELLIGENCE_RULES.extremeGradeMinimumGradePct) return "very-steep";
+  return "extreme-grade";
 }
 
 function mergeCells(cells: Cell[]): Cell[][] {
@@ -283,15 +304,23 @@ function toInterval(cells: Cell[], index: number, segmentIndex: number, sectionR
   const spread = max - min;
   const verticalIntensity = (ascentM + descentM) / (distanceM / 1000);
   const direction = cells.every((cell) => cell.direction === first.direction) ? first.direction : "unknown";
-  const interruption = (sectionRhythmValue === "climb" && direction === "descent") || (sectionRhythmValue === "descent" && direction === "climb");
+  const sectionRelationship: GradientSectionRelationship = direction === "unknown"
+    ? "unknown"
+    : direction !== "climb" && direction !== "descent"
+      ? "not-directional"
+      : sectionRhythmValue === "climb" || sectionRhythmValue === "descent"
+        ? direction === sectionRhythmValue ? "aligned" : "opposite-direction"
+        : "not-directional";
+  const intervalLengthClass = distanceM < GRADIENT_INTELLIGENCE_RULES.sustainedIntervalMinimumM ? "short" : "sustained";
   const variable = distanceM >= 1000 && spread >= GRADIENT_INTELLIGENCE_RULES.variableSpreadPercentagePoints;
-  const steep = first.band === "steep" && (direction === "climb" || direction === "descent");
+  const steep = (first.band === "steep" || first.band === "very-steep" || first.band === "extreme-grade") && (direction === "climb" || direction === "descent");
+  const shortInterruption = sectionRelationship === "opposite-direction" && intervalLengthClass === "short";
   const character: GradientIntervalCharacter = direction === "unknown"
     ? "unknown"
     : direction === "low-vertical-movement" ? "low-vertical-movement"
       : direction === "rolling" ? "rolling"
-        : interruption && distanceM <= 1500 ? "short-interruption"
-          : steep && distanceM < 1500 ? "short-steep-ramp"
+        : shortInterruption && !steep ? "short-interruption"
+          : steep && intervalLengthClass === "short" ? "short-steep-ramp"
             : steep && direction === "climb" ? "sustained-steep-climb"
               : steep ? "sustained-steep-descent"
                 : variable ? direction === "climb" ? "variable-climb" : "variable-descent"
@@ -317,6 +346,13 @@ function toInterval(cells: Cell[], index: number, segmentIndex: number, sectionR
     gradientBand: first.band,
     character,
     confidence: direction === "unknown" ? "unknown" : cells.length > 1 || distanceM >= 1000 ? "high" : "moderate",
+    intervalLengthClass,
+    sectionRelationship,
+    measurementAvailability: "available",
+    ...(direction === "unknown" ? {
+      unknownReasons: [...new Set(cells.flatMap((cell) => cell.unknownReason ? [cell.unknownReason] : []))]
+        .sort((left, right) => left.localeCompare(right)),
+    } : {}),
   };
 }
 

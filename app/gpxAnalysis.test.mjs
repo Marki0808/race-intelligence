@@ -314,7 +314,7 @@ test("the shared engine reproduces the Istria race GPX metrics as a regression c
   assert.equal(analysis.segments.length, 1);
   assert.equal(analysis.segments[0].points.length, 5778);
   assert.equal(analysis.gradientIntelligence?.schemaVersion, 1);
-  assert.equal(analysis.gradientIntelligence?.algorithmVersion, 1);
+  assert.equal(analysis.gradientIntelligence?.algorithmVersion, 2);
   assert.deepEqual(analysis.gradientIntelligence?.sections.map(({ sectionId, segmentIndex }) => [sectionId, segmentIndex]), analysis.routeSections.map(({ id, segmentIndex }) => [id, segmentIndex]));
   assert.ok(analysis.gradientIntelligence?.sections.some(({ multiScaleMetrics }) => multiScaleMetrics.some(({ scale, windowM }) => scale === "short" && windowM === 500)));
   assert.ok(analysis.gradientIntelligence?.sections.some(({ multiScaleMetrics }) => multiScaleMetrics.some(({ scale, windowM }) => scale === "medium" && windowM === 1500)));
@@ -324,5 +324,5 @@ test("the shared engine reproduces the Istria race GPX metrics as a regression c
   assert.equal(fingerprint.routeFingerprintVersion, 2);
   assert.match(fingerprint.routeFingerprint, /^route-v2-sha256-[a-f0-9]{64}$/);
   assert.match(analysisInput, /^analysis-input-v2-sha256-[a-f0-9]{64}$/);
-  assert.equal(ROUTE_ANALYSIS_VERSION, 3);
+  assert.equal(ROUTE_ANALYSIS_VERSION, 4);
 });
