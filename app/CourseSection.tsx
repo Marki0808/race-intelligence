@@ -95,6 +95,7 @@ export default function CourseSection({
           <RouteSectionBrowserHeading />
           <RouteSectionBrowser
             sections={routeAnalysis.routeSections}
+            gradientIntelligence={routeAnalysis.gradientIntelligence}
             selectedSectionKey={selectedSectionKey}
             onSelectSection={selectSection}
           />

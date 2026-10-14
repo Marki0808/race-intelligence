@@ -139,7 +139,9 @@ test("Route Mode and Race Mode share the browser and clear the opposite map sele
     readFile(new URL("./CourseExplorer.tsx", import.meta.url), "utf8"),
   ]);
   assert.match(routeView, /<RouteSectionBrowser[\s\S]*?sections=\{displayedSections\}/);
+  assert.match(routeView, /gradientIntelligence=\{analysis\.gradientIntelligence\}/);
   assert.match(raceView, /<RouteSectionBrowser[\s\S]*?sections=\{routeAnalysis\.routeSections\}/);
+  assert.match(raceView, /gradientIntelligence=\{routeAnalysis\.gradientIntelligence\}/);
   assert.match(routeView, /function selectMoment[\s\S]*?setSelectedSectionKey\(null\)/);
   assert.match(routeView, /function selectSection[\s\S]*?setSelectedMoment\(null\)/);
   assert.match(raceView, /function selectMoment[\s\S]*?setSelection\(\{ editionKey, moment: title, sectionKey: null \}\)/);
@@ -166,4 +168,7 @@ test("Route Mode and Race Mode share the browser and clear the opposite map sele
   assert.match(map, /invalidateSize/);
   assert.match(routeView, /onSelectSection=\{selectSection\}/);
   assert.match(raceView, /onSelectSection=\{selectSection\}/);
+  const browser = await readFile(new URL("./RouteSectionBrowser.tsx", import.meta.url), "utf8");
+  assert.match(browser, /What to expect · GPX elevation profile/);
+  assert.match(browser, /presentGradientExpectationV1\(gradientIntelligence, routeSections, section\)/);
 });

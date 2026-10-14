@@ -3,6 +3,8 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import type { MapillaryImageEvidence, MapillarySectionEvidence } from "./mapillaryTerrainProof";
 import type { RouteSection } from "./routeSectionEngine";
+import type { GradientIntelligenceV1 } from "./gradientIntelligence";
+import { presentGradientExpectationV1 } from "./gradientIntelligencePresentation";
 import { getRouteImageryPresentation, getSurfaceEvidencePresentation, numberRouteSectionsForDisplay } from "./routeSectionPresentation";
 import { routeSectionSelectionKey } from "./routeSectionSelection";
 import { sortRouteEmbeddedEventsForDisplay } from "./routeSectionEngine";
@@ -19,12 +21,14 @@ export default function RouteSectionBrowser({
   sections,
   selectedSectionKey,
   onSelectSection,
+  gradientIntelligence,
   imageEvidence = new Map(),
   onSelectImage = () => undefined,
 }: {
   sections: readonly RouteSection[];
   selectedSectionKey: string | null;
   onSelectSection: (section: RouteSection | null) => void;
+  gradientIntelligence?: GradientIntelligenceV1;
   imageEvidence?: ReadonlyMap<string, MapillarySectionEvidence | null>;
   onSelectImage?: (image: MapillaryImageEvidence) => void;
 }) {
@@ -76,6 +80,8 @@ export default function RouteSectionBrowser({
                       <SectionDetail
                         section={section}
                         ordinal={ordinal}
+                        gradientIntelligence={gradientIntelligence}
+                        routeSections={sections}
                         imageEvidence={imageEvidence.get(routeSectionSelectionKey(section)) ?? null}
                         onSelectImage={onSelectImage}
                         onClose={() => onSelectSection(null)}
@@ -112,12 +118,16 @@ export function RouteSectionBrowserHeading({ action }: { action?: ReactNode }) {
 function SectionDetail({
   section,
   ordinal,
+  gradientIntelligence,
+  routeSections,
   imageEvidence,
   onSelectImage,
   onClose,
 }: {
   section: RouteSection;
   ordinal: number;
+  gradientIntelligence: GradientIntelligenceV1 | undefined;
+  routeSections: readonly RouteSection[];
   imageEvidence: MapillarySectionEvidence | null;
   onSelectImage: (image: MapillaryImageEvidence) => void;
   onClose: () => void;
@@ -125,6 +135,7 @@ function SectionDetail({
   const title = rhythmLabels[section.dominantRhythm];
   const surface = getSurfaceEvidencePresentation(section, section.terrainEvidenceCoveragePercent !== undefined);
   const imagery = getRouteImageryPresentation(imageEvidence);
+  const expectation = presentGradientExpectationV1(gradientIntelligence, routeSections, section);
 
   return (
     <article className="rounded-3xl border border-[#71805d]/30 bg-[#f4f2ed] p-5 sm:p-8" aria-label={`Route Section ${ordinal} details`}>
@@ -136,6 +147,12 @@ function SectionDetail({
         </div>
         <button type="button" aria-label={`Close Route Section ${ordinal} details`} onClick={onClose} className="min-h-11 rounded-full border border-black/15 bg-white px-4 text-sm font-semibold text-black/70 hover:bg-[#e9eddf] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d]">Close details</button>
       </div>
+      <section className="mt-5 rounded-2xl border border-[#71805d]/20 bg-white/80 p-4 sm:p-5" aria-label="What to expect from the elevation profile">
+        <SectionSubheading>What to expect · GPX elevation profile</SectionSubheading>
+        <div className="mt-2 space-y-2 text-sm leading-6 text-black/65">
+          {expectation.sentences.map((sentence, index) => <p key={`${expectation.sectionId}-${expectation.segmentIndex}-${index}`}>{sentence}</p>)}
+        </div>
+      </section>
       <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
         <SectionMetric label="Ascent" value={`+${section.ascentM} m`} />
         <SectionMetric label="Descent" value={`−${section.descentM} m`} />

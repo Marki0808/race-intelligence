@@ -187,7 +187,7 @@ export default function RouteAnalysisView({
               {geoLoading ? "Checking optional map evidence…" : geoEvidence || mapillaryEvidence ? "Refresh map evidence" : "Check optional map evidence"}
             </button>
           )} />
-          <RouteSectionBrowser sections={displayedSections} selectedSectionKey={selectedSectionKey} onSelectSection={selectSection} imageEvidence={imageEvidence} onSelectImage={setSelectedImage} />
+          <RouteSectionBrowser sections={displayedSections} gradientIntelligence={analysis.gradientIntelligence} selectedSectionKey={selectedSectionKey} onSelectSection={selectSection} imageEvidence={imageEvidence} onSelectImage={setSelectedImage} />
         </div>
       </section>
 
