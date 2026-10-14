@@ -6,6 +6,7 @@ import type {
 import { analyzeRouteDynamics, type RouteDynamicsResult } from "./routeDynamics.ts";
 import { buildRouteSections, type RouteSection } from "./routeSectionEngine.ts";
 import { createRouteKeyMoments } from "./routeKeyMoments.ts";
+import { buildGradientIntelligenceV1, type GradientIntelligenceV1 } from "./gradientIntelligence.ts";
 
 export type GpxAnalysisErrorCode =
   | "invalid-gpx"
@@ -66,6 +67,8 @@ export type RouteAnalysisData = {
   sections: GpxRouteSegmentData[];
   routeDynamics: RouteDynamicsResult;
   routeSections: RouteSection[];
+  /** Optional, separately versioned characterization over the existing smoothed dynamics. */
+  gradientIntelligence?: GradientIntelligenceV1;
   keyMoments: KeyMomentData[];
   courseCharacter: CourseCharacterData;
 };
@@ -209,6 +212,7 @@ export function analyzeGpxRoute(
   const sections = segments.flatMap(({ segmentIndex, points: segmentPoints }) => segmentPoints.length > 1 ? summarizeRouteSections(segmentPoints, segmentIndex) : []);
   const routeDynamics = analyzeRouteDynamics(points);
   const routeSections = buildRouteSections(routeDynamics, points);
+  const gradientIntelligence = buildGradientIntelligenceV1(routeDynamics, routeSections);
   const keyMoments = createRouteKeyMoments(points, metrics, routeDynamics);
 
   return {
@@ -221,6 +225,7 @@ export function analyzeGpxRoute(
     sections,
     routeDynamics,
     routeSections,
+    gradientIntelligence,
     keyMoments,
     courseCharacter: createCourseCharacter(metrics, majorClimbs, majorDescents),
   };

@@ -5,7 +5,7 @@ import type { RouteSection } from "./routeSectionEngine.ts";
 import type { RouteFingerprintResult } from "./routeFingerprint.ts";
 import { ROUTE_FINGERPRINT_VERSION } from "./routeFingerprint.ts";
 
-export const ROUTE_ANALYSIS_VERSION = 2;
+export const ROUTE_ANALYSIS_VERSION = 3;
 export const OSM_ENRICHMENT_VERSION = 1;
 export const MAPILLARY_ENRICHMENT_VERSION = 1;
 // Bump analysis independently from route identity; OSM and Mapillary formats have separate lifecycles.
