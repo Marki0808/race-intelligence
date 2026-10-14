@@ -75,6 +75,7 @@ export default function CourseSection({
       <CourseExplorer
         selectedMoment={selectedMoment}
         selectedSectionKey={selectedSectionKey}
+        onSelectSection={selectSection}
         routeName={`${raceRecord.race.name} · ${raceRecord.edition.year}`}
         startLocation={raceRecord.edition.startLocation}
         finishLocation={raceRecord.edition.finishLocation}

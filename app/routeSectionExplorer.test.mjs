@@ -11,6 +11,13 @@ const selectionJs = ts.transpile(selectionSource, { module: ts.ModuleKind.Common
 const selectionModule = { exports: {} };
 new Function("exports", "require", "module", "__filename", "__dirname", selectionJs)(selectionModule.exports, require, selectionModule, selectionUrl.pathname, new URL(".", selectionUrl).pathname);
 const { clipRoutePointsToSection, findSelectedRouteSection, routeSectionSelectionKey } = selectionModule.exports;
+const profileUrl = new URL("./routeProfilePresentation.ts", import.meta.url);
+const profileSource = await readFile(profileUrl, "utf8");
+const profileJs = ts.transpile(profileSource, { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 });
+const profileModule = { exports: {} };
+const profileRequire = (specifier) => specifier === "./routeSectionSelection" ? selectionModule.exports : require(specifier);
+new Function("exports", "require", "module", "__filename", "__dirname", profileJs)(profileModule.exports, profileRequire, profileModule, profileUrl.pathname, new URL(".", profileUrl).pathname);
+const { formatRouteDistanceTick, getNiceAxisScale, getRouteDistanceTicks, getRouteSectionBoundaryMarkers } = profileModule.exports;
 const evidenceUrl = new URL("./routeSectionEvidence.ts", import.meta.url);
 const evidenceSource = await readFile(evidenceUrl, "utf8");
 const evidenceJs = ts.transpile(evidenceSource, { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 });
@@ -64,14 +71,53 @@ test("Mapillary detail evidence cannot leak across repeated section IDs on disco
   assert.deepEqual(mapped.get(routeSectionSelectionKey(second)).images, [photo]);
 });
 
-test("the shared browser uses accessible selection controls and preserves the selected detail after the list", async () => {
+test("profile elevation axis uses rounded meter ticks and safely expands a flat elevation range", () => {
+  const climbing = getNiceAxisScale(103, 127, 6);
+  assert.equal(climbing.step, 5);
+  assert.deepEqual(climbing.ticks, [100, 105, 110, 115, 120, 125, 130]);
+  const flat = getNiceAxisScale(0, 0, 6);
+  assert.ok(flat.maximum > flat.minimum);
+  assert.ok(flat.ticks.length >= 2);
+});
+
+test("profile distance ticks span the route without a crowded final label", () => {
+  const ticks = getRouteDistanceTicks(110_730, 7);
+  assert.equal(ticks[0], 0);
+  assert.equal(ticks.at(-1), 110_730);
+  assert.ok(ticks.every((tick, index) => index === 0 || tick > ticks[index - 1]));
+  assert.ok(ticks.length < 8);
+});
+
+test("short-route axis labels retain enough kilometer precision to remain distinct", () => {
+  const ticks = getRouteDistanceTicks(50, 7);
+  const labels = ticks.map((tick) => formatRouteDistanceTick(tick, 50));
+  assert.equal(labels[0], "0 km");
+  assert.equal(labels.at(-1), "0.05 km");
+  assert.equal(new Set(labels).size, labels.length);
+});
+
+test("profile boundary markers preserve component and section identities at shared cumulative kilometers", () => {
+  const first = { ...section("same-id", 0, 0, 1000), startKm: 0, endKm: 1 };
+  const second = { ...section("same-id", 1, 1000, 2000), startKm: 1, endKm: 2 };
+  const markers = getRouteSectionBoundaryMarkers([first, second]);
+  const shared = markers.find((marker) => marker.distanceM === 1000);
+  assert.deepEqual(shared.componentIndices, [0, 1]);
+  assert.deepEqual(shared.sectionKeys, ["0:same-id", "1:same-id"]);
+});
+
+test("the shared browser exposes accessible inline details with a bounded reduced-motion-aware scroll", async () => {
   const source = await readFile(new URL("./RouteSectionBrowser.tsx", import.meta.url), "utf8");
   assert.match(source, /aria-pressed=\{isSelected\}/);
+  assert.match(source, /aria-expanded=\{isSelected\}/);
   assert.match(source, /aria-label=\{`Close Route Section/);
-  assert.ok(source.indexOf("<ol") < source.indexOf("{selected &&"));
+  assert.ok(source.indexOf("{isSelected && (") < source.indexOf("<SectionDetail"));
+  assert.ok(source.indexOf("<SectionDetail") < source.indexOf("</li>"));
   assert.equal((source.match(/<SectionDetail\s/g) ?? []).length, 1);
   assert.match(source, /distanceKm\} km · \+\{section\.ascentM\} m \/ −\{section\.descentM\} m/);
   assert.match(source, /min-h-\[68px\]/);
+  assert.match(source, /onSelectSection\(isSelected \? null : section\)/);
+  assert.match(source, /scrollIntoView\(\{ behavior: reducedMotion \? "auto" : "smooth", block: "nearest" \}\)/);
+  assert.match(source, /getBoundingClientRect\(\)/);
 });
 
 test("Route Mode and Race Mode share the browser and clear the opposite map selection", async () => {
@@ -91,6 +137,19 @@ test("Route Mode and Race Mode share the browser and clear the opposite map sele
   assert.match(map, /groupAnalyzedPointsBySegment\(points\)/);
   assert.match(map, /stroke="#f2d675"/);
   assert.match(map, /color: "#a7c957"/);
-  assert.match(map, /aria-expanded=\{mapExpanded\}/);
+  assert.match(map, /getNiceAxisScale\(minElevation, maxElevation/);
+  assert.match(map, /getRouteDistanceTicks\(totalDistance/);
+  assert.match(map, /getRouteSectionBoundaryMarkers\(sections\)/);
+  assert.match(map, /onClick=\{\(\) => onSelectSection\(section\)\}/);
+  assert.match(map, /aria-label=\{`Select Route Section/);
+  assert.match(map, /segmentIndex\}:\$\{section\.id\}:profile-hit/);
+  assert.match(map, /aria-pressed=\{mapExpanded\}/);
+  assert.match(map, /const \[mapExpanded, setMapExpanded\] = useState\(false\)/);
+  assert.match(map, /Expand map/);
+  assert.match(map, /Reduce map/);
+  assert.match(map, /h-56 sm:h-\[17\.5rem\] lg:h-\[17\.5rem\]/);
+  assert.doesNotMatch(map, /hidden=\{!mapExpanded\}/);
   assert.match(map, /invalidateSize/);
+  assert.match(routeView, /onSelectSection=\{selectSection\}/);
+  assert.match(raceView, /onSelectSection=\{selectSection\}/);
 });

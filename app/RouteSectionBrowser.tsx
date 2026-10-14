@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import type { MapillaryImageEvidence, MapillarySectionEvidence } from "./mapillaryTerrainProof";
 import type { RouteSection } from "./routeSectionEngine";
 import { getRouteImageryPresentation, getSurfaceEvidencePresentation, numberRouteSectionsForDisplay } from "./routeSectionPresentation";
@@ -29,7 +29,17 @@ export default function RouteSectionBrowser({
   onSelectImage?: (image: MapillaryImageEvidence) => void;
 }) {
   const orderedSections = numberRouteSectionsForDisplay(sections);
-  const selected = orderedSections.find(({ section }) => routeSectionSelectionKey(section) === selectedSectionKey);
+  const rowRefs = useRef(new Map<string, HTMLLIElement>());
+
+  useEffect(() => {
+    if (!selectedSectionKey || typeof window === "undefined") return;
+    const row = rowRefs.current.get(selectedSectionKey);
+    if (!row) return;
+    const bounds = row.getBoundingClientRect();
+    if (bounds.top >= 0 && bounds.bottom <= window.innerHeight) return;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    row.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "nearest" });
+  }, [selectedSectionKey]);
 
   return (
     <div>
@@ -39,11 +49,17 @@ export default function RouteSectionBrowser({
             {orderedSections.map(({ section, ordinal }) => {
               const isSelected = routeSectionSelectionKey(section) === selectedSectionKey;
               return (
-                <li key={routeSectionSelectionKey(section)}>
+                <li key={routeSectionSelectionKey(section)} ref={(node) => {
+                  const key = routeSectionSelectionKey(section);
+                  if (node) rowRefs.current.set(key, node);
+                  else rowRefs.current.delete(key);
+                }}>
                   <button
                     type="button"
                     aria-pressed={isSelected}
-                    onClick={() => onSelectSection(section)}
+                    aria-expanded={isSelected}
+                    aria-controls={isSelected ? `route-section-detail-${section.segmentIndex}-${ordinal}` : undefined}
+                    onClick={() => onSelectSection(isSelected ? null : section)}
                     className={`flex min-h-[68px] w-full items-center justify-between gap-3 px-4 py-3 text-left transition focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#71805d] sm:px-5 ${isSelected ? "bg-[#e9eddf]" : "hover:bg-[#f4f2ed]"}`}
                   >
                     <span className="flex min-w-0 items-center gap-3">
@@ -55,21 +71,21 @@ export default function RouteSectionBrowser({
                     </span>
                     <span className="shrink-0 text-xs font-semibold text-[#71805d]">{isSelected ? "Selected" : "Details"}</span>
                   </button>
+                  {isSelected && (
+                    <div id={`route-section-detail-${section.segmentIndex}-${ordinal}`} className="border-t border-black/10 p-3 sm:p-4" aria-live="polite">
+                      <SectionDetail
+                        section={section}
+                        ordinal={ordinal}
+                        imageEvidence={imageEvidence.get(routeSectionSelectionKey(section)) ?? null}
+                        onSelectImage={onSelectImage}
+                        onClose={() => onSelectSection(null)}
+                      />
+                    </div>
+                  )}
                 </li>
               );
             })}
           </ol>
-          {selected && (
-            <div className="mt-5" aria-live="polite">
-              <SectionDetail
-                section={selected.section}
-                ordinal={selected.ordinal}
-                imageEvidence={imageEvidence.get(routeSectionSelectionKey(selected.section)) ?? null}
-                onSelectImage={onSelectImage}
-                onClose={() => onSelectSection(null)}
-              />
-            </div>
-          )}
         </>
       ) : (
         <p className="text-sm text-black/45">No stable route rhythm could be distinguished from this GPX elevation profile.</p>

@@ -175,7 +175,7 @@ export default function RouteAnalysisView({
             <Metric label="Highest point" value={`${Math.round(analysis.metrics.highestPointM).toLocaleString("en-US")} m`} />
             <Metric label="Lowest point" value={`${Math.round(analysis.metrics.lowestPointM).toLocaleString("en-US")} m`} />
           </div>
-          <CourseExplorer selectedMoment={selectedMoment} selectedSectionKey={selectedSectionKey} routeName={analysis.name} routeAnalysis={analysis} keyMoments={analysis.keyMoments} loading={false} error="" showExtendedMetrics />
+          <CourseExplorer selectedMoment={selectedMoment} selectedSectionKey={selectedSectionKey} onSelectSection={selectSection} routeName={analysis.name} routeAnalysis={analysis} keyMoments={analysis.keyMoments} loading={false} error="" showExtendedMetrics />
           <CourseBriefView routeAnalysis={analysis} routeKey={routeFingerprint?.routeFingerprint ?? analysis.name} />
         </div>
       </section>

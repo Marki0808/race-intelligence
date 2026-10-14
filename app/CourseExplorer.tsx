@@ -1,15 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Map as LeafletMap, Polyline } from "leaflet";
 import type { KeyMomentData } from "./raceTypes";
 import { groupAnalyzedPointsBySegment, type RouteAnalysisData } from "./gpxAnalysis";
 import type { RouteSection } from "./routeSectionEngine";
 import { clipRoutePointsToSection, findSelectedRouteSection } from "./routeSectionSelection";
+import { formatRouteDistanceTick, getNiceAxisScale, getRouteDistanceTicks, getRouteSectionBoundaryMarkers } from "./routeProfilePresentation";
 
 export default function CourseExplorer({
   selectedMoment,
   selectedSectionKey = null,
+  onSelectSection,
   routeName,
   startLocation,
   finishLocation,
@@ -21,6 +23,7 @@ export default function CourseExplorer({
 }: {
   selectedMoment: string | null;
   selectedSectionKey?: string | null;
+  onSelectSection?: (section: RouteSection | null) => void;
   routeName: string;
   startLocation?: string;
   finishLocation?: string;
@@ -50,7 +53,7 @@ export default function CourseExplorer({
   const maximumElevation = elevations.length > 0 ? Math.max(...elevations) : 0;
 
   useEffect(() => {
-    if (!mapExpanded || !mapRef.current || points.length === 0) return;
+    if (!mapRef.current || points.length === 0) return;
 
     let map: LeafletMap | undefined;
     let cancelled = false;
@@ -129,7 +132,12 @@ export default function CourseExplorer({
       highlightLineRefs.current = [];
       setMapReady(false);
     };
-  }, [finishLocation, mapExpanded, points, startLocation]);
+  }, [finishLocation, points, startLocation]);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => leafletMapRef.current?.invalidateSize({ pan: false }));
+    return () => window.cancelAnimationFrame(frame);
+  }, [mapExpanded]);
 
   useEffect(() => {
     const map = leafletMapRef.current;
@@ -193,11 +201,12 @@ export default function CourseExplorer({
               minElevation={minimumElevation}
               maxElevation={maximumElevation}
               selectedSection={selectedSection}
+              sections={sections}
+              onSelectSection={onSelectSection}
             />
           ) : (
             <div className="flex h-48 items-center justify-center text-sm text-white/45">{error || (loading ? "Loading course profile…" : "Course profile unavailable.")}</div>
           )}
-          <div className="mt-4 flex justify-between text-xs text-white/45"><span>Start</span><span>{Math.round(maximumElevation)} m</span><span>Finish</span></div>
         </div>
 
         {metrics && (
@@ -214,16 +223,17 @@ export default function CourseExplorer({
       <div className="border-t border-white/10 bg-[#202c26]">
         <button
           type="button"
-          aria-expanded={mapExpanded}
+          aria-pressed={mapExpanded}
+          aria-label={mapExpanded ? "Reduce map" : "Expand map"}
           aria-controls="course-explorer-map"
           onClick={() => setMapExpanded((expanded) => !expanded)}
           disabled={points.length === 0}
           className="flex min-h-14 w-full items-center justify-between gap-4 px-5 text-left text-sm font-semibold transition hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[#a7c957] disabled:cursor-not-allowed disabled:opacity-50 sm:px-8"
         >
-          <span>Route map <span className="ml-2 text-xs font-normal text-white/45">{mapExpanded ? "Expanded" : "Collapsed"}</span></span>
+          <span>{mapExpanded ? "Reduce map" : "Expand map"} <span className="ml-2 text-xs font-normal text-white/45">{mapExpanded ? "Large view" : "Compact view"}</span></span>
           <span aria-hidden="true" className="text-lg text-[#a7c957]">{mapExpanded ? "−" : "+"}</span>
         </button>
-        <div id="course-explorer-map" hidden={!mapExpanded} className="relative h-64 border-t border-white/10 bg-[#dfe3d8] sm:h-80 lg:h-[26rem]">
+        <div id="course-explorer-map" className={`relative border-t border-white/10 bg-[#dfe3d8] transition-[height] duration-200 ${mapExpanded ? "h-[26rem] sm:h-[32rem] lg:h-[38rem]" : "h-56 sm:h-[17.5rem] lg:h-[17.5rem]"}`}>
           {(loading || error) && (
             <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#dfe3d8] p-6">
               <div className="max-w-sm text-center text-sm leading-6 text-black/55">{loading ? "Loading course map…" : error}</div>
@@ -251,32 +261,95 @@ function ElevationProfile({
   minElevation,
   maxElevation,
   selectedSection,
+  sections,
+  onSelectSection,
 }: {
   points: RouteAnalysisData["points"];
   selectedPoints: RouteAnalysisData["points"];
   minElevation: number;
   maxElevation: number;
   selectedSection: RouteSection | null;
+  sections: readonly RouteSection[];
+  onSelectSection?: (section: RouteSection | null) => void;
 }) {
   const width = 1200;
-  const height = 320;
-  const padding = 8;
-  const range = Math.max(maxElevation - minElevation, 1);
+  const height = 440;
+  const plot = { left: 100, right: 24, top: 22, bottom: 66 };
+  const plotWidth = width - plot.left - plot.right;
+  const plotHeight = height - plot.top - plot.bottom;
   const totalDistance = Math.max(1, points.at(-1)?.distanceM ?? 1);
+  const elevationScale = getNiceAxisScale(minElevation, maxElevation, 6);
+  const distanceTicks = getRouteDistanceTicks(totalDistance, 7);
+  const boundaries = getRouteSectionBoundaryMarkers(sections);
+  const xForDistance = (distanceM: number) => plot.left + (distanceM / totalDistance) * plotWidth;
+  const yForElevation = (elevationM: number) => plot.top + ((elevationScale.maximum - elevationM) / (elevationScale.maximum - elevationScale.minimum)) * plotHeight;
   const toProfilePoint = (point: RouteAnalysisData["points"][number]) => {
-    const x = padding + (point.distanceM / totalDistance) * (width - padding * 2);
-    const normalized = (point.elevationM - minElevation) / range;
-    const y = height - padding - normalized * (height - padding * 2);
+    const x = xForDistance(point.distanceM);
+    const y = yForElevation(point.elevationM);
     return `${x},${y}`;
   };
   const paths = groupAnalyzedPointsBySegment(points);
+  const onSectionKeyDown = (event: KeyboardEvent<SVGRectElement>, section: RouteSection) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onSelectSection?.(section);
+    }
+  };
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="h-52 w-full overflow-visible sm:h-64 lg:h-72" preserveAspectRatio="none" aria-label="GPX-derived elevation profile" role="img">
-      {paths.map((segment, index) => <polyline key={index} points={segment.map(toProfilePoint).join(" ")} fill="none" stroke="#a7c957" strokeOpacity={selectedSection ? "0.3" : "0.9"} strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />)}
-      {selectedSection && selectedPoints.length > 1 && <polyline points={selectedPoints.map(toProfilePoint).join(" ")} fill="none" stroke="#f2d675" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" />}
-      {selectedSection && selectedPoints.length === 1 && <circle cx={toProfilePoint(selectedPoints[0]).split(",")[0]} cy={toProfilePoint(selectedPoints[0]).split(",")[1]} r="7" fill="#f2d675" />}
-      {selectedSection && <title>Route Section {selectedSection.id} profile interval highlighted</title>}
+    <svg viewBox={`0 0 ${width} ${height}`} className="h-56 w-full touch-manipulation sm:h-64 lg:h-72" preserveAspectRatio="none" aria-label="GPX-derived elevation profile. Select a section interval to open its details." role="group">
+      <title>Elevation profile in meters across the route distance in kilometers</title>
+      {elevationScale.ticks.map((tick) => {
+        const y = yForElevation(tick);
+        return <g key={`elevation-${tick}`}>
+          <line x1={plot.left} x2={width - plot.right} y1={y} y2={y} stroke="white" strokeOpacity="0.12" strokeWidth="1.5" />
+          <text x={plot.left - 12} y={y + 9} fill="white" fillOpacity="0.68" fontSize="28" textAnchor="end">{tick.toLocaleString("en-US", { maximumFractionDigits: Math.min(2, Math.max(0, Math.ceil(-Math.log10(elevationScale.step)))) })}</text>
+        </g>;
+      })}
+      {distanceTicks.map((tick) => {
+        const x = xForDistance(tick);
+        const label = formatRouteDistanceTick(tick, totalDistance);
+        const anchor = tick === 0 ? "start" : tick === totalDistance ? "end" : "middle";
+        return <g key={`distance-${tick}`}>
+          <line x1={x} x2={x} y1={height - plot.bottom} y2={height - plot.bottom + 7} stroke="white" strokeOpacity="0.45" strokeWidth="2" />
+          <text x={x} y={height - 20} fill="white" fillOpacity="0.68" fontSize="26" textAnchor={anchor}>{label}</text>
+        </g>;
+      })}
+      <line x1={plot.left} x2={plot.left} y1={plot.top} y2={height - plot.bottom} stroke="white" strokeOpacity="0.38" strokeWidth="2" />
+      <line x1={plot.left} x2={width - plot.right} y1={height - plot.bottom} y2={height - plot.bottom} stroke="white" strokeOpacity="0.38" strokeWidth="2" />
+      <text x="22" y={plot.top + plotHeight / 2} transform={`rotate(-90 22 ${plot.top + plotHeight / 2})`} fill="white" fillOpacity="0.66" fontSize="26" textAnchor="middle">Elevation (m)</text>
+      {selectedSection && <rect x={xForDistance(selectedSection.startPosition.distanceM)} y={plot.top} width={Math.max(1, xForDistance(selectedSection.endPosition.distanceM) - xForDistance(selectedSection.startPosition.distanceM))} height={plotHeight} fill="#f2d675" fillOpacity="0.12" pointerEvents="none" />}
+      {boundaries.map(({ distanceM, sectionKeys }) => <line key={`boundary-${distanceM}-${sectionKeys.join("_")}`} x1={xForDistance(distanceM)} x2={xForDistance(distanceM)} y1={plot.top} y2={height - plot.bottom} stroke="white" strokeOpacity="0.24" strokeWidth="2" strokeDasharray="5 7" pointerEvents="none" />)}
+      {onSelectSection && sections.filter((section) =>
+        section.startPosition.segmentIndex === section.segmentIndex &&
+        section.endPosition.segmentIndex === section.segmentIndex &&
+        Number.isFinite(section.startPosition.distanceM) &&
+        Number.isFinite(section.endPosition.distanceM) &&
+        section.endPosition.distanceM >= section.startPosition.distanceM,
+      ).map((section, index) => {
+        const start = Math.max(0, Math.min(totalDistance, section.startPosition.distanceM));
+        const end = Math.max(start, Math.min(totalDistance, section.endPosition.distanceM));
+        const ordinal = index + 1;
+        return <rect
+          key={`${section.segmentIndex}:${section.id}:profile-hit`}
+          x={xForDistance(start)}
+          y={plot.top}
+          width={Math.max(2, xForDistance(end) - xForDistance(start))}
+          height={plotHeight}
+          fill="transparent"
+          pointerEvents="all"
+          role="button"
+          tabIndex={0}
+          aria-label={`Select Route Section ${ordinal}, track segment ${section.segmentIndex + 1}, ${section.startKm} to ${section.endKm} kilometers`}
+          aria-pressed={selectedSection?.id === section.id && selectedSection.segmentIndex === section.segmentIndex}
+          onClick={() => onSelectSection(section)}
+          onKeyDown={(event) => onSectionKeyDown(event, section)}
+          className="cursor-pointer outline-none focus-visible:stroke-[#f2d675] focus-visible:stroke-[3]"
+        />;
+      })}
+      {paths.map((segment, index) => <polyline key={index} points={segment.map(toProfilePoint).join(" ")} fill="none" stroke="#a7c957" strokeOpacity={selectedSection ? "0.3" : "0.9"} strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" pointerEvents="none" />)}
+      {selectedSection && selectedPoints.length > 1 && <polyline points={selectedPoints.map(toProfilePoint).join(" ")} fill="none" stroke="#f2d675" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" pointerEvents="none" />}
+      {selectedSection && selectedPoints.length === 1 && <circle cx={xForDistance(selectedPoints[0].distanceM)} cy={yForElevation(selectedPoints[0].elevationM)} r="7" fill="#f2d675" pointerEvents="none" />}
     </svg>
   );
 }

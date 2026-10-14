@@ -1,6 +1,6 @@
 # Race Intelligence — Project State
 
-**Last verified against:** `main` at `1f11ee6ddb940afbb29c919bf19abce6c6f04499`
+**Last verified against:** `main` at `8cb8f05579dac01ace6f057676b40b61df04cfe1`
 **Verification date:** 2026-10-14
 **Document scope:** Current repository architecture plus separately labeled Production facts supplied from completed operational verification.
 
@@ -31,13 +31,13 @@ The homepage offers two equal entry paths: Race Mode looks up races already in t
 
 ### Route Analysis UX — Phase 1
 
-The shared `CourseExplorer` presents the full-route, component-separated elevation profile as its dominant visual, followed by preserved route metrics and a compact map that starts collapsed. Its accessible expand/collapse control preserves the parent selection; Leaflet is created at the expanded size and invalidates its size after opening/resizing. Selecting a Route Section highlights only that component's full-precision distance interval in the profile and map, dims the remaining geometry without hiding it, and never joins disconnected components.
+The shared `CourseExplorer` presents the full-route, component-separated elevation profile as its dominant visual, with rounded elevation-in-meter and route-distance-in-kilometer axes, subtle horizontal grids, and section boundary markers. Profile intervals are directly selectable and retain each source section's stable ID and GPX component identity, including components that share a cumulative kilometer boundary. The compact map is visible by default at about 280 px on desktop and can be expanded or reduced; the same Leaflet instance is resized after dimension changes, preserving its section highlight and view. Selecting a Route Section highlights only that component's full-precision distance interval in the profile and map, dims the remaining geometry without hiding it, and never joins disconnected components.
 
-`RouteSectionBrowser` provides the same ordered, touch-friendly section list in Route Mode and Race Mode. The initial list is compact; one selected section's former detailed card appears below the complete list and can be closed. Its detail retains the section mini-profile, component map, embedded events, and available OSM/Mapillary evidence. Section selection is identified by `(segmentIndex, section.id)`. Selecting a Key Moment clears the selected section and uses the existing map focus; selecting a section clears the Key Moment focus. These states do not conflict. This is local implementation and automated verification; no browser or Production acceptance is claimed here.
+`RouteSectionBrowser` provides the same ordered, touch-friendly section list in Route Mode and Race Mode. One selected section's detail appears immediately below its row; selecting it again or using its Close control closes it, and selecting another section replaces it. Details retain the section mini-profile, component map, embedded events, and available OSM/Mapillary evidence. Selecting from the profile scrolls the row into view only when needed, uses the nearest block position, and respects reduced-motion preference without moving keyboard focus. List rows and profile intervals support keyboard selection. Section selection is identified by `(segmentIndex, section.id)`. Selecting a Key Moment clears the selected section and uses the existing map focus; selecting a section clears the Key Moment focus. These states do not conflict. This is local implementation and automated verification; no browser or Production acceptance is claimed here.
 
 Aid-station extraction/segmentation and its UI, plus separate “What to expect” / “How to approach it” content, remain future work. No station toggle is shown because reliable route-positioned station data is unavailable. This phase adds no terrain-technicality claims or running advice and does not change route-analysis algorithms, evidence contracts, or provider flows.
 
-Local verification for this Phase 1 change: **58 focused Route Section/UX tests passed** and **627 serial Node tests passed**; TypeScript, ESLint, production build, and `git diff --check` passed. Browser/mobile and Production acceptance remain unverified.
+Local verification for the initial Phase 1 UX change: **58 focused Route Section/UX tests passed** and **627 serial Node tests passed**; TypeScript, ESLint, production build, and `git diff --check` passed. The profile-axis, profile-selection, compact-visible map, and inline-detail refinement then passed **11 focused Route Section/UX tests** and **631 serial Node tests**, plus TypeScript, ESLint, production build, and `git diff --check`. These are local checks; browser/mobile and Production acceptance remain unverified.
 
 ### Race Mode
 
@@ -382,7 +382,7 @@ For the isolated AI narrative prototype, focused prototype and V2 composition/re
 
 ## 14. Current priorities
 
-1. Manually verify the Route Analysis profile, collapsible map, section selection/highlighting, Race Mode section list, Key Moment coexistence, and mobile behavior in a browser using both connected and disconnected GPX routes. This redesign has local automated verification only so far.
+1. Manually verify the Route Analysis axes and selectable profile intervals, visible compact/expanded map sizing, inline section details, Race Mode section list, Key Moment coexistence, and mobile behavior in a browser using both connected and disconnected GPX routes. This redesign has local automated verification only so far.
 2. Keep multi-event organizer homepage detection best-effort and defer further detection changes. Before unrestricted public launch, decide and implement deployment-wide abuse/rate controls for discovery and download, and communicate that discovered GPX analysis does not prove a registered edition or correct course.
 3. Before enabling Phase 3D geographic presentation, establish trusted edition-GPX-to-RouteAnalysisData provenance during Race Mode's actual selected-edition GPX loading and analysis flow. Route Mode remains structural-only unless it gains an independent edition binding.
 4. In a later bounded product phase, assess whether reliable route-positioned aid-station data is available and whether separate “What to expect” / “How to approach it” content can be supported without unsupported claims. Do not show an Aid Stations toggle until that data is reliable.
