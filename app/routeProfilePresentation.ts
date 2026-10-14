@@ -69,7 +69,6 @@ export function getRouteDistanceTicks(totalDistanceM: number, desiredTickCount =
   const ticks = scale.ticks.filter((tick) => tick >= 0 && tick <= totalDistanceM);
   if (!ticks.includes(0)) ticks.unshift(0);
   if (Number.isFinite(totalDistanceM) && totalDistanceM > 0 && !ticks.includes(totalDistanceM)) {
-    while (ticks.length > 1 && totalDistanceM - ticks.at(-1)! < scale.step * 0.8) ticks.pop();
     ticks.push(totalDistanceM);
   }
   return [...new Set(ticks)].sort((left, right) => left - right);
@@ -77,7 +76,37 @@ export function getRouteDistanceTicks(totalDistanceM: number, desiredTickCount =
 
 export function formatRouteDistanceTick(distanceM: number, totalDistanceM: number): string {
   const stepKm = getNiceAxisScale(0, Math.max(0, totalDistanceM), 7).step / 1000;
-  const digits = Math.min(4, Math.max(0, Math.ceil(-Math.log10(stepKm))));
-  const formatted = (distanceM / 1000).toFixed(digits).replace(/\.?0+$/, "");
+  const stepDigits = Math.max(0, Math.ceil(-Math.log10(stepKm)));
+  const finishDigits = distanceM === totalDistanceM && stepKm >= 1 ? 1 : 0;
+  const digits = Math.min(4, Math.max(stepDigits, finishDigits));
+  const fixed = (distanceM / 1000).toFixed(digits);
+  const formatted = fixed.includes(".") ? fixed.replace(/0+$/, "").replace(/\.$/, "") : fixed;
   return `${formatted || "0"} km`;
+}
+
+export type PositionedRouteDistanceTick = {
+  distanceM: number;
+  label: string;
+  x: number;
+  isFinish: boolean;
+};
+
+export function getRouteDistancePosition(distanceM: number, totalDistanceM: number, startX: number, endX: number): number {
+  if (!(totalDistanceM > 0) || !Number.isFinite(distanceM)) return startX;
+  const fraction = Math.max(0, Math.min(1, distanceM / totalDistanceM));
+  return startX + fraction * (endX - startX);
+}
+
+export function getPositionedRouteDistanceTicks(
+  totalDistanceM: number,
+  startX: number,
+  endX: number,
+  desiredTickCount = 7,
+): PositionedRouteDistanceTick[] {
+  return getRouteDistanceTicks(totalDistanceM, desiredTickCount).map((distanceM) => ({
+    distanceM,
+    label: formatRouteDistanceTick(distanceM, totalDistanceM),
+    x: getRouteDistancePosition(distanceM, totalDistanceM, startX, endX),
+    isFinish: distanceM === totalDistanceM,
+  }));
 }

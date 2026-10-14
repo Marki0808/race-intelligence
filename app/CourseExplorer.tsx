@@ -6,7 +6,7 @@ import type { KeyMomentData } from "./raceTypes";
 import { groupAnalyzedPointsBySegment, type RouteAnalysisData } from "./gpxAnalysis";
 import type { RouteSection } from "./routeSectionEngine";
 import { clipRoutePointsToSection, findSelectedRouteSection } from "./routeSectionSelection";
-import { formatRouteDistanceTick, getNiceAxisScale, getRouteDistanceTicks, getRouteSectionBoundaryMarkers } from "./routeProfilePresentation";
+import { getNiceAxisScale, getPositionedRouteDistanceTicks, getRouteDistancePosition, getRouteSectionBoundaryMarkers } from "./routeProfilePresentation";
 
 export default function CourseExplorer({
   selectedMoment,
@@ -274,14 +274,13 @@ function ElevationProfile({
 }) {
   const width = 1200;
   const height = 440;
-  const plot = { left: 100, right: 24, top: 22, bottom: 66 };
-  const plotWidth = width - plot.left - plot.right;
+  const plot = { left: 136, right: 56, top: 24, bottom: 72 };
   const plotHeight = height - plot.top - plot.bottom;
   const totalDistance = Math.max(1, points.at(-1)?.distanceM ?? 1);
   const elevationScale = getNiceAxisScale(minElevation, maxElevation, 6);
-  const distanceTicks = getRouteDistanceTicks(totalDistance, 7);
+  const distanceTicks = getPositionedRouteDistanceTicks(totalDistance, plot.left, width - plot.right, 7);
   const boundaries = getRouteSectionBoundaryMarkers(sections);
-  const xForDistance = (distanceM: number) => plot.left + (distanceM / totalDistance) * plotWidth;
+  const xForDistance = (distanceM: number) => getRouteDistancePosition(distanceM, totalDistance, plot.left, width - plot.right);
   const yForElevation = (elevationM: number) => plot.top + ((elevationScale.maximum - elevationM) / (elevationScale.maximum - elevationScale.minimum)) * plotHeight;
   const toProfilePoint = (point: RouteAnalysisData["points"][number]) => {
     const x = xForDistance(point.distanceM);
@@ -306,13 +305,11 @@ function ElevationProfile({
           <text x={plot.left - 12} y={y + 9} fill="white" fillOpacity="0.68" fontSize="28" textAnchor="end">{tick.toLocaleString("en-US", { maximumFractionDigits: Math.min(2, Math.max(0, Math.ceil(-Math.log10(elevationScale.step)))) })}</text>
         </g>;
       })}
-      {distanceTicks.map((tick) => {
-        const x = xForDistance(tick);
-        const label = formatRouteDistanceTick(tick, totalDistance);
-        const anchor = tick === 0 ? "start" : tick === totalDistance ? "end" : "middle";
-        return <g key={`distance-${tick}`}>
+      {distanceTicks.map(({ distanceM, label, x, isFinish }) => {
+        const anchor = distanceM === 0 ? "start" : isFinish ? "end" : "middle";
+        return <g key={`distance-${distanceM}`}>
           <line x1={x} x2={x} y1={height - plot.bottom} y2={height - plot.bottom + 7} stroke="white" strokeOpacity="0.45" strokeWidth="2" />
-          <text x={x} y={height - 20} fill="white" fillOpacity="0.68" fontSize="26" textAnchor={anchor}>{label}</text>
+          <text x={x} y={height - 22} fill="white" fillOpacity="0.68" fontSize="22" textAnchor={anchor}>{label}</text>
         </g>;
       })}
       <line x1={plot.left} x2={plot.left} y1={plot.top} y2={height - plot.bottom} stroke="white" strokeOpacity="0.38" strokeWidth="2" />

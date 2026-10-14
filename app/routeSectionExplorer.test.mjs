@@ -17,7 +17,7 @@ const profileJs = ts.transpile(profileSource, { module: ts.ModuleKind.CommonJS, 
 const profileModule = { exports: {} };
 const profileRequire = (specifier) => specifier === "./routeSectionSelection" ? selectionModule.exports : require(specifier);
 new Function("exports", "require", "module", "__filename", "__dirname", profileJs)(profileModule.exports, profileRequire, profileModule, profileUrl.pathname, new URL(".", profileUrl).pathname);
-const { formatRouteDistanceTick, getNiceAxisScale, getRouteDistanceTicks, getRouteSectionBoundaryMarkers } = profileModule.exports;
+const { formatRouteDistanceTick, getNiceAxisScale, getPositionedRouteDistanceTicks, getRouteSectionBoundaryMarkers } = profileModule.exports;
 const evidenceUrl = new URL("./routeSectionEvidence.ts", import.meta.url);
 const evidenceSource = await readFile(evidenceUrl, "utf8");
 const evidenceJs = ts.transpile(evidenceSource, { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 });
@@ -80,20 +80,32 @@ test("profile elevation axis uses rounded meter ticks and safely expands a flat 
   assert.ok(flat.ticks.length >= 2);
 });
 
-test("profile distance ticks span the route without a crowded final label", () => {
-  const ticks = getRouteDistanceTicks(110_730, 7);
-  assert.equal(ticks[0], 0);
-  assert.equal(ticks.at(-1), 110_730);
-  assert.ok(ticks.every((tick, index) => index === 0 || tick > ticks[index - 1]));
-  assert.ok(ticks.length < 8);
+test("110.73 km profile axis preserves 20 km ticks and positions the finish at the full SVG-domain endpoint", () => {
+  const ticks = getPositionedRouteDistanceTicks(110_730, 136, 1144, 7);
+  assert.deepEqual(ticks.map(({ distanceM }) => distanceM), [0, 20_000, 40_000, 60_000, 80_000, 100_000, 110_730]);
+  assert.deepEqual(ticks.map(({ label }) => label), ["0 km", "20 km", "40 km", "60 km", "80 km", "100 km", "110.7 km"]);
+  assert.equal(ticks[0].x, 136);
+  assert.equal(ticks.at(-1).x, 1144);
+  assert.ok(ticks.every(({ x }, index) => x >= 136 && x <= 1144 && (index === 0 || x > ticks[index - 1].x)));
+  assert.ok(Math.abs(ticks[5].x - (136 + (100_000 / 110_730) * (1144 - 136))) < 1e-9);
+});
+
+test("medium routes retain evenly spaced major ticks and a clearly positioned finish", () => {
+  const ticks = getPositionedRouteDistanceTicks(12_500, 136, 1144, 7);
+  assert.deepEqual(ticks.map(({ distanceM }) => distanceM), [0, 5_000, 10_000, 12_500]);
+  assert.deepEqual(ticks.map(({ label }) => label), ["0 km", "5 km", "10 km", "12.5 km"]);
+  assert.deepEqual(ticks.map(({ x }) => Math.round(x)), [136, 539, 942, 1144]);
 });
 
 test("short-route axis labels retain enough kilometer precision to remain distinct", () => {
-  const ticks = getRouteDistanceTicks(50, 7);
-  const labels = ticks.map((tick) => formatRouteDistanceTick(tick, 50));
+  const ticks = getPositionedRouteDistanceTicks(50, 136, 1144, 7);
+  const labels = ticks.map(({ label }) => label);
   assert.equal(labels[0], "0 km");
   assert.equal(labels.at(-1), "0.05 km");
+  assert.deepEqual(ticks.map(({ distanceM }) => distanceM), [0, 10, 20, 30, 40, 50]);
+  assert.deepEqual(ticks.map(({ x }) => Math.round(x)), [136, 338, 539, 741, 942, 1144]);
   assert.equal(new Set(labels).size, labels.length);
+  assert.equal(formatRouteDistanceTick(20_000, 110_730), "20 km");
 });
 
 test("profile boundary markers preserve component and section identities at shared cumulative kilometers", () => {
@@ -138,7 +150,9 @@ test("Route Mode and Race Mode share the browser and clear the opposite map sele
   assert.match(map, /stroke="#f2d675"/);
   assert.match(map, /color: "#a7c957"/);
   assert.match(map, /getNiceAxisScale\(minElevation, maxElevation/);
-  assert.match(map, /getRouteDistanceTicks\(totalDistance/);
+  assert.match(map, /getPositionedRouteDistanceTicks\(totalDistance/);
+  assert.match(map, /const plot = \{ left: 136, right: 56, top: 24, bottom: 72 \}/);
+  assert.match(map, /fontSize="22" textAnchor=\{anchor\}/);
   assert.match(map, /getRouteSectionBoundaryMarkers\(sections\)/);
   assert.match(map, /onClick=\{\(\) => onSelectSection\(section\)\}/);
   assert.match(map, /aria-label=\{`Select Route Section/);
