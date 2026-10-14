@@ -170,5 +170,5 @@ test("Route Mode and Race Mode share the browser and clear the opposite map sele
   assert.match(raceView, /onSelectSection=\{selectSection\}/);
   const browser = await readFile(new URL("./RouteSectionBrowser.tsx", import.meta.url), "utf8");
   assert.match(browser, /What to expect · GPX elevation profile/);
-  assert.match(browser, /presentGradientExpectationV1\(gradientIntelligence, routeSections, section\)/);
+  assert.match(browser, /presentRouteSectionNarrativeV1\(gradientIntelligence, routeSections, section\)/);
 });

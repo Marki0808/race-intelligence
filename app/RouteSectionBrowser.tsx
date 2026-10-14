@@ -4,7 +4,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import type { MapillaryImageEvidence, MapillarySectionEvidence } from "./mapillaryTerrainProof";
 import type { RouteSection } from "./routeSectionEngine";
 import type { GradientIntelligenceV1 } from "./gradientIntelligence";
-import { presentGradientExpectationV1 } from "./gradientIntelligencePresentation";
+import { presentRouteSectionNarrativeV1 } from "./routeSectionNarrative";
 import { getRouteImageryPresentation, getSurfaceEvidencePresentation, numberRouteSectionsForDisplay } from "./routeSectionPresentation";
 import { routeSectionSelectionKey } from "./routeSectionSelection";
 import { sortRouteEmbeddedEventsForDisplay } from "./routeSectionEngine";
@@ -135,7 +135,7 @@ function SectionDetail({
   const title = rhythmLabels[section.dominantRhythm];
   const surface = getSurfaceEvidencePresentation(section, section.terrainEvidenceCoveragePercent !== undefined);
   const imagery = getRouteImageryPresentation(imageEvidence);
-  const expectation = presentGradientExpectationV1(gradientIntelligence, routeSections, section);
+  const expectation = presentRouteSectionNarrativeV1(gradientIntelligence, routeSections, section);
 
   return (
     <article className="rounded-3xl border border-[#71805d]/30 bg-[#f4f2ed] p-5 sm:p-8" aria-label={`Route Section ${ordinal} details`}>
