@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { createGeoEnrichment, getRouteBoundingBoxes, getRouteCorridorWindows, isUsefulBoundingBox, normalizeOsmTags, thinRouteForMatching } from "./geoEnrichment.ts";
 import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis.ts";
@@ -20,6 +20,7 @@ const route = Array.from({ length: 11 }, (_, index) => ({
   longitude: index / 1000,
   distanceM: index * 100,
 }));
+const uckaFixtureUrl = new URL("../test-routes/gradient-calibration/Učka Loop Challenge (42km2200m+) Official Route.gpx", import.meta.url);
 
 test("OSM corridor windows and matched evidence retain disconnected segment identity", () => {
   const points = [
@@ -36,6 +37,21 @@ test("OSM corridor windows and matched evidence retain disconnected segment iden
     { id: 2, type: "way", tags: { surface: "gravel" }, geometry: [{ lat: 46, lon: 14 }, { lat: 46, lon: 14.01 }] },
   ]);
   assert.deepEqual(data.segments.map((segment) => segment.segmentIndex), [0, 1]);
+});
+
+test("two-box initial grouping never combines windows across disconnected components", () => {
+  const points = [
+    { latitude: 45, longitude: 13, distanceM: 0, segmentIndex: 0 },
+    { latitude: 45, longitude: 13.01, distanceM: 1000, segmentIndex: 0 },
+    { latitude: 46, longitude: 14, distanceM: 1000, segmentIndex: 1 },
+    { latitude: 46, longitude: 14.01, distanceM: 2000, segmentIndex: 1 },
+  ];
+  const queries = createOverpassCorridorQueries(points);
+  assert.deepEqual(queries?.map((query) => ({ component: query.segmentIndex, boxes: query.boxes.length })), [
+    { component: 0, boxes: 1 },
+    { component: 1, boxes: 1 },
+  ]);
+  assert.ok(queries?.every((query) => query.windows.every((window) => window.segmentIndex === query.segmentIndex)));
 });
 
 function makeLongRoute(totalKm, startLongitude = 0) {
@@ -127,6 +143,33 @@ test("parent failure can recover full retrieval coverage when every child succee
   assert.equal(result.failures.length, 0);
   assert.equal(result.successes.length, 2);
   assert.equal(result.successes.reduce((sum, { query }) => sum + query.endDistanceKm - query.startDistanceKm, 0), 16);
+});
+
+test("a timed-out single-box query is subdivided into distinct smaller boxes, never repeated unchanged", async () => {
+  const routePoints = makeLongRoute(3);
+  const parent = createOverpassCorridorQueries(routePoints)?.[0];
+  assert.ok(parent);
+  assert.equal(parent?.boxes.length, 1);
+  const boxSignatures = [];
+  const result = await runAdaptiveRetrieval(
+    [parent],
+    async (query) => {
+      boxSignatures.push(JSON.stringify(query.boxes));
+      if (query.startDistanceKm === parent.startDistanceKm && query.endDistanceKm === parent.endDistanceKm) {
+        throw { category: "timeout" };
+      }
+      return query.boxes.length;
+    },
+    (query) => subdivideOverpassCorridorQuery(query, routePoints),
+    categoryOf,
+    rangeOf,
+    { maxAttempts: 3, maxDepth: 1 },
+  );
+
+  assert.equal(result.attempts, 3);
+  assert.equal(result.failures.length, 0);
+  assert.equal(new Set(boxSignatures).size, boxSignatures.length);
+  assert.deepEqual(result.successes.map(({ query }) => query.boxes.length), [1, 1]);
 });
 
 test("adaptive retries stop at depth and request budgets", async () => {
@@ -425,6 +468,119 @@ test("builds an Overpass query with the Istria GPX bounds in south,west,north,ea
   assert.equal((query.match(/way\["highway"/g) ?? []).length, boxes.length);
 });
 
+test("Ucka query-size experiment deterministically compares mocked scheduling and failure by box count", { skip: !existsSync(uckaFixtureUrl) }, async () => {
+  const gpx = parseGpxText(readFileSync(uckaFixtureUrl, "utf8"));
+  const analysis = analyzeGpxRoute(gpx);
+  const routePoints = thinRouteForMatching(analysis.points);
+  const fixtureWindows = getRouteCorridorWindows(routePoints);
+  assert.equal(fixtureWindows.length, 11);
+
+  const variants = [1, 2, 8].map((boxCount) => {
+    const windows = fixtureWindows.slice(0, boxCount);
+    const query = {
+      segmentIndex: windows[0].segmentIndex,
+      windows,
+      boxes: windows.map((window) => window.box),
+      startDistanceKm: windows[0].startDistanceKm,
+      endDistanceKm: windows.at(-1).endDistanceKm,
+    };
+    const grossBoxAreaKm2 = query.boxes.reduce((sum, box) => sum +
+      (box.north - box.south) * 111.32 * (box.east - box.west) * 111.32 *
+      Math.cos(((box.north + box.south) / 2) * Math.PI / 180), 0);
+    return { boxCount, query, bytes: new TextEncoder().encode(buildOverpassQuery(query.boxes)).byteLength, grossBoxAreaKm2 };
+  });
+
+  const outcomes = [];
+  for (const variant of variants) {
+    const attempts = [];
+    const result = await runAdaptiveRetrieval(
+      [variant.query],
+      async (query, _signal, depth) => {
+        attempts.push({ boxCount: query.boxes.length, depth });
+        // Deterministic simulated provider policy only; this is not a latency or reliability model.
+        if (query.boxes.length === 8) throw { category: "timeout" };
+        return { acceptedBoxes: query.boxes.length };
+      },
+      (query) => subdivideOverpassCorridorQuery(query, routePoints),
+      categoryOf,
+      (query) => rangeOf(query),
+      { maxAttempts: 3, maxDepth: 1 },
+    );
+    outcomes.push({ variant, attempts, result });
+  }
+
+  assert.deepEqual(outcomes.map(({ variant }) => ({
+    boxCount: variant.boxCount,
+    queryBytes: variant.bytes,
+    routeKm: [variant.query.startDistanceKm, variant.query.endDistanceKm],
+    grossBoxAreaKm2: Math.round(variant.grossBoxAreaKm2),
+  })), [
+    { boxCount: 1, queryBytes: 227, routeKm: [0, 5], grossBoxAreaKm2: 7 },
+    { boxCount: 2, queryBytes: 414, routeKm: [0, 9], grossBoxAreaKm2: 14 },
+    { boxCount: 8, queryBytes: 1536, routeKm: [0, 33], grossBoxAreaKm2: 57 },
+  ]);
+  assert.deepEqual(outcomes.map(({ attempts }) => attempts), [
+    [{ boxCount: 1, depth: 0 }],
+    [{ boxCount: 2, depth: 0 }],
+    [{ boxCount: 8, depth: 0 }, { boxCount: 4, depth: 1 }, { boxCount: 4, depth: 1 }],
+  ]);
+  assert.deepEqual(outcomes.map(({ result }) => [result.attempts, result.successes.length, result.failureCounts.timeout]), [
+    [1, 1, 0], [1, 1, 0], [3, 2, 1],
+  ]);
+});
+
+test("42km Ucka-shaped route keeps 11 windows in six two-box queries with component identity", () => {
+  const routePoints = makeLongRoute(42);
+  const windows = getRouteCorridorWindows(routePoints);
+  const queries = createOverpassCorridorQueries(routePoints);
+
+  assert.equal(windows.length, 11);
+  assert.equal(queries?.length, 6);
+  assert.deepEqual(queries?.map((query) => query.boxes.length), [2, 2, 2, 2, 2, 1]);
+  assert.ok(queries?.every((query) => query.segmentIndex === 0 && query.windows.every((window) => window.segmentIndex === query.segmentIndex)));
+  assert.deepEqual(queries?.flatMap((query) => query.windows.map((window) => [window.startDistanceKm, window.endDistanceKm])),
+    windows.map((window) => [window.startDistanceKm, window.endDistanceKm]));
+});
+
+test("local Ucka fixture keeps all 11 windows in six two-box queries with component identity", { skip: !existsSync(uckaFixtureUrl) }, () => {
+  const gpx = parseGpxText(readFileSync(uckaFixtureUrl, "utf8"));
+  const routePoints = thinRouteForMatching(analyzeGpxRoute(gpx).points);
+  const windows = getRouteCorridorWindows(routePoints);
+  const queries = createOverpassCorridorQueries(routePoints);
+
+  assert.equal(windows.length, 11);
+  assert.equal(queries?.length, 6);
+  assert.deepEqual(queries?.map((query) => query.boxes.length), [2, 2, 2, 2, 2, 1]);
+  assert.ok(queries?.every((query) => query.segmentIndex === 0 && query.windows.every((window) => window.segmentIndex === query.segmentIndex)));
+  assert.deepEqual(queries?.flatMap((query) => query.windows.map((window) => [window.startDistanceKm, window.endDistanceKm])),
+    windows.map((window) => [window.startDistanceKm, window.endDistanceKm]));
+});
+
+test("initial-query cap returns partial Ucka-sized coverage and marks every omitted range unavailable", async (context) => {
+  const routePoints = makeLongRoute(52);
+  const windows = getRouteCorridorWindows(routePoints);
+  const queries = createOverpassCorridorQueries(routePoints);
+  assert.equal(windows.length, 13);
+  assert.equal(queries?.length, MAX_CORRIDOR_QUERIES_PER_ROUTE);
+  assert.equal(queries?.reduce((count, query) => count + query.windows.length, 0), 12);
+
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; return overpassResponse([]); };
+  context.after(() => { globalThis.fetch = originalFetch; });
+
+  const result = await enrichRouteWithOsm(routePoints);
+  assert.equal(calls, MAX_CORRIDOR_QUERIES_PER_ROUTE);
+  assert.equal(result.availability, "unknown");
+  assert.equal(result.matchedRoutePercent, 0);
+  assert.equal(result.retrieval.retrievalCoveragePercent, 94);
+  assert.deepEqual(result.retrieval.retrievedRanges, [{ startDistanceKm: 0, endDistanceKm: 49, segmentIndex: 0 }]);
+  assert.deepEqual(result.retrieval.unavailableRanges, [{ startDistanceKm: 49, endDistanceKm: 52, segmentIndex: 0 }]);
+  assert.ok(result.segments.every((segment) => segment.surface.availability === "unknown" && segment.osmWays.length === 0),
+    "empty OSM responses must not create mapped-surface claims");
+  assert.ok(result.segments.every((segment) => segment.sampleEvidence?.every((sample) => sample.status === "no-match")));
+});
+
 test("splits a short route into one query with bounded corridor boxes", () => {
   const queries = createOverpassCorridorQueries(makeLongRoute(4));
   assert.equal(queries?.length, 1);
@@ -439,6 +595,8 @@ test("splits a long route into a bounded number of small corridor queries", () =
   assert.equal(windows.length, 45);
   assert.equal(queries?.length, 6);
   assert.ok(queries.every((query) => query.boxes.length <= MAX_CORRIDOR_BOXES_PER_QUERY));
+  assert.equal(queries.reduce((count, query) => count + query.windows.length, 0), 12,
+    "initial queries are capped without pretending the remaining windows were queried");
   assert.ok(queries.every((query) => query.boxes.every(isUsefulBoundingBox)));
   assert.ok(queries.length <= MAX_CORRIDOR_QUERIES_PER_ROUTE);
 });
@@ -488,6 +646,9 @@ test("refuses routes exceeding the safe corridor budget without making network r
   assert.equal(calls, 0);
   assert.equal(result.availability, "unknown");
   assert.match(result.note, /more safe OpenStreetMap corridor queries/);
+  assert.equal(result.retrieval.requestsSent, 0);
+  assert.equal(result.retrieval.retrievalCoveragePercent, 0);
+  assert.deepEqual(result.retrieval.unavailableRanges, [{ startDistanceKm: 0, endDistanceKm: 205, segmentIndex: 0 }]);
 });
 
 test("deduplicates overlapping OSM ways by identity while preserving combined tags and best geometry", () => {
@@ -601,18 +762,17 @@ test("partial corridor success retains real matched ways and reports coverage", 
   let calls = 0;
   globalThis.fetch = async () => {
     calls += 1;
-    if (calls === 1) return overpassResponse([{ type: "way", id: 9301, tags: { highway: "path", surface: "dirt" }, geometry: routePoints.slice(0, 12).map((point) => ({ lat: point.latitude, lon: point.longitude })) }]);
+    if (calls === 1 || calls === 3) return overpassResponse([{ type: "way", id: 9300 + calls, tags: { highway: "path", surface: "dirt" }, geometry: routePoints.slice(0, 12).map((point) => ({ lat: point.latitude, lon: point.longitude })) }]);
     return new Response("Overpass unavailable", { status: 504 });
   };
   context.after(() => { globalThis.fetch = originalFetch; });
   const result = await enrichRouteWithOsm(routePoints);
-  assert.equal(calls, 8);
+  assert.equal(result.retrieval.requestsSent, calls);
   assert.ok(result.matchedRoutePercent > 0);
   assert.ok(result.matchedRoutePercent < 100);
-  assert.equal(result.retrieval.requestsSent, 8);
-  assert.equal(result.retrieval.requestsSucceeded, 1);
-  assert.equal(result.retrieval.requestsFailed, 7);
-  assert.equal(result.retrieval.retrievalCoveragePercent, 92);
+  assert.equal(result.retrieval.requestsSucceeded, 2);
+  assert.ok(result.retrieval.requestsFailed > 0);
+  assert.ok(result.retrieval.retrievalCoveragePercent > 0 && result.retrieval.retrievalCoveragePercent < 100);
   assert.match(result.note, /retrieval was partial/);
   assert.ok(result.segments.some((segment) => segment.osmWays.some((way) => way.sourceId === "way/9301")));
   assert.ok(result.segments.some((segment) => segment.surface.availability === "unknown"));
@@ -650,7 +810,7 @@ test("multiple failures preserve real evidence from successful corridors", async
   };
   context.after(() => { globalThis.fetch = originalFetch; });
   const result = await enrichRouteWithOsm(routePoints);
-  assert.equal(calls, 8);
+  assert.equal(calls, 10);
   assert.ok(calls <= MAX_OVERPASS_ATTEMPTS_PER_ROUTE);
   assert.ok(result.matchedRoutePercent > 0);
   assert.ok(result.retrieval.requestsSucceeded >= 2);
@@ -658,7 +818,7 @@ test("multiple failures preserve real evidence from successful corridors", async
   assert.ok(result.segments.some((segment) => segment.osmWays.length > 0));
 });
 
-test("the full Istria route reaches Overpass instead of hitting the route-window guard", async (context) => {
+test("Istria queries stay capped at six initial groups and expose the remaining distance as unavailable", async (context) => {
   const originalFetch = globalThis.fetch;
   const queries = [];
   const gpx = parseGpxText(readFileSync(new URL("../public/ISTRIA_110K_2027.gpx", import.meta.url), "utf8"));
@@ -678,11 +838,20 @@ test("the full Istria route reaches Overpass instead of hitting the route-window
   context.after(() => { globalThis.fetch = originalFetch; });
 
   const result = await enrichRouteWithOsm(routePoints);
-  assert.equal(queries.length, 4);
-  assert.equal(queries.reduce((count, query) => count + (query.match(/way\["highway"/g) ?? []).length, 0), 28);
+  assert.equal(queries.length, 6);
+  assert.equal(queries.reduce((count, query) => count + (query.match(/way\["highway"/g) ?? []).length, 0), 12);
   assert.ok(queries.every((query) => (query.match(/way\["highway"/g) ?? []).length <= MAX_CORRIDOR_BOXES_PER_QUERY));
+  assert.equal(new Set(queries).size, queries.length);
+  assert.deepEqual(result.retrieval.retrievedRanges, [{ startDistanceKm: 0, endDistanceKm: 49, segmentIndex: 0 }]);
+  assert.equal(result.retrieval.unavailableRanges[0].startDistanceKm, 49);
+  assert.ok(Math.abs(result.retrieval.unavailableRanges[0].endDistanceKm - routePoints.at(-1).distanceM / 1000) < 0.001);
+  assert.ok(result.retrieval.retrievalCoveragePercent < 50);
   assert.ok(result.matchedRoutePercent > 0);
   assert.ok(result.segments.some((segment) => segment.osmWays.some((way) => way.sourceId === "way/9001")));
+  assert.ok(result.segments.every((segment) => {
+    const sourceWayIds = segment.osmWays.map((way) => way.sourceId);
+    return new Set(sourceWayIds).size === sourceWayIds.length;
+  }), "a way may support distinct distance intervals but must not duplicate within one evidence segment");
   assert.notEqual(result.note, "The route covers too large an area for a safe OSM query.");
 
   const aggregation = aggregateTerrainEvidenceV3(result);

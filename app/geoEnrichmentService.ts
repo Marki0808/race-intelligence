@@ -20,9 +20,10 @@ const MAX_REQUESTS_PER_DAY = 90;
 /** Leave room inside the route's 30s platform limit for parsing and response serialization. */
 export const GEO_ENRICHMENT_REQUEST_BUDGET_MS = 20_000;
 const OVERPASS_ATTEMPT_TIMEOUT_MS = 9_000;
-export const MAX_CORRIDOR_BOXES_PER_QUERY = 8;
+export const MAX_CORRIDOR_BOXES_PER_QUERY = 2;
 export const MAX_CORRIDOR_QUERIES_PER_ROUTE = 6;
-const MAX_CORRIDOR_WINDOWS_PER_ROUTE = MAX_CORRIDOR_BOXES_PER_QUERY * MAX_CORRIDOR_QUERIES_PER_ROUTE;
+// Preserve the previous total route-window bound while limiting initial request fan-out.
+const MAX_CORRIDOR_WINDOWS_PER_ROUTE = 48;
 export const MAX_ADAPTIVE_RETRIES_PER_ROUTE = 12;
 export const MAX_ADAPTIVE_SUBDIVISION_DEPTH = 2;
 export const MAX_OVERPASS_ATTEMPTS_PER_ROUTE = MAX_CORRIDOR_QUERIES_PER_ROUTE + MAX_ADAPTIVE_RETRIES_PER_ROUTE;
@@ -99,7 +100,7 @@ export function createOverpassCorridorQueries(points: GeoRoutePoint[]): Overpass
         endDistanceKm: group.at(-1)!.endDistanceKm, segmentIndex });
     }
   }
-  return queries.length <= MAX_CORRIDOR_QUERIES_PER_ROUTE ? queries : null;
+  return queries.slice(0, MAX_CORRIDOR_QUERIES_PER_ROUTE);
 }
 
 /** Deterministic, bounded retry orchestration shared by the live service and fixture tests. */
@@ -253,11 +254,22 @@ export async function enrichRouteWithOsm(points: GeoRoutePoint[], options: { sig
     return createUnknownGeoEnrichment("The route geometry was outside the supported matching limits.");
   }
   const route = thinRouteForMatching(points);
+  const corridorWindows = getRouteCorridorWindows(route);
   const queries = createOverpassCorridorQueries(route);
   if (!queries) {
     diagnostics.finish({ outcome: "invalid_route", routePointCount: points.length });
-    return createUnknownGeoEnrichment("The route requires more safe OpenStreetMap corridor queries than this service allows.");
+    return {
+      ...createUnknownGeoEnrichment("The route requires more safe OpenStreetMap corridor queries than this service allows."),
+      retrieval: emptyRetrievalSummary(mergeDistanceRanges(corridorWindows.map((window) => ({
+        startDistanceKm: window.startDistanceKm,
+        endDistanceKm: window.endDistanceKm,
+        segmentIndex: window.segmentIndex,
+      })))),
+    };
   }
+
+  const queriedWindowKeys = new Set(queries.flatMap((query) => query.windows.map(corridorWindowKey)));
+  const unqueriedWindows = corridorWindows.filter((window) => !queriedWindowKeys.has(corridorWindowKey(window)));
 
   const requestCounts = { requestsSent: 0, requestsSucceeded: 0, requestsFailed: 0, cacheHits: 0 };
   const retrieval = await runAdaptiveRetrieval(
@@ -282,6 +294,10 @@ export async function enrichRouteWithOsm(points: GeoRoutePoint[], options: { sig
     startDistanceKm: query.startDistanceKm,
     endDistanceKm: query.endDistanceKm,
     segmentIndex: query.segmentIndex,
+  })), ...unqueriedWindows.map((window) => ({
+    startDistanceKm: window.startDistanceKm,
+    endDistanceKm: window.endDistanceKm,
+    segmentIndex: window.segmentIndex,
   }))];
   const totalDistanceKm = route.length ? (Math.max(...route.map((point) => point.distanceM)) / 1000) : 0;
   const unavailableRanges = subtractDistanceRanges(mergeDistanceRanges(failedRanges), retrievedRanges);
@@ -298,10 +314,10 @@ export async function enrichRouteWithOsm(points: GeoRoutePoint[], options: { sig
 
   const abortReason = getAbortDiagnosticReason(diagnostics, signal);
   diagnostics.finish({
-    outcome: abortReason === "deadline" ? "deadline" : abortReason === "client_cancelled" ? "client_cancelled" : retrieval.failures.length + retrieval.unattempted.length > 0 ? "query_unavailable" : "completed",
+    outcome: abortReason === "deadline" ? "deadline" : abortReason === "client_cancelled" ? "client_cancelled" : retrieval.failures.length + retrieval.unattempted.length + unqueriedWindows.length > 0 ? "query_unavailable" : "completed",
     routePointCount: points.length,
     componentCount: new Set(points.map((point) => point.segmentIndex ?? 0)).size,
-    corridorWindowCount: queries.reduce((count, query) => count + query.windows.length, 0),
+    corridorWindowCount: corridorWindows.length,
     initialQueryCount: queries.length,
     rangesRetrieved: retrievedRanges,
     rangesUnavailable: unavailableRanges,
@@ -315,7 +331,7 @@ export async function enrichRouteWithOsm(points: GeoRoutePoint[], options: { sig
   }
 
   const enrichment = createGeoEnrichment(route, mergeOsmWays(successfulGroups));
-  if (retrieval.failures.length === 0 && retrieval.unattempted.length === 0) return { ...enrichment, retrieval: retrievalSummary };
+  if (retrieval.failures.length === 0 && retrieval.unattempted.length === 0 && unqueriedWindows.length === 0) return { ...enrichment, retrieval: retrievalSummary };
 
   const note = `OpenStreetMap retrieval was partial: ${requestCounts.requestsSucceeded} of ${requestCounts.requestsSent} network requests succeeded; ${retrievalSummary.retrievalCoveragePercent}% of route distance was successfully queried.`;
   return {
@@ -325,6 +341,24 @@ export async function enrichRouteWithOsm(points: GeoRoutePoint[], options: { sig
       ? `${note} No route-matched evidence was found in successfully queried areas.`
       : note,
     retrieval: retrievalSummary,
+  };
+}
+
+function corridorWindowKey(window: RouteCorridorWindow) {
+  return `${window.segmentIndex}:${window.startDistanceKm.toFixed(6)}:${window.endDistanceKm.toFixed(6)}`;
+}
+
+function emptyRetrievalSummary(unavailableRanges: GeoDistanceRange[]): NonNullable<ReturnType<typeof createUnknownGeoEnrichment>["retrieval"]> {
+  return {
+    queryAttempts: 0,
+    requestsSent: 0,
+    requestsSucceeded: 0,
+    requestsFailed: 0,
+    cacheHits: 0,
+    retrievalCoveragePercent: 0,
+    retrievedRanges: [],
+    unavailableRanges,
+    failureCounts: { http429: 0, http504: 0, timeout: 0, otherTransient: 0, permanent: 0, budgetExhausted: 0 },
   };
 }
 
