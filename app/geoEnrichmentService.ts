@@ -7,6 +7,8 @@ import {
   thinRouteForMatching,
 } from "./geoEnrichment.ts";
 import type { GeoDistanceRange, GeoRetrievalFailureCounts, GeoRoutePoint, OSMWayFeature, RouteCorridorWindow } from "./geoEnrichment.ts";
+import { createGeoEnrichmentDiagnostics, getAbortDiagnosticReason } from "./geoEnrichmentDiagnostics.ts";
+import type { GeoEnrichmentDiagnostics, GeoAttemptDiagnostic, GeoDiagnosticOutcome } from "./geoEnrichmentDiagnostics.ts";
 
 const OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter";
 const CACHE_TTL_MS = 10 * 60 * 1000;
@@ -32,6 +34,8 @@ type QueuedOverpassRequest = {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
   signal?: AbortSignal;
+  enqueuedAt: number;
+  onStarted?: (queueWaitMs: number) => void;
   onAbort?: () => void;
 };
 const pendingRequests: QueuedOverpassRequest[] = [];
@@ -56,9 +60,22 @@ export type AdaptiveQueryFailure<Query> = {
 export type AdaptiveQueryResult<Query, Value> = {
   successes: Array<{ query: Query; value: Value }>;
   failures: AdaptiveQueryFailure<Query>[];
+  unattempted: Query[];
+  logicalFailures: number;
   attempts: number;
   failureCounts: GeoRetrievalFailureCounts;
 };
+
+class UnsentOverpassRequestError extends Error {
+  constructor(reason: unknown) {
+    super("Overpass request was canceled before it started.", { cause: reason });
+    this.name = "UnsentOverpassRequestError";
+  }
+}
+
+function wasNotSent(error: unknown): error is UnsentOverpassRequestError {
+  return error instanceof UnsentOverpassRequestError;
+}
 
 export function createOverpassCorridorQueries(points: GeoRoutePoint[]): OverpassCorridorQuery[] | null {
   const windows = getRouteCorridorWindows(points);
@@ -88,16 +105,17 @@ export function createOverpassCorridorQueries(points: GeoRoutePoint[]): Overpass
 /** Deterministic, bounded retry orchestration shared by the live service and fixture tests. */
 export async function runAdaptiveRetrieval<Query, Value>(
   initialQueries: Query[],
-  execute: (query: Query, signal?: AbortSignal) => Promise<Value>,
+  execute: (query: Query, signal?: AbortSignal, depth?: number, attempt?: number) => Promise<Value>,
   subdivide: (query: Query) => Query[],
   isRetryable: (error: unknown) => RetrievalFailureCategory | null,
   getRange: (query: Query) => GeoDistanceRange,
-  options: { maxAttempts: number; maxDepth: number; signal?: AbortSignal },
+  options: { maxAttempts: number; maxDepth: number; signal?: AbortSignal; diagnostics?: GeoEnrichmentDiagnostics },
 ): Promise<AdaptiveQueryResult<Query, Value>> {
   type Task = { query: Query; depth: number };
   let pending: Task[] = initialQueries.map((query) => ({ query, depth: 0 }));
   const successes: AdaptiveQueryResult<Query, Value>["successes"] = [];
   const failures: AdaptiveQueryFailure<Query>[] = [];
+  const unattempted: Query[] = [];
   const failureCounts: GeoRetrievalFailureCounts = {
     http429: 0,
     http504: 0,
@@ -107,17 +125,20 @@ export async function runAdaptiveRetrieval<Query, Value>(
     budgetExhausted: 0,
   };
   let attempts = 0;
+  let logicalFailures = 0;
 
   while (pending.length > 0) {
     if (options.signal?.aborted) {
-      failures.push(...pending.map(({ query }) => ({ query, category: "timeout" as const, attempted: false })));
-      failureCounts.timeout += pending.length;
+      unattempted.push(...pending.map(({ query }) => query));
+      const reason = options.diagnostics ? getAbortDiagnosticReason(options.diagnostics, options.signal) : null;
+      options.diagnostics?.recordUnattempted(pending.length, reason === "deadline" ? "deadline" : reason === "client_cancelled" ? "client_cancelled" : "queued_cancelled");
       break;
     }
     const available = Math.max(0, options.maxAttempts - attempts);
     if (available === 0) {
       failures.push(...pending.map(({ query }) => ({ query, category: "budgetExhausted" as const, attempted: false })));
       failureCounts.budgetExhausted += pending.length;
+      options.diagnostics?.recordUnattempted(pending.length, "attempt_budget");
       break;
     }
     const batch = selectFairTasks(pending, Math.min(available, pending.length), getRange);
@@ -125,8 +146,10 @@ export async function runAdaptiveRetrieval<Query, Value>(
     const skipped = pending.filter((task) => !selected.has(task));
     failures.push(...skipped.map(({ query }) => ({ query, category: "budgetExhausted" as const, attempted: false })));
     failureCounts.budgetExhausted += skipped.length;
+    options.diagnostics?.recordUnattempted(skipped.length, "attempt_budget");
     attempts += batch.length;
-    const results = await Promise.allSettled(batch.map(({ query }) => execute(query, options.signal)));
+    const firstAttempt = attempts - batch.length + 1;
+    const results = await Promise.allSettled(batch.map(({ query, depth }, index) => execute(query, options.signal, depth, firstAttempt + index)));
     const next: Task[] = [];
 
     results.forEach((result, index) => {
@@ -135,7 +158,15 @@ export async function runAdaptiveRetrieval<Query, Value>(
         successes.push({ query: task.query, value: result.value });
         return;
       }
+      if (wasNotSent(result.reason)) {
+        unattempted.push(task.query);
+        const reason = options.diagnostics ? getAbortDiagnosticReason(options.diagnostics, options.signal) : null;
+        options.diagnostics?.recordUnattempted(1, reason === "deadline" ? "deadline" : reason === "client_cancelled" ? "client_cancelled" : "queued_cancelled");
+        return;
+      }
       const category = isRetryable(result.reason);
+      logicalFailures += 1;
+      options.diagnostics?.recordLogicalFailure();
       failureCounts[category ?? "permanent"] += 1;
       const children = category && task.depth < options.maxDepth ? subdivide(task.query) : [];
       if (children.length === 0) {
@@ -143,11 +174,12 @@ export async function runAdaptiveRetrieval<Query, Value>(
         return;
       }
       next.push(...children.map((query) => ({ query, depth: task.depth + 1 })));
+      options.diagnostics?.recordSubdivision();
     });
     pending = next.sort((a, b) => getRange(a.query).startDistanceKm - getRange(b.query).startDistanceKm);
   }
 
-  return { successes, failures, attempts, failureCounts };
+  return { successes, failures, unattempted, logicalFailures, attempts, failureCounts };
 }
 
 function selectFairTasks<Query>(
@@ -213,25 +245,28 @@ export function mergeOsmWays(groups: OSMWayFeature[][]): OSMWayFeature[] {
   return [...unique.values()].sort((a, b) => a.id - b.id);
 }
 
-export async function enrichRouteWithOsm(points: GeoRoutePoint[], options: { signal?: AbortSignal } = {}) {
+export async function enrichRouteWithOsm(points: GeoRoutePoint[], options: { signal?: AbortSignal; diagnostics?: GeoEnrichmentDiagnostics } = {}) {
+  const diagnostics = options.diagnostics ?? createGeoEnrichmentDiagnostics();
   const signal = options.signal ?? AbortSignal.timeout(GEO_ENRICHMENT_REQUEST_BUDGET_MS);
   if (points.length < 2 || points.length > MAX_ROUTE_POINTS) {
+    diagnostics.finish({ outcome: "invalid_route", routePointCount: points.length });
     return createUnknownGeoEnrichment("The route geometry was outside the supported matching limits.");
   }
   const route = thinRouteForMatching(points);
   const queries = createOverpassCorridorQueries(route);
   if (!queries) {
+    diagnostics.finish({ outcome: "invalid_route", routePointCount: points.length });
     return createUnknownGeoEnrichment("The route requires more safe OpenStreetMap corridor queries than this service allows.");
   }
 
   const requestCounts = { requestsSent: 0, requestsSucceeded: 0, requestsFailed: 0, cacheHits: 0 };
   const retrieval = await runAdaptiveRetrieval(
     queries,
-    (query, requestSignal) => getCachedWays(query.boxes, requestCounts, requestSignal),
+    (query, requestSignal, depth, attempt) => getCachedWays(query.boxes, requestCounts, requestSignal, diagnostics, depth, attempt),
     (query) => subdivideOverpassCorridorQuery(query, route),
     classifyRetryableOverpassError,
     (query) => ({ startDistanceKm: query.startDistanceKm, endDistanceKm: query.endDistanceKm, segmentIndex: query.segmentIndex }),
-    { maxAttempts: MAX_OVERPASS_ATTEMPTS_PER_ROUTE, maxDepth: MAX_ADAPTIVE_SUBDIVISION_DEPTH, signal },
+    { maxAttempts: MAX_OVERPASS_ATTEMPTS_PER_ROUTE, maxDepth: MAX_ADAPTIVE_SUBDIVISION_DEPTH, signal, diagnostics },
   );
   const successfulGroups = retrieval.successes.map(({ value }) => value.ways);
   const retrievedRanges = mergeDistanceRanges(retrieval.successes.map(({ query }) => ({
@@ -239,11 +274,15 @@ export async function enrichRouteWithOsm(points: GeoRoutePoint[], options: { sig
     endDistanceKm: query.endDistanceKm,
     segmentIndex: query.segmentIndex,
   })));
-  const failedRanges = retrieval.failures.map(({ query }) => ({
+  const failedRanges = [...retrieval.failures.map(({ query }) => ({
     startDistanceKm: query.startDistanceKm,
     endDistanceKm: query.endDistanceKm,
     segmentIndex: query.segmentIndex,
-  }));
+  })), ...retrieval.unattempted.map((query) => ({
+    startDistanceKm: query.startDistanceKm,
+    endDistanceKm: query.endDistanceKm,
+    segmentIndex: query.segmentIndex,
+  }))];
   const totalDistanceKm = route.length ? (Math.max(...route.map((point) => point.distanceM)) / 1000) : 0;
   const unavailableRanges = subtractDistanceRanges(mergeDistanceRanges(failedRanges), retrievedRanges);
   const coveredKm = retrievedRanges.reduce((total, range) => total + range.endDistanceKm - range.startDistanceKm, 0);
@@ -257,14 +296,17 @@ export async function enrichRouteWithOsm(points: GeoRoutePoint[], options: { sig
     failureCounts,
   };
 
-  if (retrieval.failures.length > 0) {
-    console.warn("[geo-enrichment] Adaptive Overpass retrieval ended with unavailable corridor ranges", {
-      requestsSent: requestCounts.requestsSent,
-      requestsFailed: requestCounts.requestsFailed,
-      retrievalCoveragePercent: retrievalSummary.retrievalCoveragePercent,
-      failureCounts,
-    });
-  }
+  const abortReason = getAbortDiagnosticReason(diagnostics, signal);
+  diagnostics.finish({
+    outcome: abortReason === "deadline" ? "deadline" : abortReason === "client_cancelled" ? "client_cancelled" : retrieval.failures.length + retrieval.unattempted.length > 0 ? "query_unavailable" : "completed",
+    routePointCount: points.length,
+    componentCount: new Set(points.map((point) => point.segmentIndex ?? 0)).size,
+    corridorWindowCount: queries.reduce((count, query) => count + query.windows.length, 0),
+    initialQueryCount: queries.length,
+    rangesRetrieved: retrievedRanges,
+    rangesUnavailable: unavailableRanges,
+  });
+
   if (successfulGroups.length === 0) {
     return {
       ...createUnknownGeoEnrichment("OpenStreetMap terrain evidence is currently unavailable for this route."),
@@ -273,7 +315,7 @@ export async function enrichRouteWithOsm(points: GeoRoutePoint[], options: { sig
   }
 
   const enrichment = createGeoEnrichment(route, mergeOsmWays(successfulGroups));
-  if (retrieval.failures.length === 0) return { ...enrichment, retrieval: retrievalSummary };
+  if (retrieval.failures.length === 0 && retrieval.unattempted.length === 0) return { ...enrichment, retrieval: retrievalSummary };
 
   const note = `OpenStreetMap retrieval was partial: ${requestCounts.requestsSucceeded} of ${requestCounts.requestsSent} network requests succeeded; ${retrievalSummary.retrievalCoveragePercent}% of route distance was successfully queried.`;
   return {
@@ -348,20 +390,30 @@ async function getCachedWays(
   boxes: RouteBoundingBox[],
   counters: { requestsSent: number; requestsSucceeded: number; requestsFailed: number; cacheHits: number },
   signal?: AbortSignal,
+  diagnostics?: GeoEnrichmentDiagnostics,
+  depth = 0,
+  attempt = 1,
 ) {
   const key = boxes.map((box) => Object.values(box).map((value) => value.toFixed(3)).join(",")).join(";");
   const cached = cache.get(key);
   if (cached && cached.expiresAt > Date.now()) {
     counters.cacheHits += 1;
+    diagnostics?.recordAttempt({ ...emptyAttemptDiagnostic(attempt, depth, boxes.length, 0, 0, "success"), cacheStatus: "hit" });
     return { ways: cached.ways, cacheHit: true };
   }
   if (cached) cache.delete(key);
 
   const query = buildOverpassQuery(boxes);
-  return scheduleOverpassRequest(async () => {
+  const queryBytes = new TextEncoder().encode(query).byteLength;
+  const queuedAt = Date.now();
+  let queueWaitMs = 0;
+  let diagnosticFields: GeoAttemptDiagnostic = { ...emptyAttemptDiagnostic(attempt, depth, boxes.length, queryBytes, 0, "success"), cacheStatus: "miss" };
+  try {
+  return await scheduleOverpassRequest(async () => {
     const cachedAfterQueue = cache.get(key);
     if (cachedAfterQueue && cachedAfterQueue.expiresAt > Date.now()) {
       counters.cacheHits += 1;
+      diagnosticFields = { ...diagnosticFields, cacheStatus: "hit" };
       return { ways: cachedAfterQueue.ways, cacheHit: true };
     }
     const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
@@ -369,6 +421,11 @@ async function getCachedWays(
     if (requestTimestamps.length >= MAX_REQUESTS_PER_DAY) throw new Error("Daily Overpass prototype request limit reached");
     requestTimestamps.push(Date.now());
     counters.requestsSent += 1;
+    const fetchStartedAt = Date.now();
+    diagnosticFields = {
+      ...diagnosticFields,
+      fetchStartedAfterRequestMs: Math.max(0, fetchStartedAt - diagnostics!.startedAt),
+    };
     try {
       const response = await fetch(OVERPASS_ENDPOINT, {
         method: "POST",
@@ -381,13 +438,42 @@ async function getCachedWays(
           ? AbortSignal.any([signal, AbortSignal.timeout(OVERPASS_ATTEMPT_TIMEOUT_MS)])
           : AbortSignal.timeout(OVERPASS_ATTEMPT_TIMEOUT_MS),
       });
+      diagnosticFields = { ...diagnosticFields, httpStatus: response.status, fetchElapsedMs: Date.now() - fetchStartedAt };
       if (!response.ok) {
-        const body = (await response.text()).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
+        const bodyReadStartedAt = Date.now();
+        let responseText: string;
+        try {
+          responseText = await response.text();
+        } finally {
+          diagnosticFields = { ...diagnosticFields, bodyReadMs: Date.now() - bodyReadStartedAt };
+        }
+        const responseBytes = new TextEncoder().encode(responseText).byteLength;
+        const body = responseText.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
+        diagnosticFields = { ...diagnosticFields, bodyBytes: responseBytes };
         throw new OverpassHttpError(response.status, `Overpass returned HTTP ${response.status}${body ? `: ${body}` : ""}`);
       }
-      const json: unknown = await response.json();
+      const bodyReadStartedAt = Date.now();
+      let responseText: string;
+      try {
+        responseText = await response.text();
+      } finally {
+        diagnosticFields = { ...diagnosticFields, bodyReadMs: Date.now() - bodyReadStartedAt };
+      }
+      diagnosticFields = { ...diagnosticFields, bodyBytes: new TextEncoder().encode(responseText).byteLength };
+      const jsonParseStartedAt = Date.now();
+      let json: unknown;
+      try {
+        json = JSON.parse(responseText) as unknown;
+        diagnosticFields = { ...diagnosticFields, jsonParseOutcome: "success" };
+      } catch {
+        diagnosticFields = { ...diagnosticFields, jsonParseOutcome: "invalid" };
+        throw new Error("Malformed Overpass JSON response");
+      } finally {
+        diagnosticFields = { ...diagnosticFields, jsonParseMs: Date.now() - jsonParseStartedAt };
+      }
       const parsedWays = parseOverpassWays(json);
       counters.requestsSucceeded += 1;
+      diagnosticFields = { ...diagnosticFields, outcome: "success" };
       cache.set(key, { expiresAt: Date.now() + CACHE_TTL_MS, ways: parsedWays });
       while (cache.size > MAX_CACHE_ENTRIES) {
         const oldestKey = cache.keys().next().value;
@@ -397,23 +483,59 @@ async function getCachedWays(
       return { ways: parsedWays, cacheHit: false };
     } catch (error) {
       counters.requestsFailed += 1;
+      const abortReason = getAbortDiagnosticReason(diagnostics!, signal);
+      const attemptAborted = error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
+      const outcome: GeoDiagnosticOutcome = error instanceof OverpassHttpError
+        ? "http_failure"
+        : abortReason === "deadline" ? "deadline"
+          : attemptAborted || abortReason === "client_cancelled" ? "abort"
+            : diagnosticFields.httpStatus !== null ? "response_failure" : "network_error";
+      diagnosticFields = {
+        ...diagnosticFields,
+        outcome,
+        abortReason: abortReason === "deadline" ? "deadline" : abortReason === "client_cancelled" ? "client_cancelled" : attemptAborted ? "attempt_timeout" : abortReason === "unknown" ? "unknown" : null,
+      };
       throw error;
+    } finally {
+      if (diagnosticFields.fetchElapsedMs === null) diagnosticFields = { ...diagnosticFields, fetchElapsedMs: Date.now() - fetchStartedAt };
     }
-  }, signal);
+  }, signal, (waited) => { queueWaitMs = waited; diagnosticFields = { ...diagnosticFields, queueWaitMs: waited }; });
+  } catch (error) {
+    if (diagnosticFields.fetchStartedAfterRequestMs === null) {
+      const detectedAbortReason = getAbortDiagnosticReason(diagnostics!, signal);
+      const abortReason = wasNotSent(error) && !detectedAbortReason ? "unknown" : detectedAbortReason;
+      diagnosticFields = {
+        ...diagnosticFields,
+        outcome: abortReason === "deadline" ? "deadline" : abortReason ? "abort" : "response_failure",
+        abortReason: abortReason === "deadline" ? "deadline" : abortReason === "client_cancelled" ? "client_cancelled" : abortReason === "unknown" ? "unknown" : null,
+      };
+    }
+    throw error;
+  } finally {
+    diagnostics?.recordAttempt({ ...diagnosticFields, queueWaitMs: diagnosticFields.fetchStartedAfterRequestMs === null ? Math.max(queueWaitMs, Date.now() - queuedAt) : queueWaitMs });
+  }
 }
 
-function scheduleOverpassRequest<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+function emptyAttemptDiagnostic(attempt: number, depth: number, boxCount: number, queryBytes: number, queueWaitMs: number, outcome: GeoDiagnosticOutcome): GeoAttemptDiagnostic {
+  return {
+    attempt, depth, boxCount, queryBytes, queueWaitMs, cacheStatus: "miss",
+    fetchStartedAfterRequestMs: null, fetchElapsedMs: null, outcome, httpStatus: null,
+    bodyReadMs: null, bodyBytes: null, jsonParseMs: null, jsonParseOutcome: "not_applicable" as const, abortReason: null,
+  };
+}
+
+function scheduleOverpassRequest<T>(operation: () => Promise<T>, signal?: AbortSignal, onStarted?: (queueWaitMs: number) => void): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     if (signal?.aborted) {
-      reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+      reject(new UnsentOverpassRequestError(signal.reason));
       return;
     }
-    const queued: QueuedOverpassRequest = { operation, resolve: resolve as (value: unknown) => void, reject, signal };
+    const queued: QueuedOverpassRequest = { operation, resolve: resolve as (value: unknown) => void, reject, signal, enqueuedAt: Date.now(), onStarted };
     queued.onAbort = () => {
       const queuedIndex = pendingRequests.indexOf(queued);
       if (queuedIndex >= 0) {
         pendingRequests.splice(queuedIndex, 1);
-        reject(signal?.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+        reject(new UnsentOverpassRequestError(signal?.reason));
         if (pendingRequests.length === 0 && requestTimer !== undefined) {
           clearTimeout(requestTimer);
           requestTimer = undefined;
@@ -444,12 +566,13 @@ function startQueuedRequests() {
   if (!request) return;
   request.signal?.removeEventListener("abort", request.onAbort!);
   if (request.signal?.aborted) {
-    request.reject(request.signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+    request.reject(new UnsentOverpassRequestError(request.signal.reason));
     startQueuedRequests();
     return;
   }
   activeRequests += 1;
   lastRequestStartedAt = Date.now();
+  request.onStarted?.(Math.max(0, lastRequestStartedAt - request.enqueuedAt));
   void request.operation().then(request.resolve, request.reject).finally(() => {
     activeRequests -= 1;
     startQueuedRequests();

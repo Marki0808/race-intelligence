@@ -237,8 +237,9 @@ test("adaptive retrieval preserves completed ranges and stops retries when its e
     );
     assert.equal(result.successes.length, 1);
     assert.ok(result.failures.every(({ category }) => category === "timeout"));
-    assert.ok(result.failures.some(({ query }) => query.id === "slowa"));
-    assert.ok(result.failures.some(({ query }) => query.id === "slowb"));
+    assert.deepEqual(result.unattempted.map(({ id }) => id), ["slowa", "slowb"]);
+    assert.equal(result.failures.some(({ query }) => query.id === "slowa" || query.id === "slowb"), false);
+    assert.equal(result.failureCounts.timeout, 1, "only the actually executed slow task counts as a timeout");
     assert.equal(executeCount, 2);
     assert.ok(Date.now() - startedAt < 500, "budget should settle the hanging request promptly");
   } finally {
@@ -269,6 +270,36 @@ test("Overpass request budget aborts a slow provider response and returns unknow
   } finally {
     clearTimeout(timer);
   }
+});
+
+test("geo retrieval logs safely distinguish network errors, invalid JSON, and body-read failures", async (context) => {
+  const originalFetch = globalThis.fetch;
+  const originalInfo = console.info;
+  const logs = [];
+  context.after(() => { globalThis.fetch = originalFetch; console.info = originalInfo; });
+  console.info = (...args) => logs.push(args);
+  let requests = 0;
+  globalThis.fetch = async () => {
+    requests += 1;
+    if (requests === 1) throw new TypeError("SENSITIVE_NETWORK_ERROR");
+    if (requests <= 3) return overpassResponse([]);
+    if (requests === 4) return new Response("SENSITIVE_MALFORMED_RESPONSE", { status: 200 });
+    return new Response(new ReadableStream({ start(controller) { controller.error(new Error("SENSITIVE_BODY_READ_ERROR")); } }), { status: 200 });
+  };
+
+  const networkResult = await enrichRouteWithOsm(makeLongRoute(4, 60));
+  assert.equal(networkResult.retrieval?.requestsSent, 3);
+  assert.equal(networkResult.retrieval?.requestsSucceeded, 2);
+  const malformedResult = await enrichRouteWithOsm(makeLongRoute(4, 90));
+  const bodyFailureResult = await enrichRouteWithOsm(makeLongRoute(4, 120));
+  assert.equal(malformedResult.retrieval?.requestsFailed, 1);
+  assert.equal(bodyFailureResult.retrieval?.requestsFailed, 1);
+
+  const serialized = JSON.stringify(logs);
+  assert.match(serialized, /"outcome":"network_error"/);
+  assert.match(serialized, /"jsonParseOutcome":"invalid"/);
+  assert.match(serialized, /"outcome":"response_failure"/);
+  assert.doesNotMatch(serialized, /SENSITIVE_|60\.00|90\.00|120\.00|latitude|longitude/i);
 });
 
 test("repeated upstream 504 responses cannot extend retrieval beyond the request budget", async (context) => {
@@ -531,6 +562,8 @@ test("the route API returns matched OSM evidence and a non-cacheable API respons
   assert.equal(body.availability, "available");
   assert.equal(body.matchedRoutePercent, 100);
   assert.equal(body.segments[0].surface.value, "gravel");
+  assert.equal("requestId" in body, false);
+  assert.equal("diagnostics" in body, false);
 });
 
 test("one short-route query returns OSM evidence through the existing match layer", async (context) => {
@@ -600,6 +633,8 @@ test("all corridor failures remain unknown and do not fabricate evidence", async
   assert.equal(result.retrieval.retrievalCoveragePercent, 0);
   assert.equal(result.retrieval.requestsFailed, calls);
   assert.ok(result.retrieval.failureCounts.otherTransient > 0);
+  assert.equal(result.retrieval.failureCounts.timeout, 0, "queued child queries that were never sent are not provider timeouts");
+  assert.ok(result.retrieval.unavailableRanges.length > 0);
   assert.match(result.note, /currently unavailable/);
 });
 
