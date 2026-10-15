@@ -15,6 +15,9 @@ const MAX_ROUTE_POINTS = 20_000;
 const MIN_REQUEST_INTERVAL_MS = 2_000;
 const MAX_CONCURRENT_REQUESTS = 2;
 const MAX_REQUESTS_PER_DAY = 90;
+/** Leave room inside the route's 30s platform limit for parsing and response serialization. */
+export const GEO_ENRICHMENT_REQUEST_BUDGET_MS = 20_000;
+const OVERPASS_ATTEMPT_TIMEOUT_MS = 9_000;
 export const MAX_CORRIDOR_BOXES_PER_QUERY = 8;
 export const MAX_CORRIDOR_QUERIES_PER_ROUTE = 6;
 const MAX_CORRIDOR_WINDOWS_PER_ROUTE = MAX_CORRIDOR_BOXES_PER_QUERY * MAX_CORRIDOR_QUERIES_PER_ROUTE;
@@ -24,7 +27,14 @@ export const MAX_OVERPASS_ATTEMPTS_PER_ROUTE = MAX_CORRIDOR_QUERIES_PER_ROUTE + 
 const ADAPTIVE_WINDOW_PADDING_DEGREES = 0.003;
 const cache = new Map<string, { expiresAt: number; ways: OSMWayFeature[] }>();
 const requestTimestamps: number[] = [];
-const pendingRequests: Array<() => Promise<void>> = [];
+type QueuedOverpassRequest = {
+  operation: () => Promise<unknown>;
+  resolve: (value: unknown) => void;
+  reject: (reason: unknown) => void;
+  signal?: AbortSignal;
+  onAbort?: () => void;
+};
+const pendingRequests: QueuedOverpassRequest[] = [];
 let activeRequests = 0;
 let lastRequestStartedAt = 0;
 let requestTimer: ReturnType<typeof setTimeout> | undefined;
@@ -78,11 +88,11 @@ export function createOverpassCorridorQueries(points: GeoRoutePoint[]): Overpass
 /** Deterministic, bounded retry orchestration shared by the live service and fixture tests. */
 export async function runAdaptiveRetrieval<Query, Value>(
   initialQueries: Query[],
-  execute: (query: Query) => Promise<Value>,
+  execute: (query: Query, signal?: AbortSignal) => Promise<Value>,
   subdivide: (query: Query) => Query[],
   isRetryable: (error: unknown) => RetrievalFailureCategory | null,
   getRange: (query: Query) => GeoDistanceRange,
-  options: { maxAttempts: number; maxDepth: number },
+  options: { maxAttempts: number; maxDepth: number; signal?: AbortSignal },
 ): Promise<AdaptiveQueryResult<Query, Value>> {
   type Task = { query: Query; depth: number };
   let pending: Task[] = initialQueries.map((query) => ({ query, depth: 0 }));
@@ -99,6 +109,11 @@ export async function runAdaptiveRetrieval<Query, Value>(
   let attempts = 0;
 
   while (pending.length > 0) {
+    if (options.signal?.aborted) {
+      failures.push(...pending.map(({ query }) => ({ query, category: "timeout" as const, attempted: false })));
+      failureCounts.timeout += pending.length;
+      break;
+    }
     const available = Math.max(0, options.maxAttempts - attempts);
     if (available === 0) {
       failures.push(...pending.map(({ query }) => ({ query, category: "budgetExhausted" as const, attempted: false })));
@@ -111,7 +126,7 @@ export async function runAdaptiveRetrieval<Query, Value>(
     failures.push(...skipped.map(({ query }) => ({ query, category: "budgetExhausted" as const, attempted: false })));
     failureCounts.budgetExhausted += skipped.length;
     attempts += batch.length;
-    const results = await Promise.allSettled(batch.map(({ query }) => execute(query)));
+    const results = await Promise.allSettled(batch.map(({ query }) => execute(query, options.signal)));
     const next: Task[] = [];
 
     results.forEach((result, index) => {
@@ -198,7 +213,8 @@ export function mergeOsmWays(groups: OSMWayFeature[][]): OSMWayFeature[] {
   return [...unique.values()].sort((a, b) => a.id - b.id);
 }
 
-export async function enrichRouteWithOsm(points: GeoRoutePoint[]) {
+export async function enrichRouteWithOsm(points: GeoRoutePoint[], options: { signal?: AbortSignal } = {}) {
+  const signal = options.signal ?? AbortSignal.timeout(GEO_ENRICHMENT_REQUEST_BUDGET_MS);
   if (points.length < 2 || points.length > MAX_ROUTE_POINTS) {
     return createUnknownGeoEnrichment("The route geometry was outside the supported matching limits.");
   }
@@ -211,11 +227,11 @@ export async function enrichRouteWithOsm(points: GeoRoutePoint[]) {
   const requestCounts = { requestsSent: 0, requestsSucceeded: 0, requestsFailed: 0, cacheHits: 0 };
   const retrieval = await runAdaptiveRetrieval(
     queries,
-    (query) => getCachedWays(query.boxes, requestCounts),
+    (query, requestSignal) => getCachedWays(query.boxes, requestCounts, requestSignal),
     (query) => subdivideOverpassCorridorQuery(query, route),
     classifyRetryableOverpassError,
     (query) => ({ startDistanceKm: query.startDistanceKm, endDistanceKm: query.endDistanceKm, segmentIndex: query.segmentIndex }),
-    { maxAttempts: MAX_OVERPASS_ATTEMPTS_PER_ROUTE, maxDepth: MAX_ADAPTIVE_SUBDIVISION_DEPTH },
+    { maxAttempts: MAX_OVERPASS_ATTEMPTS_PER_ROUTE, maxDepth: MAX_ADAPTIVE_SUBDIVISION_DEPTH, signal },
   );
   const successfulGroups = retrieval.successes.map(({ value }) => value.ways);
   const retrievedRanges = mergeDistanceRanges(retrieval.successes.map(({ query }) => ({
@@ -331,6 +347,7 @@ type RouteBoundingBox = RouteCorridorWindow["box"];
 async function getCachedWays(
   boxes: RouteBoundingBox[],
   counters: { requestsSent: number; requestsSucceeded: number; requestsFailed: number; cacheHits: number },
+  signal?: AbortSignal,
 ) {
   const key = boxes.map((box) => Object.values(box).map((value) => value.toFixed(3)).join(",")).join(";");
   const cached = cache.get(key);
@@ -360,7 +377,9 @@ async function getCachedWays(
           "User-Agent": "RaceScope Geo Enrichment prototype (local GPX route matching)",
         },
         body: new URLSearchParams({ data: query }),
-        signal: AbortSignal.timeout(9_000),
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(OVERPASS_ATTEMPT_TIMEOUT_MS)])
+          : AbortSignal.timeout(OVERPASS_ATTEMPT_TIMEOUT_MS),
       });
       if (!response.ok) {
         const body = (await response.text()).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
@@ -380,18 +399,30 @@ async function getCachedWays(
       counters.requestsFailed += 1;
       throw error;
     }
-  });
+  }, signal);
 }
 
-function scheduleOverpassRequest<T>(operation: () => Promise<T>): Promise<T> {
+function scheduleOverpassRequest<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    pendingRequests.push(async () => {
-      try {
-        resolve(await operation());
-      } catch (error) {
-        reject(error);
+    if (signal?.aborted) {
+      reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+      return;
+    }
+    const queued: QueuedOverpassRequest = { operation, resolve: resolve as (value: unknown) => void, reject, signal };
+    queued.onAbort = () => {
+      const queuedIndex = pendingRequests.indexOf(queued);
+      if (queuedIndex >= 0) {
+        pendingRequests.splice(queuedIndex, 1);
+        reject(signal?.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+        if (pendingRequests.length === 0 && requestTimer !== undefined) {
+          clearTimeout(requestTimer);
+          requestTimer = undefined;
+        }
+        startQueuedRequests();
       }
-    });
+    };
+    signal?.addEventListener("abort", queued.onAbort, { once: true });
+    pendingRequests.push(queued);
     startQueuedRequests();
   });
 }
@@ -411,9 +442,15 @@ function startQueuedRequests() {
 
   const request = pendingRequests.shift();
   if (!request) return;
+  request.signal?.removeEventListener("abort", request.onAbort!);
+  if (request.signal?.aborted) {
+    request.reject(request.signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+    startQueuedRequests();
+    return;
+  }
   activeRequests += 1;
   lastRequestStartedAt = Date.now();
-  void request().finally(() => {
+  void request.operation().then(request.resolve, request.reject).finally(() => {
     activeRequests -= 1;
     startQueuedRequests();
   });

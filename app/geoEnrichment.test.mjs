@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createGeoEnrichment, getRouteBoundingBoxes, getRouteCorridorWindows, isUsefulBoundingBox, normalizeOsmTags, thinRouteForMatching } from "./geoEnrichment.ts";
 import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis.ts";
-import { buildOverpassQuery, createOverpassCorridorQueries, enrichRouteWithOsm, MAX_ADAPTIVE_RETRIES_PER_ROUTE, MAX_ADAPTIVE_SUBDIVISION_DEPTH, MAX_CORRIDOR_BOXES_PER_QUERY, MAX_CORRIDOR_QUERIES_PER_ROUTE, MAX_OVERPASS_ATTEMPTS_PER_ROUTE, mergeOsmWays, parseOverpassWays, runAdaptiveRetrieval, subdivideOverpassCorridorQuery } from "./geoEnrichmentService.ts";
+import { buildOverpassQuery, createOverpassCorridorQueries, enrichRouteWithOsm, GEO_ENRICHMENT_REQUEST_BUDGET_MS, MAX_ADAPTIVE_RETRIES_PER_ROUTE, MAX_ADAPTIVE_SUBDIVISION_DEPTH, MAX_CORRIDOR_BOXES_PER_QUERY, MAX_CORRIDOR_QUERIES_PER_ROUTE, MAX_OVERPASS_ATTEMPTS_PER_ROUTE, mergeOsmWays, parseOverpassWays, runAdaptiveRetrieval, subdivideOverpassCorridorQuery } from "./geoEnrichmentService.ts";
 import { POST as postGeoEnrichment } from "./api/geo-enrichment/route.ts";
 import { aggregateTerrainEvidenceV3 } from "./terrainAggregationV3.ts";
 import { attachTerrainEvidenceToRouteSections } from "./routeEvidenceAdapter.ts";
@@ -212,6 +212,107 @@ test("adaptive fixture results are deterministic for the same responses", async 
   const first = await retrieve();
   const second = await retrieve();
   assert.deepEqual(second, first);
+});
+
+test("adaptive retrieval preserves completed ranges and stops retries when its end-to-end budget expires", async () => {
+  const controller = new AbortController();
+  let executeCount = 0;
+  const startedAt = Date.now();
+  const timer = setTimeout(() => controller.abort(new DOMException("The operation timed out.", "TimeoutError")), 40);
+  try {
+    const result = await runAdaptiveRetrieval(
+      [queryRange("completed", 0, 5), queryRange("slow", 5, 10)],
+      async (query, signal) => {
+        executeCount += 1;
+        if (query.id === "completed") return ["cached-or-fetched"];
+        return new Promise((resolve, reject) => {
+          if (signal?.aborted) reject(signal.reason);
+          else signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+      splitQueryRange,
+      (error) => error?.name === "TimeoutError" || error?.name === "AbortError" ? "timeout" : null,
+      rangeOf,
+      { maxAttempts: 18, maxDepth: 2, signal: controller.signal },
+    );
+    assert.equal(result.successes.length, 1);
+    assert.ok(result.failures.every(({ category }) => category === "timeout"));
+    assert.ok(result.failures.some(({ query }) => query.id === "slowa"));
+    assert.ok(result.failures.some(({ query }) => query.id === "slowb"));
+    assert.equal(executeCount, 2);
+    assert.ok(Date.now() - startedAt < 500, "budget should settle the hanging request promptly");
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
+test("Overpass request budget aborts a slow provider response and returns unknown evidence without fabricated samples", async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => { globalThis.fetch = originalFetch; });
+  const controller = new AbortController();
+  const startedAt = Date.now();
+  const timer = setTimeout(() => controller.abort(new DOMException("The operation timed out.", "TimeoutError")), 60);
+  let requests = 0;
+  globalThis.fetch = async (_url, init) => {
+    requests += 1;
+    return new Promise((_resolve, reject) => {
+      init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+    });
+  };
+  try {
+    const data = await enrichRouteWithOsm(makeLongRoute(4), { signal: controller.signal });
+    assert.equal(data.availability, "unknown");
+    assert.equal(data.segments.length, 0);
+    assert.equal(data.retrieval?.requestsSent, requests);
+    assert.ok(data.retrieval?.failureCounts.timeout >= 1);
+    assert.ok(Date.now() - startedAt < 500, "provider timeout must stay inside the request budget");
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
+test("repeated upstream 504 responses cannot extend retrieval beyond the request budget", async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => { globalThis.fetch = originalFetch; });
+  const controller = new AbortController();
+  const startedAt = Date.now();
+  // Earlier tests can leave the global provider-spacing queue cooling down for up to two seconds.
+  const timer = setTimeout(() => controller.abort(new DOMException("The operation timed out.", "TimeoutError")), 4_000);
+  let requests = 0;
+  globalThis.fetch = async () => {
+    requests += 1;
+    return new Response("temporary upstream failure", { status: 504 });
+  };
+  try {
+    const data = await enrichRouteWithOsm(makeLongRoute(36, 12), { signal: controller.signal });
+    assert.equal(data.availability, "unknown");
+    assert.equal(data.segments.length, 0);
+    assert.ok(requests <= MAX_OVERPASS_ATTEMPTS_PER_ROUTE);
+    assert.equal(data.retrieval?.requestsSent, requests);
+    assert.ok(data.retrieval?.failureCounts.http504 >= 1);
+    assert.ok(Date.now() - startedAt < 4_500);
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
+test("production Geo Enrichment request budget stays below its configured function duration", () => {
+  assert.equal(GEO_ENRICHMENT_REQUEST_BUDGET_MS, 20_000);
+  assert.ok(GEO_ENRICHMENT_REQUEST_BUDGET_MS < 30_000);
+});
+
+test("Geo Enrichment API returns a controlled timeout when the request budget expires while reading the body", async () => {
+  const controller = new AbortController();
+  controller.abort(new DOMException("The operation timed out.", "TimeoutError"));
+  const request = new Request("http://localhost/api/geo-enrichment", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ points: [] }),
+    signal: controller.signal,
+  });
+  const response = await postGeoEnrichment(request);
+  assert.equal(response.status, 504);
+  assert.deepEqual(await response.json(), { error: "Geo enrichment request timed out." });
 });
 
 test("normalizes OSM tags without collapsing their meanings or provenance", () => {
@@ -490,14 +591,15 @@ test("all corridor failures remain unknown and do not fabricate evidence", async
   let calls = 0;
   globalThis.fetch = async () => { calls += 1; return new Response("temporary failure", { status: 503 }); };
   context.after(() => { globalThis.fetch = originalFetch; });
-  const result = await enrichRouteWithOsm(routePoints);
-  assert.equal(calls, 14);
+  const result = await enrichRouteWithOsm(routePoints, { signal: AbortSignal.timeout(5_000) });
+  assert.ok(calls > 0 && calls < 14, "overall deadline should stop optional retries before platform timeout");
   assert.ok(calls <= MAX_OVERPASS_ATTEMPTS_PER_ROUTE);
   assert.equal(result.availability, "unknown");
   assert.equal(result.matchedRoutePercent, 0);
   assert.equal(result.segments.length, 0);
   assert.equal(result.retrieval.retrievalCoveragePercent, 0);
-  assert.equal(result.retrieval.requestsFailed, 14);
+  assert.equal(result.retrieval.requestsFailed, calls);
+  assert.ok(result.retrieval.failureCounts.otherTransient > 0);
   assert.match(result.note, /currently unavailable/);
 });
 

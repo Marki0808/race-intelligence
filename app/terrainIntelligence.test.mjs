@@ -263,6 +263,20 @@ test("terrain section UI states distinguish not checked, loading, unavailable an
     assert.equal(view.surface.unknownLabel, "Unknown: ~0.1 km · 100% of section");
     assert.ok(view.surface.reasons.some((reason) => /Map data was unavailable/.test(reason)));
   }
+  const timedOutData = createUnknownGeoEnrichment("ignored provider detail");
+  timedOutData.retrieval = {
+    queryAttempts: 2, requestsSent: 1, requestsSucceeded: 0, requestsFailed: 1, cacheHits: 0,
+    retrievalCoveragePercent: 0, retrievedRanges: [], unavailableRanges: [{ startDistanceKm: 0, endDistanceKm: 0.1, segmentIndex: 0 }],
+    failureCounts: { http429: 0, http504: 0, timeout: 1, otherTransient: 0, permanent: 0, budgetExhausted: 0 },
+  };
+  const [timedOutSection] = attachTerrainEvidenceToRouteSections([bare], timedOutData);
+  const timeoutView = getTerrainSectionPresentation(timedOutSection, "ready");
+  assert.equal(timeoutView.status, "available");
+  if (timeoutView.status === "available") {
+    assert.equal(timeoutView.surface.categories.length, 0);
+    assert.equal(timeoutView.surface.unknownLabel, "Unknown: ~0.1 km · 100% of section");
+    assert.ok(timeoutView.surface.reasons.includes("Map data was unavailable for some distance"));
+  }
   const wrongBounds = { ...unavailable, terrainIntelligenceV1: { ...unavailable.terrainIntelligenceV1, sectionBounds: { ...unavailable.terrainIntelligenceV1.sectionBounds, lengthM: 99 } } };
   assert.equal(getTerrainSectionPresentation(wrongBounds, "ready").status, "unsupported");
 });
