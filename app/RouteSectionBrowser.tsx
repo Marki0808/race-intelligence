@@ -179,8 +179,9 @@ function SectionDetail({
             <p className="text-sm font-medium text-black/70">{surface.coverageLabel}</p>
             <p className="mt-3 text-xs text-black/45">{surface.distributionLabel}</p>
             <ul className="mt-2 grid grid-cols-1 gap-x-6 gap-y-1.5 text-sm text-black/60 sm:grid-cols-2">
-              {surface.categories.map((item) => <li key={item.label} className="flex min-w-0 justify-between gap-3"><span className="truncate">{item.label}</span><span className="shrink-0 tabular-nums">{item.sharePercent}%</span></li>)}
+              {surface.categories.map((item) => <li key={item.label} className="flex min-w-0 justify-between gap-3"><span className="truncate">{item.label}</span><span className="shrink-0 tabular-nums">{item.distanceLabel ? `${item.distanceLabel} · ${item.sharePercent}%` : `${item.sharePercent}%`}</span></li>)}
             </ul>
+            {surface.unknownLabel && <p className="mt-2 text-xs text-black/45">{surface.unknownLabel}</p>}
             <p className="mt-3 text-[11px] text-black/35">© OpenStreetMap contributors</p>
           </div>
         ) : <p className="mt-2 text-sm text-black/45">{surface.message}</p>}

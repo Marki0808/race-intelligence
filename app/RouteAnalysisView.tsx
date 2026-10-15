@@ -43,7 +43,7 @@ export default function RouteAnalysisView({
 }) {
   const [selectedMoment, setSelectedMoment] = useState<string | null>(null);
   const [selectedSectionKey, setSelectedSectionKey] = useState<string | null>(null);
-  const [geoEvidence, setGeoEvidence] = useState<GeoEnrichmentData | null>(() => sharedCache?.osm?.mergedData ?? null);
+  const [geoEvidence, setGeoEvidence] = useState<GeoEnrichmentData | null>(() => sharedCache?.osm ? withOsmConflicts(sharedCache.osm) : null);
   const [geoLoading, setGeoLoading] = useState(false);
   const [mapillaryEvidence, setMapillaryEvidence] = useState<MapillaryTerrainProofData | null>(() => sharedCache?.mapillary
     ? mapMapillaryEvidenceToSections(sharedCache.mapillary, analysis.routeSections)
@@ -84,7 +84,7 @@ export default function RouteAnalysisView({
           });
           if (sharedResult.osm) {
             const record = isPersistedOsm(sharedResult.osm) ? sharedResult.osm : null;
-            setGeoEvidence(record?.mergedData ?? sharedResult.osm as GeoEnrichmentData);
+            setGeoEvidence(record ? withOsmConflicts(record) : sharedResult.osm as GeoEnrichmentData);
           }
           if (sharedResult.mapillary) {
             const record = isPersistedMapillary(sharedResult.mapillary) ? sharedResult.mapillary : null;
@@ -109,7 +109,7 @@ export default function RouteAnalysisView({
         }
       } catch { /* Persistence is optional; continue with live requests. */ }
 
-      if (!shouldRefresh && cachedOsm?.classifiableRanges.length) setGeoEvidence(cachedOsm.mergedData);
+      if (!shouldRefresh && cachedOsm?.classifiableRanges.length) setGeoEvidence(withOsmConflicts(cachedOsm));
         if (!shouldRefresh && cachedMapillary && hasReusableMapillaryEvidence(cachedMapillary)) {
         setMapillaryEvidence(mapMapillaryEvidenceToSections(cachedMapillary, analysis.routeSections));
       }
@@ -136,10 +136,10 @@ export default function RouteAnalysisView({
             setGeoEvidence(osmResult);
           } else {
             const merged = await cacheOsmEnrichment(browserRoutePersistence, routeFingerprint.routeFingerprint, osmResult, analysis.metrics.distanceKm, { routeFingerprintVersion: routeFingerprint.routeFingerprintVersion });
-            setGeoEvidence(merged.mergedData);
+            setGeoEvidence(withOsmConflicts(merged));
           }
         } catch {
-          setGeoEvidence(cachedOsm?.mergedData ?? osmResult);
+          setGeoEvidence(cachedOsm ? withOsmConflicts(cachedOsm) : osmResult);
         }
       }
       if (imageryResult) {
@@ -228,6 +228,10 @@ function unknownMapillaryEvidence(requests: ReturnType<typeof buildMapillaryRequ
 
 function isPersistedOsm(value: PersistedOsmEnrichmentRecord | GeoEnrichmentData): value is PersistedOsmEnrichmentRecord {
   return "mergedData" in value;
+}
+
+function withOsmConflicts(record: PersistedOsmEnrichmentRecord): GeoEnrichmentData {
+  return { ...record.mergedData, conflicts: record.conflicts };
 }
 
 function isPersistedMapillary(value: PersistedMapillaryEnrichmentRecord | MapillaryTerrainProofData): value is PersistedMapillaryEnrichmentRecord {

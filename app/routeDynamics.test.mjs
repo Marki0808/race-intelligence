@@ -473,7 +473,7 @@ test("OSM evidence attaches by overlap without defining Route Section boundaries
     ...geo, availability: "unknown", segments: [],
   })[0];
   assert.deepEqual(getSurfaceEvidencePresentation(noEvidence, true), {
-    status: "missing", message: "No reliable mapped surface evidence for this section.",
+    status: "missing", message: "No mapped surface tags could be assigned. OpenStreetMap retrieval was unavailable.",
   });
   assert.equal(noEvidence.distanceKm, route.sections[0].distanceKm);
   assert.equal(noEvidence.dominantRhythm, route.sections[0].dominantRhythm);

@@ -17,11 +17,41 @@ export type SurfaceEvidencePresentation =
       coveragePercent: number;
       coverageLabel: string;
       distributionLabel: string;
-      categories: Array<{ label: string; sharePercent: number }>;
+      categories: Array<{ label: string; sharePercent: number; distanceLabel?: string }>;
+      unknownLabel?: string;
     };
 
 export function getSurfaceEvidencePresentation(section: RouteSection, requested: boolean): SurfaceEvidencePresentation {
   if (!requested) return { status: "not-requested", message: "Not checked yet." };
+  const terrainV1 = section.terrainIntelligenceV1;
+  if (terrainV1) {
+    const surface = terrainV1.fields.surface;
+    const lengthM = terrainV1.sectionBounds.lengthM;
+    const supportedM = surface.usableTagCoverage.distanceM ?? 0;
+    const unknownM = surface.unknownDistanceM;
+    const categoryTotalM = surface.categories.reduce((sum, item) => sum + item.supportedDistanceM, 0);
+    if (supportedM <= 0 || surface.categories.length === 0) {
+      const reasons = surface.unknownReasons.map(({ reason }) => unknownReasonLabel(reason));
+      return {
+        status: "missing",
+        message: reasons.length
+          ? `No mapped surface tags could be assigned. ${[...new Set(reasons)].join("; ")}.`
+          : "No mapped surface tags could be assigned to this section.",
+      };
+    }
+    return {
+      status: "mapped",
+      coveragePercent: lengthM > 0 ? supportedM / lengthM * 100 : 0,
+      coverageLabel: `Mapped OSM surface tags · approximately ${formatEvidenceDistance(supportedM)} of ${formatEvidenceDistance(lengthM)}`,
+      distributionLabel: "Surface tags among supported distance · approximate",
+      categories: surface.categories.map((item) => ({
+        label: terrainV1SurfaceLabel(item.category),
+        sharePercent: categoryTotalM > 0 ? Math.round(item.supportedDistanceM / categoryTotalM * 100) : 0,
+        distanceLabel: `~${formatEvidenceDistance(item.supportedDistanceM)}`,
+      })),
+      ...(unknownM > 0 ? { unknownLabel: `Surface unknown for approximately ${formatEvidenceDistance(unknownM)} of the section.` } : {}),
+    };
+  }
   const coveragePercent = section.terrainEvidenceCoveragePercent ?? 0;
   const evidence = section.terrainEvidence ?? [];
   const exactCoveragePercent = section.terrainEvidenceExactCoveragePercent ?? coveragePercent;
@@ -41,6 +71,42 @@ export function getSurfaceEvidencePresentation(section: RouteSection, requested:
       sharePercent: evidenceSharePercent,
     })),
   };
+}
+
+function formatEvidenceDistance(distanceM: number) {
+  return `${(distanceM / 1000).toFixed(1)} km`;
+}
+
+function terrainV1SurfaceLabel(category: string) {
+  const labels: Record<string, string> = {
+    paved: "Paved",
+    gravel: "Gravel",
+    "fine-gravel": "Fine gravel",
+    dirt: "Dirt",
+    earth: "Earth",
+    ground: "Ground",
+    rock: "Rock",
+    stone: "Stone",
+    unpaved: "Unpaved",
+    grass: "Grass",
+    mud: "Mud",
+    sand: "Sand",
+    woodchips: "Woodchips",
+  };
+  return labels[category] ?? category;
+}
+
+function unknownReasonLabel(reason: string) {
+  const labels: Record<string, string> = {
+    "not-requested": "Surface evidence was not requested",
+    "provider-unavailable": "OpenStreetMap retrieval was unavailable",
+    "no-matching-way": "No nearby OSM way matched the route sample",
+    "matched-way-without-tag": "Matched OSM way has no surface tag",
+    "ambiguous-or-conflicting-match": "Nearby or persisted OSM evidence conflicts",
+    "unsupported-tag-value": "Surface tag value is not classified",
+    "insufficient-sampling": "Route sampling does not support an interval estimate",
+  };
+  return labels[reason] ?? "Surface evidence is unknown";
 }
 
 export type RouteImageryPresentation =

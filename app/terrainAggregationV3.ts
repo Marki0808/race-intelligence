@@ -56,6 +56,9 @@ export function aggregateTerrainEvidenceV3(data: GeoEnrichmentData): TerrainAggr
 
   return {
     ...v2,
+    // Aggregation runs per component, but callers such as the Route Section adapter
+    // must resolve source segment IDs from the complete original evidence set.
+    rawEvidence: data,
     version: 3,
     availability: v2s.some((result) => result.availability === "available") ? "available" : v2s.some((result) => result.availability === "unknown") ? "unknown" : v2.availability,
     evidenceCoverage: weightedCoverage(v2s),

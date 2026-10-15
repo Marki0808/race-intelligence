@@ -362,12 +362,29 @@ test("conflicting OSM surface snapshots are retained and winner is deterministic
   await cacheOsmEnrichment(store, "route-a", geoData(0, 4, "gravel"), 10, { now: 1 });
   const record = await cacheOsmEnrichment(store, "route-a", geoData(0, 4, "asphalt"), 10, { now: 2 });
   assert.equal(record.conflicts.length, 1);
-  assert.deepEqual(record.conflicts[0].alternatives.map(({ surface }) => surface).sort(), ["asphalt", "gravel"]);
+  assert.equal(record.conflicts[0].field, "surface");
+  assert.deepEqual(record.conflicts[0].alternatives.map(({ value }) => value).sort(), ["asphalt", "gravel"]);
   assert.equal(record.mergedData.segments[0].surface.value, "asphalt");
+});
+
+test("conflicting OSM highway snapshots are retained separately from surface conflicts", async () => {
+  const store = new MemoryStore();
+  const track = geoData(0, 4, "gravel");
+  track.segments[0].pathType = { value: "track", rawValue: "track", provenance: "osm", availability: "available" };
+  track.segments[0].osmWays[0].tags.highway = "track";
+  await cacheOsmEnrichment(store, "route-a", track, 10, { now: 1 });
+  const path = geoData(0, 4, "gravel");
+  path.segments[0].pathType = { value: "path", rawValue: "path", provenance: "osm", availability: "available" };
+  path.segments[0].osmWays[0].tags.highway = "path";
+  const record = await cacheOsmEnrichment(store, "route-a", path, 10, { now: 2 });
+  assert.deepEqual(record.conflicts.map(({ field }) => field), ["highway"]);
+  assert.deepEqual(record.conflicts[0].alternatives.map(({ value }) => value).sort(), ["path", "track"]);
+  assert.ok(record.conflicts[0].alternatives.every(({ sourceWays }) => sourceWays.length === 1));
 });
 
 test("OSM schema version is an independent cache key", async () => {
   const store = new MemoryStore();
+  assert.equal(OSM_ENRICHMENT_VERSION, 2);
   await cacheOsmEnrichment(store, "route-a", geoData(0, 2), 10);
   assert.ok(await store.getOsm("route-a", 2, OSM_ENRICHMENT_VERSION));
   assert.equal(await store.getOsm("route-a", 2, OSM_ENRICHMENT_VERSION + 1), null);

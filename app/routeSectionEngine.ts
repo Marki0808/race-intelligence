@@ -1,4 +1,5 @@
 import type { GpxRoutePointData } from "./gpxAnalysis";
+import type { TerrainSectionIntelligenceV1 } from "./terrainIntelligence.ts";
 import {
   DEFAULT_ROUTE_DYNAMICS_CONFIG,
   relativeSignificance,
@@ -121,6 +122,8 @@ export type RouteSection = {
   terrainEvidenceCoveragePercent?: number;
   terrainEvidenceExactCoveragePercent?: number;
   terrainEvidence?: RouteSectionTerrainEvidence[];
+  /** Separate, versioned OSM evidence contract; does not affect section construction. */
+  terrainIntelligenceV1?: TerrainSectionIntelligenceV1;
   mapillaryEvidence?: RouteSectionMapillaryEvidence;
   mapData?: RouteSectionMapPoint[];
 };

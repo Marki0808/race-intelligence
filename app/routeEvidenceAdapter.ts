@@ -2,6 +2,7 @@ import type { GeoEnrichmentData } from "./geoEnrichment.ts";
 import { aggregateTerrainEvidenceV3 } from "./terrainAggregationV3.ts";
 import type { TerrainCategory } from "./terrainAggregation.ts";
 import type { RouteSection, RouteSectionTerrainEvidence } from "./routeSectionEngine.ts";
+import { buildTerrainIntelligenceV1 } from "./terrainIntelligence.ts";
 
 type ClassifiableEvidenceBand = {
   segmentIndex: number;
@@ -20,6 +21,15 @@ export function attachTerrainEvidenceToRouteSections(
 ): RouteSection[] {
   const aggregation = aggregateTerrainEvidenceV3(data);
   const evidenceBands = createClassifiableEvidenceBands(aggregation);
+  // Older in-memory section fixtures/records may not carry exact point bounds.
+  // Keep their legacy evidence presentation working, but never fabricate V1 bounds.
+  const terrainSections = sections.filter((section) => Number.isInteger(section.segmentIndex) && Number.isFinite(section.startPosition?.distanceM) &&
+    Number.isFinite(section.endPosition?.distanceM) &&
+    section.startPosition.segmentIndex === (section.segmentIndex ?? 0) &&
+    section.endPosition.segmentIndex === (section.segmentIndex ?? 0));
+  const hasSampleEvidence = data.segments.length > 0 && data.segments.every((segment) => segment.sampleEvidence !== undefined);
+  const hasVersionedTerrainEvidence = hasSampleEvidence || (data.availability === "unknown" && data.segments.length === 0);
+  const terrainIntelligence = hasVersionedTerrainEvidence ? buildTerrainIntelligenceV1(terrainSections, data) : [];
   return sections.map((section) => {
     const sectionLengthKm = Math.max(0, section.endKm - section.startKm);
     const relevantBands = evidenceBands.filter((band) => band.segmentIndex === (section.segmentIndex ?? 0));
@@ -76,6 +86,7 @@ export function attachTerrainEvidenceToRouteSections(
       terrainEvidenceCoveragePercent: Math.round(terrainEvidenceExactCoveragePercent),
       terrainEvidenceExactCoveragePercent,
       terrainEvidence,
+      terrainIntelligenceV1: terrainIntelligence.find((item) => item.id === section.id && item.segmentIndex === (section.segmentIndex ?? 0))?.terrainIntelligenceV1,
     };
   });
 }

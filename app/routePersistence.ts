@@ -6,7 +6,8 @@ import type { RouteFingerprintResult } from "./routeFingerprint.ts";
 import { ROUTE_FINGERPRINT_VERSION } from "./routeFingerprint.ts";
 
 export const ROUTE_ANALYSIS_VERSION = 4;
-export const OSM_ENRICHMENT_VERSION = 1;
+// V2 adds per-sample match evidence used for conservative distance attribution.
+export const OSM_ENRICHMENT_VERSION = 2;
 export const MAPILLARY_ENRICHMENT_VERSION = 1;
 // Bump analysis independently from route identity; OSM and Mapillary formats have separate lifecycles.
 export const ROUTE_DATABASE_NAME = "race-intelligence-route-cache";
@@ -59,11 +60,16 @@ export type OsmEnrichmentSnapshot = {
 };
 
 export type OsmEvidenceConflict = {
+  field: "surface" | "highway";
   segmentIndex: number;
   startDistanceKm: number;
   endDistanceKm: number;
   selectedSnapshotId: string;
-  alternatives: Array<{ snapshotId: string; surface: string | null }>;
+  alternatives: Array<{
+    snapshotId: string;
+    value: string | null;
+    sourceWays: Array<{ osmWayId: string; rawTags: Record<string, string> }>;
+  }>;
 };
 
 export type PersistedOsmEnrichmentRecord = {
@@ -346,8 +352,16 @@ function mergeSnapshotGeoData(
     id: `cache-${snapshot.snapshotId}-${segment.id}-${index}`,
     startDistanceKm: startKm,
     endDistanceKm: endKm,
+    exactStartDistanceM: startKm * 1000,
+    exactEndDistanceM: endKm * 1000,
     lengthKm: endKm - startKm,
     osmWays: segment.osmWays.map((way) => ({ ...way, segmentIndex, startDistanceKm: startKm, endDistanceKm: endKm })),
+    sampleEvidence: segment.sampleEvidence?.map((sample) => ({
+      ...sample,
+      supportStartDistanceM: Math.max(sample.supportStartDistanceM, startKm * 1000),
+      supportEndDistanceM: Math.min(sample.supportEndDistanceM, endKm * 1000),
+    })).filter((sample) => sample.supportEndDistanceM > sample.supportStartDistanceM),
+    sourceSnapshotIds: [...new Set([...(segment.sourceSnapshotIds ?? []), snapshot.snapshotId])],
   }));
   const matchedKm = segments.reduce((sum, segment) => sum + segment.lengthKm * clamp01(segment.evidenceCoverage), 0);
   const matchedRoutePercent = routeLengthKm > 0 ? Math.round(matchedKm / routeLengthKm * 100) : 0;
@@ -393,7 +407,7 @@ function compareOsmEvidencePieces(
 
 function findOsmEvidenceConflicts(snapshots: OsmEnrichmentSnapshot[], retrievedRanges: GeoDistanceRange[]): OsmEvidenceConflict[] {
   const conflicts: OsmEvidenceConflict[] = [];
-  for (const range of retrievedRanges) {
+  for (const field of ["surface", "highway"] as const) for (const range of retrievedRanges) {
     const segmentIndex = range.segmentIndex ?? 0;
     const boundaries = [...new Set([
       range.startDistanceKm,
@@ -407,16 +421,21 @@ function findOsmEvidenceConflicts(snapshots: OsmEnrichmentSnapshot[], retrievedR
       const startDistanceKm = boundaries[index];
       const endDistanceKm = boundaries[index + 1];
       const active = snapshots.flatMap((snapshot) => snapshot.data.segments
-        .filter((segment) => (segment.segmentIndex ?? 0) === segmentIndex && segment.startDistanceKm < endDistanceKm && segment.endDistanceKm > startDistanceKm && segment.surface.availability === "available")
-        .map((segment) => ({ snapshot, segment })));
-      const alternatives = [...new Map(active.map(({ snapshot, segment }) => [
-        snapshot.snapshotId,
-        { snapshotId: snapshot.snapshotId, surface: segment.surface.value },
-      ])).values()];
-      const surfaceValues = new Set(alternatives.map((alternative) => alternative.surface));
-      if (surfaceValues.size < 2) continue;
+        .filter((segment) => (segment.segmentIndex ?? 0) === segmentIndex && segment.startDistanceKm < endDistanceKm && segment.endDistanceKm > startDistanceKm &&
+          (field === "surface" ? segment.surface.availability : segment.pathType.availability) === "available")
+        .map((segment) => ({ snapshot, segment, value: field === "surface" ? segment.surface.value : segment.pathType.value })));
+      const alternatives = [...new Map(active.map(({ snapshot, segment, value }) => [`${snapshot.snapshotId}:${value ?? ""}`, {
+        snapshotId: snapshot.snapshotId,
+        value,
+        sourceWays: [...new Map(segment.osmWays
+          .filter((way) => (field === "surface" ? way.tags.surface : way.tags.highway) === value)
+          .map((way) => [way.sourceId, { osmWayId: way.sourceId, rawTags: { ...way.tags } }])).values()]
+          .sort((left, right) => left.osmWayId.localeCompare(right.osmWayId)),
+      }])).values()];
+      const distinctValues = new Set(alternatives.map((alternative) => alternative.value));
+      if (distinctValues.size < 2) continue;
       const candidates = active.sort(compareOsmEvidencePieces);
-      conflicts.push({ segmentIndex, startDistanceKm, endDistanceKm, selectedSnapshotId: candidates[0].snapshot.snapshotId, alternatives });
+      conflicts.push({ field, segmentIndex, startDistanceKm, endDistanceKm, selectedSnapshotId: candidates[0].snapshot.snapshotId, alternatives });
     }
   }
   return conflicts;
@@ -488,7 +507,11 @@ function snapshotContentKey(snapshot: OsmEnrichmentSnapshot) {
 }
 
 function rangeOfSegment(segment: GeoSegmentEvidence): GeoDistanceRange {
-  return { startDistanceKm: segment.startDistanceKm, endDistanceKm: segment.endDistanceKm, segmentIndex: segment.segmentIndex ?? 0 };
+  return {
+    startDistanceKm: segment.exactStartDistanceM === undefined ? segment.startDistanceKm : segment.exactStartDistanceM / 1000,
+    endDistanceKm: segment.exactEndDistanceM === undefined ? segment.endDistanceKm : segment.exactEndDistanceM / 1000,
+    segmentIndex: segment.segmentIndex ?? 0,
+  };
 }
 
 function intersectRanges(left: GeoDistanceRange, right: GeoDistanceRange): GeoDistanceRange | null {

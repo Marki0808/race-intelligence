@@ -43,6 +43,24 @@ export type GeoSegmentEvidence = {
   informal: EvidenceValue;
   trailblazed: EvidenceValue;
   assistedTrail: EvidenceValue;
+  /** Optional point-level match evidence used by Terrain Intelligence V1. */
+  sampleEvidence?: GeoMatchSampleEvidence[];
+  /** Snapshot references when this segment came from the persisted evidence merge. */
+  sourceSnapshotIds?: string[];
+  /** Full precision support range; legacy kilometer fields remain rounded for compatibility. */
+  exactStartDistanceM?: number;
+  exactEndDistanceM?: number;
+};
+export type GeoMatchSampleEvidence = {
+  segmentIndex: number;
+  distanceM: number;
+  supportStartDistanceM: number;
+  supportEndDistanceM: number;
+  status: "matched" | "no-match" | "ambiguous";
+  nearestDistanceM: number | null;
+  wayIds: string[];
+  tags: Record<string, string>;
+  sourceWays: Array<{ sourceId: string; tags: Record<string, string> }>;
 };
 export type GeoEnrichmentData = {
   source: GeoEvidenceSourceData;
@@ -52,6 +70,19 @@ export type GeoEnrichmentData = {
   note?: string;
   retrieval?: GeoRetrievalSummary;
   attribution: string;
+  /** Conflicting persisted OSM surface snapshots, when the cache merge exposes them. */
+  conflicts?: Array<{
+    field: "surface" | "highway";
+    segmentIndex: number;
+    startDistanceKm: number;
+    endDistanceKm: number;
+    selectedSnapshotId: string;
+    alternatives: Array<{
+      snapshotId: string;
+      value: string | null;
+      sourceWays: Array<{ osmWayId: string; rawTags: Record<string, string> }>;
+    }>;
+  }>;
 };
 export type GeoDistanceRange = { startDistanceKm: number; endDistanceKm: number; segmentIndex?: number };
 export type GeoRetrievalFailureCounts = {
@@ -88,6 +119,8 @@ export type RouteCorridorWindow = {
 };
 
 const relevantTags = ["surface", "highway", "tracktype", "smoothness", "sac_scale", "trail_visibility", "incline", "width", "informal", "trailblazed", "assisted_trail"] as const;
+/** Point evidence is attributed at most this far from a matched GPX sample. */
+export const TERRAIN_SAMPLE_SUPPORT_RADIUS_M = 50;
 
 export function normalizeOsmTags(tags: Record<string, string> = {}) {
   const normalize = (key: string) => {
@@ -133,6 +166,7 @@ export function createGeoEnrichment(
   const matchedRoutePercent = points.length
     ? Math.round((matches.filter((match) => match.way).length / points.length) * 100)
     : 0;
+  const sampleCells = createSampleEvidenceCells(matches);
   const chunks: Array<typeof matches> = [];
   for (const match of matches) {
     const previous = chunks.at(-1)?.at(-1);
@@ -166,6 +200,8 @@ export function createGeoEnrichment(
       segmentIndex: first.segmentIndex ?? 0,
       startDistanceKm,
       endDistanceKm,
+      exactStartDistanceM: first.distanceM,
+      exactEndDistanceM: last.distanceM,
       lengthKm: roundKm(last.distanceM - first.distanceM),
       evidenceCoverage: coverage,
       matchQuality: quality,
@@ -190,6 +226,7 @@ export function createGeoEnrichment(
       informal: withMatchAvailability(normalized.informal, reliableMatch),
       trailblazed: withMatchAvailability(normalized.trailblazed, reliableMatch),
       assistedTrail: withMatchAvailability(normalized.assistedTrail, reliableMatch),
+      sampleEvidence: chunk.map((match) => sampleCells.get(match.point)!).filter(Boolean),
     };
   });
 
@@ -205,6 +242,48 @@ export function createGeoEnrichment(
         : {}),
     attribution: "© OpenStreetMap contributors",
   };
+}
+
+function createSampleEvidenceCells(
+  matches: Array<{ point: GeoRoutePoint; way: OSMWayFeature | null; distanceM: number; alternatives: OSMWayFeature[] }>,
+) {
+  const bySegment = new Map<number, typeof matches>();
+  for (const match of matches) {
+    const segmentIndex = match.point.segmentIndex ?? 0;
+    const group = bySegment.get(segmentIndex) ?? [];
+    group.push(match);
+    bySegment.set(segmentIndex, group);
+  }
+  const result = new Map<GeoRoutePoint, GeoMatchSampleEvidence>();
+  for (const [segmentIndex, group] of bySegment) {
+    const ordered = [...group].sort((left, right) => left.point.distanceM - right.point.distanceM);
+    ordered.forEach((match, index) => {
+      const distanceM = match.point.distanceM;
+      const previous = ordered[index - 1]?.point.distanceM;
+      const next = ordered[index + 1]?.point.distanceM;
+      const supportStartDistanceM = previous === undefined
+        ? distanceM
+        : Math.max((previous + distanceM) / 2, distanceM - TERRAIN_SAMPLE_SUPPORT_RADIUS_M);
+      const supportEndDistanceM = next === undefined
+        ? distanceM
+        : Math.min((distanceM + next) / 2, distanceM + TERRAIN_SAMPLE_SUPPORT_RADIUS_M);
+      const status = !match.way ? "no-match" : match.alternatives.length > 1 ? "ambiguous" : "matched";
+      const ways = status === "ambiguous" ? match.alternatives : match.way ? [match.way] : [];
+      result.set(match.point, {
+        segmentIndex,
+        distanceM,
+        supportStartDistanceM,
+        supportEndDistanceM,
+        status,
+        nearestDistanceM: match.way ? match.distanceM : null,
+        wayIds: [...new Set(ways.map((way) => `way/${way.id}`))].sort(),
+        tags: status === "matched" && match.way ? { ...(match.way.tags ?? {}) } : {},
+        sourceWays: ways.map((way) => ({ sourceId: `way/${way.id}`, tags: { ...(way.tags ?? {}) } }))
+          .sort((left, right) => left.sourceId.localeCompare(right.sourceId)),
+      });
+    });
+  }
+  return result;
 }
 
 export function thinRouteForMatching(points: GeoRoutePoint[], maxPoints = 1800): GeoRoutePoint[] {
