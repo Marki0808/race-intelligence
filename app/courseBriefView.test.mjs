@@ -40,7 +40,7 @@ test("Course Brief view composes the provided analysis once per analysis/key cha
 test("Race Mode passes the selected edition's existing analysis and isolates edition changes", () => {
   assert.match(raceSource, /fetch\(raceRecord\.edition\.gpxPath\)/);
   assert.match(raceSource, /const analysis = analyzeGpxRoute\(/);
-  assert.match(raceSource, /setLoadState\(\{ editionKey, status: "ready", analysis \}\)/);
+  assert.match(raceSource, /setLoadState\(\{ editionKey, status: "ready", analysis, routeFingerprint \}\)/);
   assert.match(raceSource, /loadedAnalysis|loadState\?\.editionKey === editionKey/);
   assert.match(raceSource, /<CourseBriefView[\s\S]*?routeKey=\{editionKey\}[\s\S]*?routeAnalysis=\{routeAnalysis\}/);
 });

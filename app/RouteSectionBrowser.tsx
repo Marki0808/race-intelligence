@@ -5,7 +5,7 @@ import type { MapillaryImageEvidence, MapillarySectionEvidence } from "./mapilla
 import type { RouteSection } from "./routeSectionEngine";
 import type { GradientIntelligenceV1 } from "./gradientIntelligence";
 import { presentRouteSectionNarrativeV2 } from "./routeSectionNarrativeV2";
-import { getRouteImageryPresentation, getSurfaceEvidencePresentation, numberRouteSectionsForDisplay } from "./routeSectionPresentation";
+import { getRouteImageryPresentation, getTerrainSectionPresentation, numberRouteSectionsForDisplay, type TerrainEvidenceState } from "./routeSectionPresentation";
 import { routeSectionSelectionKey } from "./routeSectionSelection";
 import { sortRouteEmbeddedEventsForDisplay } from "./routeSectionEngine";
 import TerrainSectionMap from "./TerrainSectionMap";
@@ -24,6 +24,7 @@ export default function RouteSectionBrowser({
   gradientIntelligence,
   imageEvidence = new Map(),
   onSelectImage = () => undefined,
+  terrainEvidenceState = "not-requested",
 }: {
   sections: readonly RouteSection[];
   selectedSectionKey: string | null;
@@ -31,6 +32,7 @@ export default function RouteSectionBrowser({
   gradientIntelligence?: GradientIntelligenceV1;
   imageEvidence?: ReadonlyMap<string, MapillarySectionEvidence | null>;
   onSelectImage?: (image: MapillaryImageEvidence) => void;
+  terrainEvidenceState?: TerrainEvidenceState;
 }) {
   const orderedSections = numberRouteSectionsForDisplay(sections);
   const rowRefs = useRef(new Map<string, HTMLLIElement>());
@@ -83,6 +85,7 @@ export default function RouteSectionBrowser({
                         gradientIntelligence={gradientIntelligence}
                         routeSections={sections}
                         imageEvidence={imageEvidence.get(routeSectionSelectionKey(section)) ?? null}
+                        terrainEvidenceState={terrainEvidenceState}
                         onSelectImage={onSelectImage}
                         onClose={() => onSelectSection(null)}
                       />
@@ -121,6 +124,7 @@ function SectionDetail({
   gradientIntelligence,
   routeSections,
   imageEvidence,
+  terrainEvidenceState,
   onSelectImage,
   onClose,
 }: {
@@ -129,11 +133,12 @@ function SectionDetail({
   gradientIntelligence: GradientIntelligenceV1 | undefined;
   routeSections: readonly RouteSection[];
   imageEvidence: MapillarySectionEvidence | null;
+  terrainEvidenceState: TerrainEvidenceState;
   onSelectImage: (image: MapillaryImageEvidence) => void;
   onClose: () => void;
 }) {
   const title = rhythmLabels[section.dominantRhythm];
-  const surface = getSurfaceEvidencePresentation(section, section.terrainEvidenceCoveragePercent !== undefined);
+  const terrain = getTerrainSectionPresentation(section, terrainEvidenceState);
   const imagery = getRouteImageryPresentation(imageEvidence);
   const expectation = presentRouteSectionNarrativeV2(gradientIntelligence, routeSections, section);
 
@@ -172,19 +177,26 @@ function SectionDetail({
         <SectionSubheading>Section map · GPX-derived</SectionSubheading>
         <TerrainSectionMap points={section.mapData ?? []} startDistanceKm={section.startKm} endDistanceKm={section.endKm} />
       </div>
-      <section className="mt-6 min-w-0 border-t border-black/10 pt-5" aria-label="Surface evidence">
-        <SectionSubheading>Surface evidence · OpenStreetMap</SectionSubheading>
-        {surface.status === "mapped" ? (
-          <div className="mt-2">
-            <p className="text-sm font-medium text-black/70">{surface.coverageLabel}</p>
-            <p className="mt-3 text-xs text-black/45">{surface.distributionLabel}</p>
-            <ul className="mt-2 grid grid-cols-1 gap-x-6 gap-y-1.5 text-sm text-black/60 sm:grid-cols-2">
-              {surface.categories.map((item) => <li key={item.label} className="flex min-w-0 justify-between gap-3"><span className="truncate">{item.label}</span><span className="shrink-0 tabular-nums">{item.distanceLabel ? `${item.distanceLabel} · ${item.sharePercent}%` : `${item.sharePercent}%`}</span></li>)}
-            </ul>
-            {surface.unknownLabel && <p className="mt-2 text-xs text-black/45">{surface.unknownLabel}</p>}
-            <p className="mt-3 text-[11px] text-black/35">© OpenStreetMap contributors</p>
+      <section className="mt-6 min-w-0 border-t border-black/10 pt-5" aria-label="Mapped terrain evidence">
+        <SectionSubheading>Mapped terrain</SectionSubheading>
+        {terrain.status === "available" ? (
+          <div className="mt-2 space-y-4">
+            {[terrain.surface, ...(terrain.highway ? [terrain.highway] : [])].map((field) => (
+              <div key={field.heading}>
+                <h4 className="text-sm font-semibold text-black/70">{field.heading}</h4>
+                <p className="mt-1 text-xs text-black/45">{field.coverageLabel}</p>
+                {field.categories.length ? (
+                  <ul className="mt-2 grid grid-cols-1 gap-x-6 gap-y-1.5 text-sm text-black/60 sm:grid-cols-2">
+                    {field.categories.map((item) => <li key={item.label} className="flex min-w-0 justify-between gap-3"><span className="truncate">{item.label}</span><span className="shrink-0 tabular-nums">{item.distanceLabel} · {item.sharePercent}%</span></li>)}
+                  </ul>
+                ) : <p className="mt-2 text-sm text-black/50">No usable mapped categories were found.</p>}
+                <p className="mt-2 text-xs font-medium text-black/55">{field.unknownLabel}</p>
+                {field.reasons.length > 0 && <p className="mt-1 text-xs text-black/40">{field.reasons.join(" · ")}.</p>}
+              </div>
+            ))}
+            <p className="text-[11px] leading-5 text-black/40">{terrain.sourceNote}</p>
           </div>
-        ) : <p className="mt-2 text-sm text-black/45">{surface.message}</p>}
+        ) : <p className="mt-2 text-sm text-black/45">{terrain.message}</p>}
       </section>
       {imagery && (
         <section className="mt-6 min-w-0 border-t border-black/10 pt-5" aria-label="Route imagery">

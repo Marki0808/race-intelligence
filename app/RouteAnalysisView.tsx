@@ -1,13 +1,14 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import CourseAnalysis from "./CourseAnalysis";
 import CourseExplorer from "./CourseExplorer";
 import CourseBriefView from "./CourseBriefView";
 import RouteSectionBrowser, { RouteSectionBrowserHeading } from "./RouteSectionBrowser";
+import TerrainEvidenceAction from "./TerrainEvidenceAction";
 import KeyMoment from "./KeyMoment";
 import type { GeoEnrichmentData } from "./geoEnrichment";
-import { thinRouteForMatching } from "./geoEnrichment";
+import { requestRouteTerrainEvidence } from "./routeTerrainEvidenceClient";
 import type { RouteAnalysisData } from "./gpxAnalysis";
 import type { MapillaryImageEvidence, MapillaryTerrainProofData } from "./mapillaryTerrainProof";
 import TerrainImageViewer from "./TerrainImageViewer";
@@ -29,6 +30,7 @@ import {
   OSM_ENRICHMENT_VERSION,
 } from "./routePersistence";
 import type { PersistedMapillaryEnrichmentRecord, PersistedOsmEnrichmentRecord } from "./routePersistence";
+import type { TerrainEvidenceState } from "./routeSectionPresentation";
 
 export default function RouteAnalysisView({
   analysis,
@@ -45,6 +47,8 @@ export default function RouteAnalysisView({
   const [selectedSectionKey, setSelectedSectionKey] = useState<string | null>(null);
   const [geoEvidence, setGeoEvidence] = useState<GeoEnrichmentData | null>(() => sharedCache?.osm ? withOsmConflicts(sharedCache.osm) : null);
   const [geoLoading, setGeoLoading] = useState(false);
+  const evidenceRequestActive = useRef(false);
+  const [terrainEvidenceState, setTerrainEvidenceState] = useState<TerrainEvidenceState>(() => sharedCache?.osm ? "ready" : "not-requested");
   const [mapillaryEvidence, setMapillaryEvidence] = useState<MapillaryTerrainProofData | null>(() => sharedCache?.mapillary
     ? mapMapillaryEvidenceToSections(sharedCache.mapillary, analysis.routeSections)
     : null);
@@ -69,14 +73,19 @@ export default function RouteAnalysisView({
   }
 
   async function loadEvidence() {
-    if (geoLoading) return;
+    if (geoLoading || evidenceRequestActive.current) return;
+    evidenceRequestActive.current = true;
     setGeoLoading(true);
+    setTerrainEvidenceState("loading");
     try {
       let cachedOsm: PersistedOsmEnrichmentRecord | null = sharedCache?.osm ?? null;
       let cachedMapillary: PersistedMapillaryEnrichmentRecord | null = sharedCache?.mapillary ?? null;
       const shouldRefresh = geoEvidence !== null || mapillaryEvidence !== null;
       if (persistenceScope === "shared" && routeFingerprint) {
-        if (!shouldRefresh && (cachedOsm?.classifiableRanges.length || (cachedMapillary && hasReusableMapillaryEvidence(cachedMapillary)))) return;
+        if (!shouldRefresh && (cachedOsm?.classifiableRanges.length || (cachedMapillary && hasReusableMapillaryEvidence(cachedMapillary)))) {
+          setTerrainEvidenceState("ready");
+          return;
+        }
         try {
           const sharedResult = await enrichSharedRoute(routeFingerprint, {
             osm: shouldRefresh || !cachedOsm?.classifiableRanges.length,
@@ -86,6 +95,7 @@ export default function RouteAnalysisView({
             const record = isPersistedOsm(sharedResult.osm) ? sharedResult.osm : null;
             setGeoEvidence(record ? withOsmConflicts(record) : sharedResult.osm as GeoEnrichmentData);
           }
+          setTerrainEvidenceState(sharedResult.osm || cachedOsm || geoEvidence ? "ready" : "unavailable");
           if (sharedResult.mapillary) {
             const record = isPersistedMapillary(sharedResult.mapillary) ? sharedResult.mapillary : null;
             setMapillaryEvidence(record
@@ -109,8 +119,11 @@ export default function RouteAnalysisView({
         }
       } catch { /* Persistence is optional; continue with live requests. */ }
 
-      if (!shouldRefresh && cachedOsm?.classifiableRanges.length) setGeoEvidence(withOsmConflicts(cachedOsm));
-        if (!shouldRefresh && cachedMapillary && hasReusableMapillaryEvidence(cachedMapillary)) {
+      if (!shouldRefresh && cachedOsm?.classifiableRanges.length) {
+        setGeoEvidence(withOsmConflicts(cachedOsm));
+        setTerrainEvidenceState("ready");
+      }
+      if (!shouldRefresh && cachedMapillary && hasReusableMapillaryEvidence(cachedMapillary)) {
         setMapillaryEvidence(mapMapillaryEvidenceToSections(cachedMapillary, analysis.routeSections));
       }
 
@@ -118,11 +131,7 @@ export default function RouteAnalysisView({
       const requestOsm = !routeFingerprint || shouldRefresh || !cachedOsm?.classifiableRanges.length;
       const requestMapillary = !routeFingerprint || shouldRefresh || !cachedMapillary || !hasReusableMapillaryEvidence(cachedMapillary);
       const [osmResult, imageryResult] = await Promise.all([
-        requestOsm ? fetch("/api/geo-enrichment", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ points: thinRouteForMatching(analysis.points).map(({ latitude, longitude, distanceM, segmentIndex }) => ({ latitude, longitude, distanceM, segmentIndex })) }),
-        }).then(async (response) => response.ok ? await response.json() as GeoEnrichmentData : unknownGeoEvidence()).catch(() => unknownGeoEvidence()) : Promise.resolve(null),
+        requestOsm ? requestRouteTerrainEvidence(analysis.points) : Promise.resolve(null),
         requestMapillary ? fetch("/api/mapillary", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -131,17 +140,19 @@ export default function RouteAnalysisView({
       ]);
 
       if (osmResult) {
+        setTerrainEvidenceState(osmResult.status === "unavailable" && cachedOsm ? "ready" : osmResult.status);
         try {
           if (!routeFingerprint) {
-            setGeoEvidence(osmResult);
+            setGeoEvidence(osmResult.data);
           } else {
-            const merged = await cacheOsmEnrichment(browserRoutePersistence, routeFingerprint.routeFingerprint, osmResult, analysis.metrics.distanceKm, { routeFingerprintVersion: routeFingerprint.routeFingerprintVersion });
+            const merged = await cacheOsmEnrichment(browserRoutePersistence, routeFingerprint.routeFingerprint, osmResult.data, analysis.metrics.distanceKm, { routeFingerprintVersion: routeFingerprint.routeFingerprintVersion });
             setGeoEvidence(withOsmConflicts(merged));
           }
         } catch {
-          setGeoEvidence(cachedOsm ? withOsmConflicts(cachedOsm) : osmResult);
+          setGeoEvidence(cachedOsm ? withOsmConflicts(cachedOsm) : osmResult.data);
         }
-      }
+      } else if (cachedOsm) setTerrainEvidenceState("ready");
+      else setTerrainEvidenceState("unavailable");
       if (imageryResult) {
         try {
           if (!routeFingerprint) {
@@ -156,7 +167,10 @@ export default function RouteAnalysisView({
             : imageryResult);
         }
       }
+    } catch {
+      setTerrainEvidenceState(geoEvidence ? "ready" : "unavailable");
     } finally {
+      evidenceRequestActive.current = false;
       setGeoLoading(false);
     }
   }
@@ -183,11 +197,9 @@ export default function RouteAnalysisView({
       <section className="bg-white">
         <div className="mx-auto max-w-7xl px-6 py-16 lg:px-10 lg:py-20">
           <RouteSectionBrowserHeading action={(
-            <button type="button" onClick={() => void loadEvidence()} disabled={geoLoading} className="rounded-full bg-[#17211c] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#2b3a31] disabled:opacity-60">
-              {geoLoading ? "Checking optional map evidence…" : geoEvidence || mapillaryEvidence ? "Refresh map evidence" : "Check optional map evidence"}
-            </button>
+            <TerrainEvidenceAction state={terrainEvidenceState} onCheck={() => void loadEvidence()} />
           )} />
-          <RouteSectionBrowser sections={displayedSections} gradientIntelligence={analysis.gradientIntelligence} selectedSectionKey={selectedSectionKey} onSelectSection={selectSection} imageEvidence={imageEvidence} onSelectImage={setSelectedImage} />
+          <RouteSectionBrowser sections={displayedSections} gradientIntelligence={analysis.gradientIntelligence} selectedSectionKey={selectedSectionKey} onSelectSection={selectSection} imageEvidence={imageEvidence} onSelectImage={setSelectedImage} terrainEvidenceState={terrainEvidenceState} />
         </div>
       </section>
 
@@ -208,15 +220,6 @@ export default function RouteAnalysisView({
       <TerrainImageViewer image={selectedImage} onClose={() => setSelectedImage(null)} />
     </>
   );
-}
-
-function unknownGeoEvidence(): GeoEnrichmentData {
-  return {
-    source: { type: "osm", name: "OpenStreetMap", attribution: "© OpenStreetMap contributors" },
-    availability: "unknown", segments: [], matchedRoutePercent: 0,
-    note: "OpenStreetMap terrain evidence is currently unavailable for this route.",
-    attribution: "© OpenStreetMap contributors",
-  };
 }
 
 function unknownMapillaryEvidence(requests: ReturnType<typeof buildMapillaryRequests>): MapillaryTerrainProofData {

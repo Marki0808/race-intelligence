@@ -4,7 +4,7 @@ import test from "node:test";
 import { createGeoEnrichment, createUnknownGeoEnrichment } from "./geoEnrichment.ts";
 import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis.ts";
 import { attachTerrainEvidenceToRouteSections } from "./routeEvidenceAdapter.ts";
-import { getSurfaceEvidencePresentation } from "./routeSectionPresentation.ts";
+import { getSurfaceEvidencePresentation, getTerrainSectionPresentation } from "./routeSectionPresentation.ts";
 import { aggregateTerrainEvidenceV3 } from "./terrainAggregationV3.ts";
 import { createOsmSnapshot, mergeOsmEnrichmentRecord } from "./routePersistence.ts";
 import { buildTerrainIntelligenceV1 } from "./terrainIntelligence.ts";
@@ -223,6 +223,50 @@ test("current surface presentation uses explicit categories and approximate dist
   assert.doesNotMatch(JSON.stringify(presentation), /rough|technical|natural trail/i);
 });
 
+test("mapped terrain presentation uses full-section denominator, includes unknown distance, and separates highway tags", () => {
+  const { data } = makeTwoComponentEvidence();
+  const [attached] = attachTerrainEvidenceToRouteSections([section("surface-view-v1", 0, 0, 200)], data);
+  const view = getTerrainSectionPresentation(attached, "ready");
+  assert.equal(view.status, "available");
+  if (view.status !== "available") return;
+  assert.equal(view.surface.coverageLabel, "Mapped for approximately 0.2 km of 0.2 km section length · 100%");
+  assert.deepEqual(view.surface.categories.map(({ label, distanceLabel, sharePercent }) => [label, distanceLabel, sharePercent]), [["Gravel", "~0.2 km", 100]]);
+  assert.equal(view.surface.unknownLabel, "Unknown: ~0 km · 0% of section");
+  assert.equal(view.highway?.heading, "Mapped way type · separate from surface");
+  assert.deepEqual(view.highway?.categories.map(({ label, sharePercent }) => [label, sharePercent]), [["Track", 100]]);
+  assert.match(view.sourceNote, /not current ground conditions/);
+  assert.doesNotMatch(JSON.stringify(view), /technical|rough|natural trail/i);
+});
+
+test("partial terrain display counts unknown distance in the same full-section denominator", () => {
+  const points = [point(45, 13, 0), point(45, 13.001, 100), point(45, 13.02, 400)];
+  const data = createGeoEnrichment(points, [{ id: 1, type: "way", tags: { surface: "gravel" }, geometry: [{ lat: 45, lon: 13 }, { lat: 45, lon: 13.001 }] }]);
+  const [attached] = attachTerrainEvidenceToRouteSections([section("partial-view", 0, 0, 400)], data);
+  const view = getTerrainSectionPresentation(attached, "ready");
+  assert.equal(view.status, "available");
+  if (view.status !== "available") return;
+  assert.deepEqual(view.surface.categories.map(({ distanceLabel, sharePercent }) => [distanceLabel, sharePercent]), [["~0.15 km", 37.5]]);
+  assert.equal(view.surface.unknownLabel, "Unknown: ~0.25 km · 62.5% of section");
+  assert.ok(view.surface.reasons.some((reason) => /sampling|matched/.test(reason)));
+});
+
+test("terrain section UI states distinguish not checked, loading, unavailable and evidence-empty results", () => {
+  const bare = section("state", 0, 0, 100);
+  assert.deepEqual(getTerrainSectionPresentation(bare, "not-requested"), { status: "not-requested", message: "Mapped terrain has not been checked for this route." });
+  assert.equal(getTerrainSectionPresentation(bare, "loading").status, "loading");
+  assert.equal(getTerrainSectionPresentation(bare, "unavailable").status, "unavailable");
+  const [unavailable] = attachTerrainEvidenceToRouteSections([bare], createUnknownGeoEnrichment("ignored provider detail"));
+  const view = getTerrainSectionPresentation(unavailable, "ready");
+  assert.equal(view.status, "available");
+  if (view.status === "available") {
+    assert.equal(view.surface.categories.length, 0);
+    assert.equal(view.surface.unknownLabel, "Unknown: ~0.1 km · 100% of section");
+    assert.ok(view.surface.reasons.some((reason) => /Map data was unavailable/.test(reason)));
+  }
+  const wrongBounds = { ...unavailable, terrainIntelligenceV1: { ...unavailable.terrainIntelligenceV1, sectionBounds: { ...unavailable.terrainIntelligenceV1.sectionBounds, lengthM: 99 } } };
+  assert.equal(getTerrainSectionPresentation(wrongBounds, "ready").status, "unsupported");
+});
+
 test("cached sample evidence retains snapshot provenance through the section adapter", () => {
   const { data } = makeTwoComponentEvidence();
   const snapshot = createOsmSnapshot(data, 0.4, 1000, 1);
@@ -251,7 +295,7 @@ test("cached sample support is clipped to the retrieved route range", () => {
   assert.ok(item.fields.surface.intervals.filter(({ status }) => status === "supported").every((interval) => interval.startDistanceM >= 50 && interval.endDistanceM <= 150));
 });
 
-test("checked-in Istria route sections reconcile against a deterministic mocked OSM way", () => {
+test("checked-in Istria multi-section route uses identical V1 attachment in Route and Race Mode flows with mocked OSM", () => {
   const xml = readFileSync(new URL("../public/ISTRIA_110K_2027.gpx", import.meta.url), "utf8");
   const analysis = analyzeGpxRoute(parseGpxText(xml));
   const componentPoints = new Map();
@@ -267,7 +311,11 @@ test("checked-in Istria route sections reconcile against a deterministic mocked 
     geometry: points.map(({ latitude, longitude }) => ({ lat: latitude, lon: longitude })),
   }));
   const evidence = createGeoEnrichment(analysis.points, ways);
-  const attached = attachTerrainEvidenceToRouteSections(analysis.routeSections, evidence);
+  const routeModeSections = attachTerrainEvidenceToRouteSections(analysis.routeSections, evidence);
+  const raceModeSections = attachTerrainEvidenceToRouteSections(analysis.routeSections, evidence);
+  assert.ok(routeModeSections.length > 1);
+  assert.deepEqual(raceModeSections, routeModeSections);
+  const attached = routeModeSections;
   assert.ok(attached.length > 0);
   for (const routeSection of attached) {
     const terrain = routeSection.terrainIntelligenceV1;
