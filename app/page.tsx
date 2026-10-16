@@ -222,7 +222,10 @@ export default function Home() {
 
           {/* COURSE VISUAL */}
           <CourseSection raceRecord={homepageRaceRecord} />
-          <CourseCharacter data={homepageRaceRecord.intelligence.courseCharacter} />
+          <CourseCharacter
+            data={homepageRaceRecord.intelligence.courseCharacter}
+            terrainSource={homepageRaceRecord.sources.find((source) => source.id === "official-110k")}
+          />
           <RaceSources sources={homepageRaceRecord.sources} />
   
         </div>

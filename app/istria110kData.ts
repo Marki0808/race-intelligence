@@ -148,14 +148,14 @@ const istria110kEditionInformation: RaceEditionInformationData = {
 };
 
 export const istria110kCourseCharacter: CourseCharacterData = {
-  terrain: "Mountain and mixed trail terrain, with a rocky and demanding first mountain section.",
+  terrain: "The route follows typical Istrian inland trails. The organizer describes the section leading to Buzet as very rocky and demanding, and says it gets easier toward Umag.",
   elevationPattern: "A strong early climb leads to the highest point, followed by major descents and repeated climbing through the middle of the course.",
-  technicality: "The mountain section toward Buzet is notably rocky and demanding; the later sections become generally easier.",
-  courseRhythm: "The course changes character several times: a hard mountain opening, a major descent toward Buzet, repeated climbing through the middle, and a more gradual final approach.",
+  technicality: "Technical difficulty is not assessed from the GPX.",
+  courseRhythm: "The route opens with a substantial climb toward its high point, followed by a major descent. Repeated climbing and descending shape the middle; the final third has less cumulative climbing per kilometre than earlier sections.",
   attentionPoints: [
     "Large elevation gain appears early in the race.",
-    "The highest point is reached around the Žbevnica section.",
-    "A major descent follows the high mountain section toward Buzet.",
+    "The GPX reaches its highest point at approximately 23.6 km.",
+    "A major descent follows the high-point section.",
     "The middle part continues with repeated climbing and descending.",
     "The final third contains less elevation gain overall."
   ],

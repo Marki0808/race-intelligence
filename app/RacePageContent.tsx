@@ -100,7 +100,10 @@ export default function RacePageContent({
           </div>
 
           <CourseSection raceRecord={record} />
-          <CourseCharacter data={record.intelligence.courseCharacter} />
+          <CourseCharacter
+            data={record.intelligence.courseCharacter}
+            terrainSource={record.sources.find((source) => source.id === "official-110k")}
+          />
         </div>
       </section>
 

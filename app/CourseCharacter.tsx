@@ -1,36 +1,36 @@
-import type { CourseCharacterData } from "./raceTypes";
+import type { CourseCharacterData, RaceSourceData } from "./raceTypes";
 
 export default function CourseCharacter({
   data,
-  sourceLabel,
+  terrainSource,
 }: {
   data: CourseCharacterData;
-  sourceLabel?: string;
+  terrainSource?: RaceSourceData;
 }) {
   return (
     <section>
       <div className="flex flex-wrap items-baseline justify-between gap-3">
         <h2 className="text-2xl font-semibold">Course Character</h2>
-        {sourceLabel && (
-          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#71805d]">
-            {sourceLabel}
-          </p>
-        )}
       </div>
 
       <div className="mt-8 grid gap-6 md:grid-cols-2">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-black/40">
-            Terrain
+            Organizer&apos;s terrain description
           </p>
           <p className="mt-2 text-sm leading-6 text-black/65">
             {data.terrain}
           </p>
+          {terrainSource && /^https?:\/\//i.test(terrainSource.url) && (
+            <a href={terrainSource.url} target="_blank" rel="noreferrer" className="mt-2 inline-block text-xs font-medium text-[#71805d] underline underline-offset-4">
+              Source: {terrainSource.title} ↗
+            </a>
+          )}
         </div>
 
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-black/40">
-            Elevation pattern
+            Elevation pattern · GPX-derived
           </p>
           <p className="mt-2 text-sm leading-6 text-black/65">
             {data.elevationPattern}
@@ -39,16 +39,7 @@ export default function CourseCharacter({
 
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-black/40">
-            Technicality
-          </p>
-          <p className="mt-2 text-sm leading-6 text-black/65">
-            {data.technicality}
-          </p>
-        </div>
-
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-black/40">
-            Course rhythm
+            Course rhythm · GPX-derived
           </p>
           <p className="mt-2 text-sm leading-6 text-black/65">
             {data.courseRhythm}
@@ -58,7 +49,7 @@ export default function CourseCharacter({
 
       <div className="mt-8">
         <p className="text-xs font-semibold uppercase tracking-[0.14em] text-black/40">
-          Attention points
+          Attention points · GPX-derived
         </p>
 
         <ul className="mt-3 space-y-2 text-sm leading-6 text-black/65">

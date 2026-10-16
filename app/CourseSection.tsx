@@ -172,10 +172,6 @@ export default function CourseSection({
           />
         </section>
       )}
-      <p className="mt-4 text-sm text-black/50">
-        Selected: {selectedMoment ?? "None"}
-      </p>
-
       <div className="mt-16">
         {raceRecord.intelligence.keyMoments.map((item) => (
           <KeyMoment
