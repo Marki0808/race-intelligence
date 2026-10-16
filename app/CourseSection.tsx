@@ -32,13 +32,18 @@ export default function CourseSection({
   const selectedSectionKey = selection.editionKey === editionKey ? selection.sectionKey : null;
   const [loadState, setLoadState] = useState<
     | { editionKey: string; status: "ready"; analysis: RouteAnalysisData; routeFingerprint: RouteFingerprintResult | null }
+    | { editionKey: string; status: "loading" }
     | { editionKey: string; status: "error"; message: string }
     | null
   >(null);
+  const [retryRequest, setRetryRequest] = useState(0);
+  const retryPendingRef = useRef(false);
+  const gpxRequestIdRef = useRef(0);
+  const gpxControllerRef = useRef<AbortController | null>(null);
   const currentLoad = loadState?.editionKey === editionKey ? loadState : null;
   const routeAnalysis = currentLoad?.status === "ready" ? currentLoad.analysis : null;
   const currentError = currentLoad?.status === "error" ? currentLoad.message : "";
-  const isLoading = currentLoad === null;
+  const isLoading = currentLoad === null || currentLoad.status === "loading";
   const [terrainLoad, setTerrainLoad] = useState<{ editionKey: string; status: "loading" | "ready" | "unavailable"; data: GeoEnrichmentData | null } | null>(null);
   const currentTerrain = terrainLoad?.editionKey === editionKey ? terrainLoad : null;
   const terrainState = currentTerrain?.status ?? "not-requested";
@@ -54,11 +59,14 @@ export default function CourseSection({
   }, [editionKey]);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    const requestId = ++gpxRequestIdRef.current;
+    gpxControllerRef.current = controller;
+    retryPendingRef.current = false;
 
     async function loadRaceGpx() {
       try {
-        const response = await fetch(raceRecord.edition.gpxPath);
+        const response = await fetch(raceRecord.edition.gpxPath, { signal: controller.signal });
         if (!response.ok) throw new Error("The race GPX could not be loaded.");
         const parsed = parseGpxText(await response.text());
         const analysis = analyzeGpxRoute(
@@ -71,21 +79,31 @@ export default function CourseSection({
             routeFingerprint = await createRouteFingerprint(parsed.segments.map((segment) => segment.map(({ latitude, longitude }) => ({ latitude, longitude }))));
           } catch { /* Terrain cache reuse is optional; the route remains analyzable. */ }
         }
-        if (!cancelled) {
+        if (!controller.signal.aborted && gpxRequestIdRef.current === requestId) {
           setLoadState({ editionKey, status: "ready", analysis, routeFingerprint });
         }
       } catch {
-        if (!cancelled) {
-          setLoadState({ editionKey, status: "error", message: "Could not load or analyze this race GPX." });
+        if (!controller.signal.aborted && gpxRequestIdRef.current === requestId) {
+          setLoadState({ editionKey, status: "error", message: "Could not load this race edition’s GPX. Check your connection and try again." });
         }
+      } finally {
+        if (gpxControllerRef.current === controller) gpxControllerRef.current = null;
       }
     }
 
     void loadRaceGpx();
     return () => {
-      cancelled = true;
+      controller.abort();
+      if (gpxControllerRef.current === controller) gpxControllerRef.current = null;
     };
-  }, [editionKey, raceRecord.edition.gpxPath, raceRecord.edition.year, raceRecord.race.name]);
+  }, [editionKey, raceRecord.edition.gpxPath, raceRecord.edition.year, raceRecord.race.name, retryRequest]);
+
+  function retryRaceGpx() {
+    if (currentLoad?.status !== "error" || retryPendingRef.current) return;
+    retryPendingRef.current = true;
+    setLoadState({ editionKey, status: "loading" });
+    setRetryRequest((request) => request + 1);
+  }
 
   async function checkTerrainEvidence() {
     if (!TERRAIN_INTELLIGENCE_V1_ENABLED) return;
@@ -158,6 +176,7 @@ export default function CourseSection({
         keyMoments={raceRecord.intelligence.keyMoments}
         loading={isLoading}
         error={currentError}
+        onRetry={retryRaceGpx}
       />
       <CourseBriefView
         key={editionKey}

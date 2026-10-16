@@ -19,6 +19,7 @@ export default function CourseExplorer({
   keyMoments,
   loading,
   error,
+  onRetry,
   showExtendedMetrics = false,
 }: {
   selectedMoment: string | null;
@@ -31,6 +32,7 @@ export default function CourseExplorer({
   keyMoments: KeyMomentData[];
   loading: boolean;
   error: string;
+  onRetry?: () => void;
   showExtendedMetrics?: boolean;
 }) {
   const [mapExpanded, setMapExpanded] = useState(false);
@@ -219,7 +221,14 @@ export default function CourseExplorer({
               onSelectSection={onSelectSection}
             />
           ) : (
-            <div className="flex h-48 items-center justify-center text-sm text-white/45">{error || (loading ? "Loading course profile…" : "Course profile unavailable.")}</div>
+            <div className="flex min-h-48 flex-col items-center justify-center gap-4 px-3 text-center text-sm text-white/65" aria-live={loading ? "polite" : undefined}>
+              <p role={error ? "alert" : undefined}>{error || (loading ? "Loading course profile…" : "Course profile unavailable.")}</p>
+              {error && onRetry && <button
+                type="button"
+                onClick={onRetry}
+                className="min-h-11 rounded-full bg-[#a7c957] px-5 py-2 text-sm font-semibold text-[#17211c] transition hover:bg-[#b8d86b] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+              >Try again</button>}
+            </div>
           )}
         </div>
 
