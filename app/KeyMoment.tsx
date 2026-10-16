@@ -8,6 +8,7 @@ type KeyMomentProps = {
   text: string;
   source: string;
   onSelect?: () => void;
+  selected?: boolean;
   compact?: boolean;
   focusStartKm?: number;
 focusEndKm?: number;
@@ -21,6 +22,7 @@ export default function KeyMoment({
   text,
   source,
   onSelect,
+  selected = false,
   compact = false,
 }: KeyMomentProps) {
   return (
@@ -29,7 +31,8 @@ export default function KeyMoment({
         <button
           type="button"
           onClick={onSelect}
-          className={onSelect ? "cursor-pointer text-left" : "cursor-default text-left"}
+          aria-pressed={onSelect ? selected : undefined}
+          className={`${onSelect ? "cursor-pointer text-left" : "cursor-default text-left"} ${selected ? "text-[#53663c] underline decoration-[#a7c957] decoration-2 underline-offset-4" : ""} focus-visible:rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#71805d]`}
         >
           {title}
         </button>

@@ -34,7 +34,8 @@ test("GPX-derived Course Character avoids unqualified technicality and location 
 
 test("Race Mode removes the incorrect None status while retaining mutually exclusive selection", () => {
   assert.doesNotMatch(raceMode, /Selected:\s*\{selectedMoment \?\? "None"\}/);
-  assert.match(raceMode, /function selectMoment\(title: string\)\s*\{\s*setSelection\(\{ editionKey, moment: title, sectionKey: null \}\);/);
+  assert.match(raceMode, /function selectMoment\(momentId: string\)\s*\{[\s\S]*?moment: toggleKeyMomentSelection\(current\.editionKey === editionKey \? current\.moment : null, momentId\)/);
+  assert.match(raceMode, /selected=\{selectedMoment === item\.id\}/);
   assert.match(raceMode, /sectionKey: section \? routeSectionSelectionKey\(section\) : null/);
   assert.match(raceMode, /moment: section \? null/);
   assert.match(sectionBrowser, /aria-pressed=\{isSelected\}/);

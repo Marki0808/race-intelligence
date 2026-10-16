@@ -1,4 +1,5 @@
 import type { GpxRoutePointData } from "./gpxAnalysis";
+import type { KeyMomentData } from "./raceTypes";
 import type { RouteSection } from "./routeSectionEngine";
 
 export function routeSectionSelectionKey(section: Pick<RouteSection, "id" | "segmentIndex">): string {
@@ -11,6 +12,70 @@ export function findSelectedRouteSection(
 ): RouteSection | null {
   if (selectionKey === null) return null;
   return sections.find((section) => routeSectionSelectionKey(section) === selectionKey) ?? null;
+}
+
+export type RouteMomentInterval = {
+  segmentIndex: number;
+  startDistanceM: number;
+  endDistanceM: number;
+};
+
+/** Resolves a Key Moment only when its distance interval can be bound to one GPX component. */
+export function resolveKeyMomentInterval(
+  points: readonly GpxRoutePointData[],
+  moment: KeyMomentData,
+): RouteMomentInterval | null {
+  const components = [...new Set(points.map((point) => point.segmentIndex))];
+  const hasStartPosition = moment.focusStartPosition !== undefined;
+  const hasEndPosition = moment.focusEndPosition !== undefined;
+  if (hasStartPosition !== hasEndPosition) return null;
+
+  let segmentIndex: number;
+  let startDistanceM: number;
+  let endDistanceM: number;
+  if (hasStartPosition && hasEndPosition) {
+    const start = moment.focusStartPosition!;
+    const end = moment.focusEndPosition!;
+    if (start.segmentIndex !== end.segmentIndex) return null;
+    if (moment.segmentIndex !== undefined && moment.segmentIndex !== start.segmentIndex) return null;
+    segmentIndex = start.segmentIndex;
+    startDistanceM = start.distanceM;
+    endDistanceM = end.distanceM;
+  } else {
+    if (moment.segmentIndex !== undefined) segmentIndex = moment.segmentIndex;
+    else if (components.length === 1) segmentIndex = components[0];
+    else return null;
+    startDistanceM = moment.focusStartKm * 1000;
+    endDistanceM = moment.focusEndKm * 1000;
+  }
+
+  if (!Number.isFinite(startDistanceM) || !Number.isFinite(endDistanceM) || endDistanceM <= startDistanceM) return null;
+  const componentPoints = points.filter((point) => point.segmentIndex === segmentIndex);
+  if (componentPoints.length === 0) return null;
+  const componentStart = componentPoints[0].distanceM;
+  const componentEnd = componentPoints.at(-1)!.distanceM;
+  const clippedStart = Math.max(startDistanceM, componentStart);
+  const clippedEnd = Math.min(endDistanceM, componentEnd);
+  if (clippedEnd <= clippedStart) return null;
+  return { segmentIndex, startDistanceM: clippedStart, endDistanceM: clippedEnd };
+}
+
+/** Clips the selected Key Moment to its proven component and full-precision interval. */
+export function clipRoutePointsToKeyMoment(
+  points: readonly GpxRoutePointData[],
+  moment: KeyMomentData,
+): GpxRoutePointData[] {
+  const interval = resolveKeyMomentInterval(points, moment);
+  if (!interval) return [];
+  return clipRoutePointsToSection(points, {
+    segmentIndex: interval.segmentIndex,
+    startPosition: { distanceM: interval.startDistanceM, segmentIndex: interval.segmentIndex },
+    endPosition: { distanceM: interval.endDistanceM, segmentIndex: interval.segmentIndex },
+  });
+}
+
+export function toggleKeyMomentSelection(current: string | null, momentId: string): string | null {
+  return current === momentId ? null : momentId;
 }
 
 /** Clips only traversed edges from the section's own GPX component to its full-precision interval. */

@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import type { Map as LeafletMap, Polyline } from "leaflet";
+import type { Layer, Map as LeafletMap, Polyline } from "leaflet";
 import type { KeyMomentData } from "./raceTypes";
 import { groupAnalyzedPointsBySegment, type RouteAnalysisData } from "./gpxAnalysis";
 import type { RouteSection } from "./routeSectionEngine";
-import { clipRoutePointsToSection, findSelectedRouteSection } from "./routeSectionSelection";
+import { clipRoutePointsToKeyMoment, clipRoutePointsToSection, findSelectedRouteSection, resolveKeyMomentInterval } from "./routeSectionSelection";
 import { getNiceAxisScale, getPositionedRouteDistanceTicks, getRouteDistancePosition, getRouteSectionBoundaryMarkers } from "./routeProfilePresentation";
 
 export default function CourseExplorer({
@@ -39,13 +39,19 @@ export default function CourseExplorer({
   const leafletMapRef = useRef<LeafletMap | null>(null);
   const leafletRef = useRef<typeof import("leaflet") | null>(null);
   const routeLineRefs = useRef<Map<number, Polyline>>(new Map());
-  const highlightLineRefs = useRef<Polyline[]>([]);
+  const highlightLineRefs = useRef<Layer[]>([]);
   const points = useMemo(() => routeAnalysis?.points ?? [], [routeAnalysis]);
   const sections = routeAnalysis?.routeSections ?? [];
   const selectedSection = findSelectedRouteSection(sections, selectedSectionKey);
   const selectedSectionPoints = useMemo(
     () => selectedSection ? clipRoutePointsToSection(points, selectedSection) : [],
     [points, selectedSection],
+  );
+  const selectedMomentData = selectedMoment ? keyMoments.find((item) => item.id === selectedMoment) ?? null : null;
+  const selectedMomentInterval = selectedMomentData ? resolveKeyMomentInterval(points, selectedMomentData) : null;
+  const selectedMomentPoints = useMemo(
+    () => selectedMomentData ? clipRoutePointsToKeyMoment(points, selectedMomentData) : [],
+    [points, selectedMomentData],
   );
   const metrics = routeAnalysis?.metrics;
   const elevations = points.map((point) => point.elevationM);
@@ -147,7 +153,7 @@ export default function CourseExplorer({
     for (const line of highlightLineRefs.current) line.removeFrom(map);
     highlightLineRefs.current = [];
     for (const line of routeLineRefs.current.values()) {
-      line.setStyle({ opacity: selectedSection ? 0.28 : 0.9, weight: selectedSection ? 3 : 4 });
+      line.setStyle({ opacity: selectedSection || selectedMomentInterval ? 0.28 : 0.9, weight: selectedSection || selectedMomentInterval ? 3 : 4 });
     }
 
     if (selectedSection && selectedSectionPoints.length > 1) {
@@ -158,31 +164,38 @@ export default function CourseExplorer({
       highlightLineRefs.current.push(highlight);
     }
 
+    if (!selectedSection && selectedMomentInterval && selectedMomentPoints.length > 1) {
+      const highlight = L.polyline(
+        selectedMomentPoints.map(({ latitude, longitude }) => [latitude, longitude]) as [number, number][],
+        { color: "#f2d675", weight: 7, opacity: 1, lineCap: "round", lineJoin: "round" },
+      ).addTo(map);
+      highlightLineRefs.current.push(highlight);
+    }
+    if (!selectedSection && selectedMomentInterval && selectedMomentPoints.length === 1) {
+      const point = selectedMomentPoints[0];
+      highlightLineRefs.current.push(L.circleMarker([point.latitude, point.longitude], {
+        radius: 7,
+        color: "#17211c",
+        weight: 2,
+        fillColor: "#f2d675",
+        fillOpacity: 1,
+      }).addTo(map));
+    }
+
     if (selectedSection && selectedSectionPoints.length > 0) {
       map.fitBounds(selectedSectionPoints.map((point) => [point.latitude, point.longitude]), { padding: [50, 50] });
       return;
     }
 
-    if (selectedMoment) {
-      const moment = keyMoments.find((item) => item.title === selectedMoment);
-      if (moment) {
-        const momentPoints = points.filter(
-          (point) =>
-            (moment.segmentIndex === undefined || point.segmentIndex === moment.segmentIndex) &&
-            point.distanceM >= (moment.focusStartPosition?.distanceM ?? moment.focusStartKm * 1000) &&
-            point.distanceM <= (moment.focusEndPosition?.distanceM ?? moment.focusEndKm * 1000),
-        );
-        if (momentPoints.length > 0) {
-          map.fitBounds(momentPoints.map((point) => [point.latitude, point.longitude]), { padding: [50, 50] });
-          return;
-        }
-      }
+    if (!selectedSection && selectedMomentInterval && selectedMomentPoints.length > 0) {
+      map.fitBounds(selectedMomentPoints.map((point) => [point.latitude, point.longitude]), { padding: [50, 50] });
+      return;
     }
 
     if (points.length > 0) {
       map.fitBounds(points.map((point) => [point.latitude, point.longitude]), { padding: [30, 30] });
     }
-  }, [keyMoments, mapReady, points, selectedMoment, selectedSection, selectedSectionPoints]);
+  }, [mapReady, points, selectedMomentInterval, selectedMomentPoints, selectedSection, selectedSectionPoints]);
 
   return (
     <div className="mt-10 overflow-hidden rounded-[2rem] border border-black/10 bg-[#17211c] text-white sm:mt-14">
@@ -197,10 +210,11 @@ export default function CourseExplorer({
           {points.length > 0 ? (
             <ElevationProfile
               points={points}
-              selectedPoints={selectedSectionPoints}
+              selectedPoints={selectedSection ? selectedSectionPoints : selectedMomentPoints}
               minElevation={minimumElevation}
               maxElevation={maximumElevation}
               selectedSection={selectedSection}
+              selectedMomentInterval={selectedSection ? null : selectedMomentInterval}
               sections={sections}
               onSelectSection={onSelectSection}
             />
@@ -261,6 +275,7 @@ function ElevationProfile({
   minElevation,
   maxElevation,
   selectedSection,
+  selectedMomentInterval,
   sections,
   onSelectSection,
 }: {
@@ -269,6 +284,7 @@ function ElevationProfile({
   minElevation: number;
   maxElevation: number;
   selectedSection: RouteSection | null;
+  selectedMomentInterval: ReturnType<typeof resolveKeyMomentInterval>;
   sections: readonly RouteSection[];
   onSelectSection?: (section: RouteSection | null) => void;
 }) {
@@ -296,7 +312,7 @@ function ElevationProfile({
   };
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="h-56 w-full touch-manipulation sm:h-64 lg:h-72" preserveAspectRatio="none" aria-label="GPX-derived elevation profile. Select a section interval to open its details." role="group">
+    <svg viewBox={`0 0 ${width} ${height}`} className="h-56 w-full touch-manipulation sm:h-64 lg:h-72" preserveAspectRatio="none" aria-label="GPX-derived elevation profile. Select a section interval to open its details; selected Key Moments are highlighted." role="group">
       <title>Elevation profile in meters across the route distance in kilometers</title>
       {elevationScale.ticks.map((tick) => {
         const y = yForElevation(tick);
@@ -315,7 +331,15 @@ function ElevationProfile({
       <line x1={plot.left} x2={plot.left} y1={plot.top} y2={height - plot.bottom} stroke="white" strokeOpacity="0.38" strokeWidth="2" />
       <line x1={plot.left} x2={width - plot.right} y1={height - plot.bottom} y2={height - plot.bottom} stroke="white" strokeOpacity="0.38" strokeWidth="2" />
       <text x="22" y={plot.top + plotHeight / 2} transform={`rotate(-90 22 ${plot.top + plotHeight / 2})`} fill="white" fillOpacity="0.66" fontSize="26" textAnchor="middle">Elevation (m)</text>
-      {selectedSection && <rect x={xForDistance(selectedSection.startPosition.distanceM)} y={plot.top} width={Math.max(1, xForDistance(selectedSection.endPosition.distanceM) - xForDistance(selectedSection.startPosition.distanceM))} height={plotHeight} fill="#f2d675" fillOpacity="0.12" pointerEvents="none" />}
+      {(selectedSection || selectedMomentInterval) && <rect
+        x={xForDistance(selectedSection?.startPosition.distanceM ?? selectedMomentInterval!.startDistanceM)}
+        y={plot.top}
+        width={Math.max(2, xForDistance(selectedSection?.endPosition.distanceM ?? selectedMomentInterval!.endDistanceM) - xForDistance(selectedSection?.startPosition.distanceM ?? selectedMomentInterval!.startDistanceM))}
+        height={plotHeight}
+        fill="#f2d675"
+        fillOpacity="0.12"
+        pointerEvents="none"
+      />}
       {boundaries.map(({ distanceM, sectionKeys }) => <line key={`boundary-${distanceM}-${sectionKeys.join("_")}`} x1={xForDistance(distanceM)} x2={xForDistance(distanceM)} y1={plot.top} y2={height - plot.bottom} stroke="white" strokeOpacity="0.24" strokeWidth="2" strokeDasharray="5 7" pointerEvents="none" />)}
       {onSelectSection && sections.filter((section) =>
         section.startPosition.segmentIndex === section.segmentIndex &&
@@ -344,9 +368,9 @@ function ElevationProfile({
           className="cursor-pointer outline-none focus-visible:stroke-[#f2d675] focus-visible:stroke-[3]"
         />;
       })}
-      {paths.map((segment, index) => <polyline key={index} points={segment.map(toProfilePoint).join(" ")} fill="none" stroke="#a7c957" strokeOpacity={selectedSection ? "0.3" : "0.9"} strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" pointerEvents="none" />)}
-      {selectedSection && selectedPoints.length > 1 && <polyline points={selectedPoints.map(toProfilePoint).join(" ")} fill="none" stroke="#f2d675" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" pointerEvents="none" />}
-      {selectedSection && selectedPoints.length === 1 && <circle cx={xForDistance(selectedPoints[0].distanceM)} cy={yForElevation(selectedPoints[0].elevationM)} r="7" fill="#f2d675" pointerEvents="none" />}
+      {paths.map((segment, index) => <polyline key={index} points={segment.map(toProfilePoint).join(" ")} fill="none" stroke="#a7c957" strokeOpacity={selectedSection || selectedMomentInterval ? "0.3" : "0.9"} strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" pointerEvents="none" />)}
+      {(selectedSection || selectedMomentInterval) && selectedPoints.length > 1 && <polyline points={selectedPoints.map(toProfilePoint).join(" ")} fill="none" stroke="#f2d675" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" pointerEvents="none" />}
+      {(selectedSection || selectedMomentInterval) && selectedPoints.length === 1 && <circle cx={xForDistance(selectedPoints[0].distanceM)} cy={yForElevation(selectedPoints[0].elevationM)} r="7" fill="#f2d675" pointerEvents="none" />}
     </svg>
   );
 }

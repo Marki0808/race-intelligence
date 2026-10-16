@@ -10,7 +10,7 @@ const selectionSource = await readFile(selectionUrl, "utf8");
 const selectionJs = ts.transpile(selectionSource, { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 });
 const selectionModule = { exports: {} };
 new Function("exports", "require", "module", "__filename", "__dirname", selectionJs)(selectionModule.exports, require, selectionModule, selectionUrl.pathname, new URL(".", selectionUrl).pathname);
-const { clipRoutePointsToSection, findSelectedRouteSection, routeSectionSelectionKey } = selectionModule.exports;
+const { clipRoutePointsToKeyMoment, clipRoutePointsToSection, findSelectedRouteSection, resolveKeyMomentInterval, routeSectionSelectionKey, toggleKeyMomentSelection } = selectionModule.exports;
 const profileUrl = new URL("./routeProfilePresentation.ts", import.meta.url);
 const profileSource = await readFile(profileUrl, "utf8");
 const profileJs = ts.transpile(profileSource, { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 });
@@ -28,6 +28,55 @@ const { mapillaryEvidenceByRouteSection } = evidenceModule.exports;
 
 const section = (id, segmentIndex, startM, endM) => ({ id, segmentIndex, startPosition: { distanceM: startM, segmentIndex }, endPosition: { distanceM: endM, segmentIndex } });
 const point = (segmentIndex, distanceM, latitude) => ({ segmentIndex, distanceM, latitude, longitude: latitude * 2, elevationM: latitude * 10 });
+const moment = (overrides = {}) => ({ id: "moment-1", number: "1", title: "Key climb", distance: "2–4 km", focusStartKm: 2, focusEndKm: 4, segmentIndex: 0, text: "A measured climb.", source: "GPX", ...overrides });
+
+test("Key Moment interval selection clips the correct component and preserves the selected elevation shape", () => {
+  const points = [point(0, 0, 0), point(0, 1000, 10), point(0, 2000, 20), point(0, 3000, 30), point(0, 4000, 40), point(1, 4000, 100), point(1, 5000, 110)];
+  const selected = moment({ focusStartKm: 1.5, focusEndKm: 2.5, focusStartPosition: { distanceM: 1500, segmentIndex: 0 }, focusEndPosition: { distanceM: 2500, segmentIndex: 0 } });
+  assert.deepEqual(resolveKeyMomentInterval(points, selected), { segmentIndex: 0, startDistanceM: 1500, endDistanceM: 2500 });
+  assert.deepEqual(clipRoutePointsToKeyMoment(points, selected).map(({ segmentIndex, distanceM, latitude }) => [segmentIndex, distanceM, latitude]), [[0, 1500, 15], [0, 2000, 20], [0, 2500, 25]]);
+});
+
+test("Key Moment km bounds remain usable on a single component and short edge intervals clip safely", () => {
+  const points = [point(3, 0, 0), point(3, 1000, 10), point(3, 2000, 20)];
+  const edgeMoment = moment({ segmentIndex: 3, focusStartKm: 0, focusEndKm: 0.2 });
+  assert.deepEqual(resolveKeyMomentInterval(points, edgeMoment), { segmentIndex: 3, startDistanceM: 0, endDistanceM: 200 });
+  assert.deepEqual(clipRoutePointsToKeyMoment(points, edgeMoment).map((item) => item.distanceM), [0, 200]);
+});
+
+test("Key Moment without component identity fails closed for disconnected components", () => {
+  const points = [point(0, 0, 0), point(0, 1000, 10), point(1, 1000, 100), point(1, 2000, 110)];
+  assert.equal(resolveKeyMomentInterval(points, moment({ segmentIndex: undefined })), null);
+  assert.deepEqual(clipRoutePointsToKeyMoment(points, moment({ segmentIndex: undefined })), []);
+});
+
+test("invalid, contradictory and out-of-range Key Moment bounds produce no highlight", () => {
+  const points = [point(0, 0, 0), point(0, 1000, 10)];
+  assert.equal(resolveKeyMomentInterval(points, moment({ focusStartKm: Number.NaN })), null);
+  assert.equal(resolveKeyMomentInterval(points, moment({ focusStartPosition: { distanceM: 100, segmentIndex: 0 } })), null);
+  assert.equal(resolveKeyMomentInterval(points, moment({ focusStartPosition: { distanceM: 100, segmentIndex: 0 }, focusEndPosition: { distanceM: 200, segmentIndex: 1 } })), null);
+  assert.equal(resolveKeyMomentInterval(points, moment({ focusStartKm: 3, focusEndKm: 4 })), null);
+});
+
+test("overlapping Key Moments keep their own independently resolved intervals", () => {
+  const points = [point(0, 0, 0), point(0, 1000, 10), point(0, 2000, 20), point(0, 3000, 30)];
+  const first = moment({ focusStartKm: 0.5, focusEndKm: 2 });
+  const second = moment({ id: "moment-2", focusStartKm: 1.5, focusEndKm: 2.5 });
+  assert.deepEqual(resolveKeyMomentInterval(points, first), { segmentIndex: 0, startDistanceM: 500, endDistanceM: 2000 });
+  assert.deepEqual(resolveKeyMomentInterval(points, second), { segmentIndex: 0, startDistanceM: 1500, endDistanceM: 2500 });
+});
+
+test("Key Moment controls can toggle off and existing mutual exclusion clears the other selection", async () => {
+  assert.equal(toggleKeyMomentSelection(null, "Peak"), "Peak");
+  assert.equal(toggleKeyMomentSelection("Peak", "Peak"), null);
+  assert.equal(toggleKeyMomentSelection("Peak", "Valley"), "Valley");
+  const routeView = await readFile(new URL("./RouteAnalysisView.tsx", import.meta.url), "utf8");
+  const raceView = await readFile(new URL("./CourseSection.tsx", import.meta.url), "utf8");
+  assert.match(routeView, /function selectMoment\(momentId: string\)\s*\{\s*setSelectedSectionKey\(null\)/);
+  assert.match(routeView, /if \(section\) setSelectedMoment\(null\)/);
+  assert.match(raceView, /moment: toggleKeyMomentSelection/);
+  assert.match(raceView, /sectionKey: section \? routeSectionSelectionKey\(section\) : null/);
+});
 
 test("section selection identity includes the GPX component as well as the stable section ID", () => {
   const first = section("route-section-1", 0, 0, 10);
@@ -162,9 +211,17 @@ test("Route Mode and Race Mode share the browser and clear the opposite map sele
   assert.match(raceView, /raceRecord\.edition\.distanceKm/);
   assert.match(routeView, /function selectMoment[\s\S]*?setSelectedSectionKey\(null\)/);
   assert.match(routeView, /function selectSection[\s\S]*?setSelectedMoment\(null\)/);
-  assert.match(raceView, /function selectMoment[\s\S]*?setSelection\(\{ editionKey, moment: title, sectionKey: null \}\)/);
+  assert.match(raceView, /function selectMoment[\s\S]*?moment: toggleKeyMomentSelection\(current\.editionKey === editionKey \? current\.moment : null, momentId\)/);
   assert.match(raceView, /function selectSection[\s\S]*?moment: section \? null/);
   assert.match(map, /clipRoutePointsToSection\(points, selectedSection\)/);
+  assert.match(map, /clipRoutePointsToKeyMoment\(points, selectedMomentData\)/);
+  assert.match(map, /selectedMomentInterval=\{selectedSection \? null : selectedMomentInterval\}/);
+  assert.match(map, /selectedMomentPoints\.map\(\(\{ latitude, longitude \}\)/);
+  const keyMoment = await readFile(new URL("./KeyMoment.tsx", import.meta.url), "utf8");
+  assert.match(keyMoment, /aria-pressed=\{onSelect \? selected : undefined\}/);
+  assert.match(raceView, /selected=\{selectedMoment === item\.id\}/);
+  assert.match(routeView, /selected=\{selectedMoment === moment\.id\}/);
+  assert.match(map, /keyMoments\.find\(\(item\) => item\.id === selectedMoment\)/);
   assert.match(map, /selectedSectionPoints/);
   assert.match(map, /groupAnalyzedPointsBySegment\(points\)/);
   assert.match(map, /stroke="#f2d675"/);

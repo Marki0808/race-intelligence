@@ -6,6 +6,7 @@ import CourseBriefView from "./CourseBriefView";
 import RouteSectionBrowser, { RouteSectionBrowserHeading } from "./RouteSectionBrowser";
 import TerrainEvidenceAction from "./TerrainEvidenceAction";
 import KeyMoment from "./KeyMoment";
+import { toggleKeyMomentSelection } from "./routeSectionSelection";
 import type { GeoEnrichmentData } from "./geoEnrichment";
 import { attachTerrainEvidenceToRouteSections } from "./routeEvidenceAdapter";
 import { requestRouteTerrainEvidence } from "./routeTerrainEvidenceClient";
@@ -128,8 +129,12 @@ export default function CourseSection({
     }
   }
 
-  function selectMoment(title: string) {
-    setSelection({ editionKey, moment: title, sectionKey: null });
+  function selectMoment(momentId: string) {
+    setSelection((current) => ({
+      editionKey,
+      moment: toggleKeyMomentSelection(current.editionKey === editionKey ? current.moment : null, momentId),
+      sectionKey: null,
+    }));
   }
 
   function selectSection(section: RouteSection | null) {
@@ -177,7 +182,8 @@ export default function CourseSection({
           <KeyMoment
             key={item.id}
             title={item.title}
-            onSelect={() => selectMoment(item.title)}
+            selected={selectedMoment === item.id}
+            onSelect={() => selectMoment(item.id)}
             distance={item.distance}
             focusStartKm={item.focusStartKm}
             focusEndKm={item.focusEndKm}
