@@ -31,6 +31,7 @@ import {
 } from "./routePersistence";
 import type { PersistedMapillaryEnrichmentRecord, PersistedOsmEnrichmentRecord } from "./routePersistence";
 import type { TerrainEvidenceState } from "./routeSectionPresentation";
+import { TERRAIN_INTELLIGENCE_V1_ENABLED } from "./featureFlags";
 
 export default function RouteAnalysisView({
   analysis,
@@ -54,7 +55,7 @@ export default function RouteAnalysisView({
     : null);
   const [selectedImage, setSelectedImage] = useState<MapillaryImageEvidence | null>(null);
 
-  const displayedSections = useMemo(() => geoEvidence
+  const displayedSections = useMemo(() => TERRAIN_INTELLIGENCE_V1_ENABLED && geoEvidence
     ? attachTerrainEvidenceToRouteSections(analysis.routeSections, geoEvidence)
     : analysis.routeSections, [analysis.routeSections, geoEvidence]);
   const imageEvidence = useMemo(
@@ -73,6 +74,7 @@ export default function RouteAnalysisView({
   }
 
   async function loadEvidence() {
+    if (!TERRAIN_INTELLIGENCE_V1_ENABLED) return;
     if (geoLoading || evidenceRequestActive.current) return;
     evidenceRequestActive.current = true;
     setGeoLoading(true);
@@ -196,9 +198,9 @@ export default function RouteAnalysisView({
 
       <section className="bg-white">
         <div className="mx-auto max-w-7xl px-6 py-16 lg:px-10 lg:py-20">
-          <RouteSectionBrowserHeading action={(
+          <RouteSectionBrowserHeading action={TERRAIN_INTELLIGENCE_V1_ENABLED ? (
             <TerrainEvidenceAction state={terrainEvidenceState} onCheck={() => void loadEvidence()} />
-          )} />
+          ) : undefined} />
           <RouteSectionBrowser sections={displayedSections} gradientIntelligence={analysis.gradientIntelligence} selectedSectionKey={selectedSectionKey} onSelectSection={selectSection} imageEvidence={imageEvidence} onSelectImage={setSelectedImage} terrainEvidenceState={terrainEvidenceState} />
         </div>
       </section>

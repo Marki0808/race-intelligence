@@ -9,6 +9,7 @@ import { getRouteImageryPresentation, getTerrainSectionPresentation, numberRoute
 import { routeSectionSelectionKey } from "./routeSectionSelection";
 import { sortRouteEmbeddedEventsForDisplay } from "./routeSectionEngine";
 import TerrainSectionMap from "./TerrainSectionMap";
+import { TERRAIN_INTELLIGENCE_V1_ENABLED } from "./featureFlags";
 
 const rhythmLabels: Record<RouteSection["dominantRhythm"], string> = {
   climb: "Climb",
@@ -177,7 +178,7 @@ function SectionDetail({
         <SectionSubheading>Section map · GPX-derived</SectionSubheading>
         <TerrainSectionMap points={section.mapData ?? []} startDistanceKm={section.startKm} endDistanceKm={section.endKm} />
       </div>
-      <section className="mt-6 min-w-0 border-t border-black/10 pt-5" aria-label="Mapped terrain evidence">
+      {TERRAIN_INTELLIGENCE_V1_ENABLED && <section className="mt-6 min-w-0 border-t border-black/10 pt-5" aria-label="Mapped terrain evidence">
         <SectionSubheading>Mapped terrain</SectionSubheading>
         {terrain.status === "available" ? (
           <div className="mt-2 space-y-4">
@@ -197,7 +198,7 @@ function SectionDetail({
             <p className="text-[11px] leading-5 text-black/40">{terrain.sourceNote}</p>
           </div>
         ) : <p className="mt-2 text-sm text-black/45">{terrain.message}</p>}
-      </section>
+      </section>}
       {imagery && (
         <section className="mt-6 min-w-0 border-t border-black/10 pt-5" aria-label="Route imagery">
           <SectionSubheading>Route imagery · Mapillary</SectionSubheading>

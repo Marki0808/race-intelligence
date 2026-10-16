@@ -16,6 +16,7 @@ import { browserRoutePersistence, cacheRouteAnalysis, getOrCreateRouteAnalysis }
 import { lookupSharedRoute, type SharedRouteCache } from "./routePersistenceClient";
 import type { RouteFingerprintResult } from "./routeFingerprint";
 import { consumePendingDiscoveredGpx } from "./discoveredGpxTransfer";
+import { TERRAIN_INTELLIGENCE_V1_ENABLED } from "./featureFlags";
 
 export default function RouteMode() {
   const [analysis, setAnalysis] = useState<RouteAnalysisData | null>(null);
@@ -40,7 +41,7 @@ export default function RouteMode() {
           createRouteFingerprint(parsed.segments.map((segment) => segment.map(({ latitude, longitude }) => ({ latitude, longitude })))),
           createAnalysisInputFingerprint(parsed.segments),
         ]);
-        const shared = await lookupSharedRoute(fingerprint, analysisInputFingerprint);
+        const shared = await lookupSharedRoute(fingerprint, analysisInputFingerprint, { includeOsm: TERRAIN_INTELLIGENCE_V1_ENABLED });
         let routeAnalysis: RouteAnalysisData;
         if (shared.cache?.analysis) {
           routeAnalysis = { ...shared.cache.analysis, name: displayName };
@@ -142,7 +143,7 @@ export default function RouteMode() {
               className="mt-4 block w-full min-w-0 cursor-pointer text-sm text-white/65 file:mr-4 file:rounded-full file:border-0 file:bg-[#a7c957] file:px-5 file:py-2.5 file:text-sm file:font-semibold file:text-[#17211c] hover:file:bg-[#b8d86b] disabled:cursor-wait"
             />
             <p className="mt-4 text-xs leading-5 text-white/40">
-              Discovered links are checked as a supported single-track GPX before analysis. They are treated as GPX-derived routes and are not bound to a race edition. The GPX file itself is not stored. For registered public courses, the route fingerprint, analysis and optional map evidence may be shared through this app&apos;s server. Other uploaded routes remain in this browser&apos;s local cache. Terrain Evidence sends route coordinates to this app&apos;s matching endpoint; Mapillary receives bounded section search areas, not the GPX file or elevation data.
+              Discovered links are checked as a supported single-track GPX before analysis. They are treated as GPX-derived routes and are not bound to a race edition. The GPX file itself is not stored. For registered public courses, the route fingerprint, analysis and optional map evidence may be shared through this app&apos;s server. Other uploaded routes remain in this browser&apos;s local cache. Mapillary imagery lookups use bounded section search areas, not the GPX file or elevation data.
             </p>
             {isProcessing && (
               <p aria-live="polite" className="mt-4 text-sm text-[#a7c957]">

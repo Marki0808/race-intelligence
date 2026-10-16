@@ -17,7 +17,11 @@ export type SharedRouteLookup = {
   cache: SharedRouteCache | null;
 };
 
-export async function lookupSharedRoute(fingerprint: RouteFingerprintResult, analysisInputFingerprint: string): Promise<SharedRouteLookup> {
+export async function lookupSharedRoute(
+  fingerprint: RouteFingerprintResult,
+  analysisInputFingerprint: string,
+  options: { includeOsm?: boolean } = {},
+): Promise<SharedRouteLookup> {
   try {
     const response = await fetch("/api/route-persistence", {
       method: "POST",
@@ -28,6 +32,7 @@ export async function lookupSharedRoute(fingerprint: RouteFingerprintResult, ana
         routeFingerprint: fingerprint.routeFingerprint,
         routeFingerprintVersion: fingerprint.routeFingerprintVersion,
         analysisInputFingerprint,
+        ...(options.includeOsm === false ? { includeOsm: false } : {}),
       }),
     });
     if (!response.ok) return localOnlyResult();

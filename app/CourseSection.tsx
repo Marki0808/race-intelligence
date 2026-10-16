@@ -18,6 +18,7 @@ import type { RouteAnalysisData } from "./gpxAnalysis";
 import type { RaceRecordData } from "./raceTypes";
 import type { RouteSection } from "./routeSectionEngine";
 import { routeSectionSelectionKey } from "./routeSectionSelection";
+import { TERRAIN_INTELLIGENCE_V1_ENABLED } from "./featureFlags";
 
 export default function CourseSection({
   raceRecord,
@@ -42,7 +43,7 @@ export default function CourseSection({
   const terrainState = currentTerrain?.status ?? "not-requested";
   const terrainController = useRef<AbortController | null>(null);
   const terrainRequestActive = useRef(false);
-  const displayedSections = useMemo(() => routeAnalysis && currentTerrain?.data
+  const displayedSections = useMemo(() => TERRAIN_INTELLIGENCE_V1_ENABLED && routeAnalysis && currentTerrain?.data
     ? attachTerrainEvidenceToRouteSections(routeAnalysis.routeSections, currentTerrain.data)
     : routeAnalysis?.routeSections ?? [], [routeAnalysis, currentTerrain]);
 
@@ -64,9 +65,11 @@ export default function CourseSection({
           `${raceRecord.race.name} ${raceRecord.edition.year}`,
         );
         let routeFingerprint: RouteFingerprintResult | null = null;
-        try {
-          routeFingerprint = await createRouteFingerprint(parsed.segments.map((segment) => segment.map(({ latitude, longitude }) => ({ latitude, longitude }))));
-        } catch { /* Terrain cache reuse is optional; the route remains analyzable. */ }
+        if (TERRAIN_INTELLIGENCE_V1_ENABLED) {
+          try {
+            routeFingerprint = await createRouteFingerprint(parsed.segments.map((segment) => segment.map(({ latitude, longitude }) => ({ latitude, longitude }))));
+          } catch { /* Terrain cache reuse is optional; the route remains analyzable. */ }
+        }
         if (!cancelled) {
           setLoadState({ editionKey, status: "ready", analysis, routeFingerprint });
         }
@@ -84,6 +87,7 @@ export default function CourseSection({
   }, [editionKey, raceRecord.edition.gpxPath, raceRecord.edition.year, raceRecord.race.name]);
 
   async function checkTerrainEvidence() {
+    if (!TERRAIN_INTELLIGENCE_V1_ENABLED) return;
     if (!routeAnalysis || currentTerrain?.status === "loading" || terrainRequestActive.current) return;
     terrainRequestActive.current = true;
     const refresh = currentTerrain?.status === "ready";
@@ -158,7 +162,7 @@ export default function CourseSection({
       />
       {routeAnalysis && (
         <section className="mt-12">
-          <RouteSectionBrowserHeading action={<TerrainEvidenceAction state={terrainState} onCheck={() => void checkTerrainEvidence()} />} />
+          <RouteSectionBrowserHeading action={TERRAIN_INTELLIGENCE_V1_ENABLED ? <TerrainEvidenceAction state={terrainState} onCheck={() => void checkTerrainEvidence()} /> : undefined} />
           <RouteSectionBrowser
             sections={displayedSections}
             gradientIntelligence={routeAnalysis.gradientIntelligence}

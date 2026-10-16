@@ -4,6 +4,10 @@
 **Verification date:** 2026-10-15
 **Document scope:** Current repository architecture plus separately labeled Production facts supplied from completed operational verification.
 
+## Current V1 launch decision — Terrain Intelligence deferred
+
+Terrain Intelligence / Mapped Terrain is disabled in the public V1 experience. Repeated Production OSM retrieval failures make evidence delivery unreliable, and useful explicit `surface=*` coverage across representative routes has not been measured. No surface-coverage estimate is claimed. The terrain modules, API, adapters, evidence contracts, persistence, diagnostics, and tests remain in the repository for possible V2 use. Reactivation requires both measured useful surface coverage on representative routes and proven reliable Production delivery. The disabled-by-default gate is `TERRAIN_INTELLIGENCE_V1_ENABLED` in `app/featureFlags.ts`; Route Mode also skips shared OSM cache reads while the flag is false.
+
 Sections 1–9 and 11–16 describe repository-derived implementation and status. Section 10 records operational facts from Production verification; it does not imply that every code path or external-provider persistence behavior was verified in Production.
 
 ## 1. Project overview
@@ -11,9 +15,9 @@ Sections 1–9 and 11–16 describe repository-derived implementation and status
 Race Intelligence helps trail runners understand a route before running or racing it. The current product has two related flows:
 
 - **Race Mode:** a curated race experience resolved from a statically registered `RaceRecordData`. It presents race/edition information, course exploration, Key Moments, Course Character, sources, and course analysis.
-- **Route Mode:** a user selects a GPX file for deterministic route analysis. Analysis runs in the browser. OSM and Mapillary evidence can also be requested for local/noncanonical uploads through the application APIs; shared-persistence eligibility is not required to request or use that evidence. For registered physical routes that meet the shared-route rules, the same evidence flow can additionally use server-side shared persistence and reuse.
+- **Route Mode:** a user selects a GPX file for deterministic route analysis. Analysis runs in the browser. Terrain evidence APIs and persistence remain in the codebase but are gated off from V1; normal analysis does not request OSM enrichment. The existing shared-route lookup still supports reuse of canonical route analysis and optional Mapillary cache data.
 
-Current analytical outputs include distance and elevation metrics, Route Dynamics, consolidated runner-facing Route Sections, Key Route Moments, optional surface/imagery evidence, and Course Brief. The deterministic V2 structural Course Brief is integrated into Race Mode and Route Mode; its separate V3 geographic presentation engine is not exposed. The V1 OpenAI API/provider flow remains separate and unchanged. GPX-derived outputs are distinct from external provider evidence. Race search remains statically registered rather than database-backed.
+Current analytical outputs include distance and elevation metrics, Route Dynamics, consolidated runner-facing Route Sections, Key Route Moments, Gradient Intelligence, Route Narrative Engine summaries, and Course Brief. Terrain Intelligence remains implemented for possible V2 use but its presentation and request controls are disabled for V1. The deterministic V2 structural Course Brief is integrated into Race Mode and Route Mode; its separate V3 geographic presentation engine is not exposed. The V1 OpenAI API/provider flow remains separate and unchanged. GPX-derived outputs are distinct from external provider evidence. Race search remains statically registered rather than database-backed.
 
 The homepage offers two equal entry paths: Race Mode looks up races already in the static registry by name or official source URL, and Route Mode opens the existing local GPX upload flow. It also offers official race webpage discovery: users can inspect GPX link candidates, explicitly select and confirm one, then send it through server-side retrieval and existing Route Mode analysis. Discovered routes remain GPX-derived and are not assigned a registered race edition.
 
@@ -37,7 +41,7 @@ The shared `CourseExplorer` presents the full-route, component-separated elevati
 
 Aid-station extraction/segmentation and its UI, plus separate “How to approach it” content, remain future work. No station toggle is shown because reliable route-positioned station data is unavailable. “What to expect” uses the deterministic Route Narrative Engine V2 described below, built from existing Gradient Intelligence V1.1 measurements; it adds no terrain-technicality claims or running advice and does not change route-analysis algorithms, evidence contracts, or provider flows.
 
-### Terrain Intelligence V1 — OSM evidence foundation
+### Terrain Intelligence V1 — OSM evidence foundation (retained; deferred from V1 UX)
 
 `app/terrainIntelligence.ts` adds a separate schema 1 / algorithm 1 contract to existing Route Sections when Route Mode has OSM evidence. It records the stable section ID, GPX `segmentIndex`, component-local and section-local full-precision bounds, approximate retrieval coverage, route-match coverage, ambiguity coverage, and separate surface-tag and highway-tag summaries. Surface categories come only from explicit OSM `surface` tags; highway categories come only from `highway` tags and are never used to infer a surface. Categories retain raw values, OSM way IDs, supporting GPX sample distances, full raw source tags, and persisted snapshot IDs. Contradictory persisted surface or highway snapshots remain unknown and retain the conflicting values and provenance.
 
@@ -49,7 +53,9 @@ The optional OSM request/cache flow supplies this contract; the shared Route Sec
 
 V1 evaluation uses the checked-in Istria 110K GPX with deterministic mocked OSM ways plus synthetic two-component, sparse-sample, overlapping, unavailable, and conflicting evidence. The Istria fixture's existing Route Sections remain unchanged and each surface/highway field reconciles supported plus unknown distance to its section bounds. A synthetic 200 m component is fully supported when 100 m samples have a matched way; a 400 m sparse-sample case attributes 150 m and leaves 250 m unknown under the 50 m endpoint/midpoint support rule. These demonstrate contract behavior, not actual OSM coverage. Verification passed **98 focused Route Section/persistence/terrain tests**, **698 serial Node tests**, TypeScript, ESLint, production build, and `git diff --check`. Tests use mocked provider responses; no live OSM or Mapillary calls were made. These are local checks only; no browser or Production verification is claimed.
 
-### Terrain Intelligence V1.1 — shared Route and Race Mode presentation
+### Terrain Intelligence V1.1 — shared Route and Race Mode presentation (implemented, currently disabled for V1)
+
+The presentation and enrichment implementation described below remains in code, but is not exposed in the V1 user experience. The normal V1 flow hides the shared Mapped Terrain section and its request action in both modes, guards the request handlers, avoids Race Mode terrain fingerprinting, and tells Route Mode's shared-persistence lookup not to read OSM cache records. Existing lookup callers remain compatible: omitting the new optional `includeOsm` field keeps the prior behavior. No `/api/geo-enrichment` request or Overpass retrieval is initiated by normal V1 analysis.
 
 The same explicit, on-demand OSM evidence flow is available in Race Mode and Route Mode. Both submit the already selected/analyzed GPX geometry to the existing bounded `/api/geo-enrichment` endpoint, then use `attachTerrainEvidenceToRouteSections` and the same `RouteSectionBrowser` detail. A shared client helper preserves component indices and converts failed or malformed responses into controlled unavailable evidence. It adds no provider, analysis algorithm, segmentation change, or automatic request before a route/edition is selected.
 

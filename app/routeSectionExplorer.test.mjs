@@ -138,16 +138,21 @@ test("Route Mode and Race Mode share the browser and clear the opposite map sele
     readFile(new URL("./CourseSection.tsx", import.meta.url), "utf8"),
     readFile(new URL("./CourseExplorer.tsx", import.meta.url), "utf8"),
   ]);
+  const featureFlags = await readFile(new URL("./featureFlags.ts", import.meta.url), "utf8");
+  assert.match(featureFlags, /TERRAIN_INTELLIGENCE_V1_ENABLED = false/);
   assert.match(routeView, /<RouteSectionBrowser[\s\S]*?sections=\{displayedSections\}/);
   assert.match(routeView, /gradientIntelligence=\{analysis\.gradientIntelligence\}/);
-  assert.match(routeView, /<TerrainEvidenceAction state=\{terrainEvidenceState\}/);
+  assert.match(routeView, /TERRAIN_INTELLIGENCE_V1_ENABLED \? \([\s\S]*?<TerrainEvidenceAction state=\{terrainEvidenceState\}/);
   assert.match(routeView, /requestRouteTerrainEvidence\(analysis\.points\)/);
+  assert.match(routeView, /async function loadEvidence\(\) \{\s*if \(!TERRAIN_INTELLIGENCE_V1_ENABLED\) return;/);
   assert.match(routeView, /terrainEvidenceState=\{terrainEvidenceState\}/);
   assert.match(routeView, /evidenceRequestActive\.current\) return/);
   assert.match(raceView, /<RouteSectionBrowser[\s\S]*?sections=\{displayedSections\}/);
   assert.match(raceView, /gradientIntelligence=\{routeAnalysis\.gradientIntelligence\}/);
-  assert.match(raceView, /<TerrainEvidenceAction state=\{terrainState\}/);
+  assert.match(raceView, /TERRAIN_INTELLIGENCE_V1_ENABLED \? <TerrainEvidenceAction state=\{terrainState\}/);
   assert.match(raceView, /requestRouteTerrainEvidence\(routeAnalysis\.points, controller\.signal\)/);
+  assert.match(raceView, /async function checkTerrainEvidence\(\) \{\s*if \(!TERRAIN_INTELLIGENCE_V1_ENABLED\) return;/);
+  assert.match(raceView, /if \(TERRAIN_INTELLIGENCE_V1_ENABLED\) \{\s*try \{\s*routeFingerprint = await createRouteFingerprint/);
   assert.match(raceView, /attachTerrainEvidenceToRouteSections\(routeAnalysis\.routeSections, currentTerrain\.data\)/);
   assert.match(raceView, /terrainLoad\?\.editionKey === editionKey/);
   assert.match(raceView, /getCachedOsmEnrichment/);
@@ -184,7 +189,7 @@ test("Route Mode and Race Mode share the browser and clear the opposite map sele
   const browser = await readFile(new URL("./RouteSectionBrowser.tsx", import.meta.url), "utf8");
   assert.match(browser, /What to expect · GPX elevation profile/);
   assert.match(browser, /presentRouteSectionNarrativeV2\(gradientIntelligence, routeSections, section\)/);
-  assert.match(browser, /<SectionSubheading>Mapped terrain<\/SectionSubheading>/);
+  assert.match(browser, /TERRAIN_INTELLIGENCE_V1_ENABLED && <section[\s\S]*?<SectionSubheading>Mapped terrain<\/SectionSubheading>/);
   assert.match(browser, /getTerrainSectionPresentation\(section, terrainEvidenceState\)/);
   assert.match(browser, /unknownLabel/);
 });

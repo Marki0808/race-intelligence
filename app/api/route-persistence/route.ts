@@ -41,7 +41,7 @@ export async function POST(request: Request) {
     return Response.json({ persistenceScope: "local", sharedEligible: false, persistenceAvailable: false }, { headers: { "Cache-Control": "no-store" } });
   }
 
-  if (parsed.operation === "lookup") return lookupSharedRoute(eligible, parsed.analysisInputFingerprint);
+  if (parsed.operation === "lookup") return lookupSharedRoute(eligible, parsed.analysisInputFingerprint, undefined, { includeOsm: parsed.includeOsm });
   return enrichSharedRoute(eligible, parsed.needs);
 }
 
@@ -52,6 +52,7 @@ export async function lookupSharedRoute(
     isDatabaseConfigured: isSharedRouteDatabaseConfigured,
     store: sharedRouteStore,
   },
+  options: { includeOsm?: boolean } = {},
 ) {
   if (!dependencies.isDatabaseConfigured()) return sharedResponse(eligible, false);
   const analysisInputMatches = eligible.analysisInputFingerprint === requestedAnalysisInputFingerprint;
@@ -81,7 +82,9 @@ export async function lookupSharedRoute(
       });
     }
     const [osm, mapillary] = await Promise.all([
-      dependencies.store.getOsm(eligible.routeFingerprint, eligible.routeFingerprintVersion, OSM_ENRICHMENT_VERSION),
+      options.includeOsm === false
+        ? Promise.resolve(null)
+        : dependencies.store.getOsm(eligible.routeFingerprint, eligible.routeFingerprintVersion, OSM_ENRICHMENT_VERSION),
       dependencies.store.getMapillary(eligible.routeFingerprint, eligible.routeFingerprintVersion, MAPILLARY_ENRICHMENT_VERSION),
     ]);
     return Response.json({

@@ -26,7 +26,7 @@ function getRegisteredIstria() {
 }
 
 function createLookupDependencies() {
-  const calls = { analysisReads: 0, analysisWrites: 0, routeReads: 0, raceReferenceWrites: 0 };
+  const calls = { analysisReads: 0, analysisWrites: 0, routeReads: 0, raceReferenceWrites: 0, osmReads: 0, mapillaryReads: 0 };
   const analyses = new Map();
   let route = null;
   const store = {
@@ -41,8 +41,8 @@ function createLookupDependencies() {
       analyses.set(`${record.analysisVersion}:${record.analysisInputFingerprint}`, record);
     },
     putRaceEditionReference: async () => { calls.raceReferenceWrites += 1; },
-    getOsm: async () => null,
-    getMapillary: async () => null,
+    getOsm: async () => { calls.osmReads += 1; return null; },
+    getMapillary: async () => { calls.mapillaryReads += 1; return null; },
   };
   return { calls, store, dependencies: { isDatabaseConfigured: () => true, store } };
 }
@@ -51,7 +51,11 @@ test("server persistence API accepts only supported, version-matched request sha
   assert.deepEqual(validatePersistenceRequest({
     operation: "lookup", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 2,
     analysisInputFingerprint: validAnalysisInputFingerprint,
-  }), { operation: "lookup", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 2, analysisInputFingerprint: validAnalysisInputFingerprint });
+  }), { operation: "lookup", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 2, analysisInputFingerprint: validAnalysisInputFingerprint, includeOsm: true });
+  assert.equal(validatePersistenceRequest({
+    operation: "lookup", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 2,
+    analysisInputFingerprint: validAnalysisInputFingerprint, includeOsm: false,
+  })?.includeOsm, false);
   assert.deepEqual(validatePersistenceRequest({
     operation: "enrich", persistenceScope: "shared", routeFingerprint: validFingerprint,
     routeFingerprintVersion: 2, needs: { osm: true, mapillary: false },
@@ -64,6 +68,7 @@ test("server persistence API accepts only supported, version-matched request sha
     { operation: "lookup", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 2 },
     { operation: "lookup", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 2 },
     { operation: "lookup", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 2, analysisInputFingerprint: "not-a-hash" },
+    { operation: "lookup", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 2, analysisInputFingerprint: validAnalysisInputFingerprint, includeOsm: "false" },
     { operation: "enrich", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 2, needs: { osm: false, mapillary: false } },
     { operation: "lookup", persistenceScope: "shared", routeFingerprint: validFingerprint, routeFingerprintVersion: 2, sql: "select *" },
   ]) assert.equal(validatePersistenceRequest(input), null);
@@ -109,6 +114,7 @@ test("shared analysis lookup persists only a matching registry input and mismatc
   assert.equal(matching.calls.analysisReads, 2);
   assert.equal(matching.calls.analysisWrites, 1);
   assert.equal(matching.calls.raceReferenceWrites, 2);
+  assert.equal(matching.calls.osmReads, 2);
 
   const changedPoints = parsed.points.map((point, index) => ({
     ...point,
@@ -160,6 +166,19 @@ test("shared analysis lookup persists only a matching registry input and mismatc
   assert.equal(cached.cacheHit, true);
   assert.equal(localCalculations, 1);
   assert.equal(localAnalyses.size, 1);
+});
+
+test("V1 shared route lookup skips OSM cache reads while preserving shared analysis and imagery lookup", async () => {
+  const { eligible } = await getRegisteredIstria();
+  const lookup = createLookupDependencies();
+  const response = await lookupSharedRoute(eligible, eligible.analysisInputFingerprint, lookup.dependencies, { includeOsm: false });
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.ok(body.analysis);
+  assert.equal(body.osm, null);
+  assert.equal(lookup.calls.osmReads, 0);
+  assert.equal(lookup.calls.mapillaryReads, 1);
+  assert.equal(lookup.calls.analysisReads, 1);
 });
 
 test("client persistence entry points do not reference privileged database variables", async () => {
