@@ -110,3 +110,24 @@ export function getPositionedRouteDistanceTicks(
     isFinish: distanceM === totalDistanceM,
   }));
 }
+
+/** Keeps the finish and readable axis labels when narrow viewports crowd the final major tick. */
+export function avoidRouteDistanceTickLabelOverlap(
+  ticks: readonly PositionedRouteDistanceTick[],
+  fontSizePx = 11,
+): PositionedRouteDistanceTick[] {
+  if (ticks.length < 3) return [...ticks];
+  const result = [ticks[0]];
+  for (const tick of ticks.slice(1, -1)) {
+    const previous = result.at(-1)!;
+    if (tick.x - previous.x >= labelGap(previous.label, tick.label, fontSizePx)) result.push(tick);
+  }
+  const finish = ticks.at(-1)!;
+  while (result.length > 1 && finish.x - result.at(-1)!.x < labelGap(result.at(-1)!.label, finish.label, fontSizePx)) result.pop();
+  result.push(finish);
+  return result;
+}
+
+function labelGap(left: string, right: string, fontSizePx: number) {
+  return ((left.length + right.length) * fontSizePx * 0.29) + fontSizePx * 1.5;
+}

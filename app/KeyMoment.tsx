@@ -1,5 +1,9 @@
 "use client";
 
+import type { GpxRoutePointData } from "./gpxAnalysis";
+import { getKeyMomentProfilePoints, keyMomentProfilePolyline } from "./routeKeyMomentProfile";
+import type { KeyMomentData } from "./raceTypes";
+
 type KeyMomentProps = {
   title: string;
   distance: string;
@@ -11,7 +15,11 @@ type KeyMomentProps = {
   selected?: boolean;
   compact?: boolean;
   focusStartKm?: number;
-focusEndKm?: number;
+  focusEndKm?: number;
+  routePoints?: readonly GpxRoutePointData[];
+  segmentIndex?: number;
+  focusStartPosition?: KeyMomentData["focusStartPosition"];
+  focusEndPosition?: KeyMomentData["focusEndPosition"];
 };
 
 export default function KeyMoment({
@@ -24,9 +32,19 @@ export default function KeyMoment({
   onSelect,
   selected = false,
   compact = false,
+  focusStartKm,
+  focusEndKm,
+  routePoints = [],
+  segmentIndex,
+  focusStartPosition,
+  focusEndPosition,
 }: KeyMomentProps) {
+  const profilePoints = focusStartKm !== undefined && focusEndKm !== undefined
+    ? getKeyMomentProfilePoints(routePoints, { focusStartKm, focusEndKm, segmentIndex, focusStartPosition, focusEndPosition })
+    : [];
+  const profileLine = keyMomentProfilePolyline(profilePoints);
   return (
-    <div>
+    <div className={selected ? "rounded-xl ring-1 ring-[#71805d]/35" : ""}>
       <h3 className={compact ? "text-xl font-semibold" : "mt-12 text-xl font-semibold"}>
         <button
           type="button"
@@ -49,6 +67,10 @@ export default function KeyMoment({
       <p className="mt-4 text-sm leading-6 text-black/55">
         {text}
       </p>
+
+      {profileLine && <svg viewBox="0 0 320 68" className="mt-4 h-16 w-full rounded-lg bg-[#f4f2ed] p-2" preserveAspectRatio="none" role="img" aria-label={`GPX elevation profile around ${distance}`}>
+        <polyline points={profileLine} fill="none" stroke={selected ? "#17211c" : "#71805d"} strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>}
 
       <div className="mt-5 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#71805d]">
         🔵 {source}

@@ -17,7 +17,7 @@ const profileJs = ts.transpile(profileSource, { module: ts.ModuleKind.CommonJS, 
 const profileModule = { exports: {} };
 const profileRequire = (specifier) => specifier === "./routeSectionSelection" ? selectionModule.exports : require(specifier);
 new Function("exports", "require", "module", "__filename", "__dirname", profileJs)(profileModule.exports, profileRequire, profileModule, profileUrl.pathname, new URL(".", profileUrl).pathname);
-const { formatRouteDistanceTick, getNiceAxisScale, getPositionedRouteDistanceTicks, getRouteSectionBoundaryMarkers } = profileModule.exports;
+const { avoidRouteDistanceTickLabelOverlap, formatRouteDistanceTick, getNiceAxisScale, getPositionedRouteDistanceTicks, getRouteSectionBoundaryMarkers } = profileModule.exports;
 const evidenceUrl = new URL("./routeSectionEvidence.ts", import.meta.url);
 const evidenceSource = await readFile(evidenceUrl, "utf8");
 const evidenceJs = ts.transpile(evidenceSource, { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 });
@@ -139,6 +139,15 @@ test("110.73 km profile axis preserves 20 km ticks and positions the finish at t
   assert.ok(Math.abs(ticks[5].x - (136 + (100_000 / 110_730) * (1144 - 136))) < 1e-9);
 });
 
+test("narrow profile axis removes crowded labels but keeps evenly spaced ticks and the exact finish", () => {
+  const ticks = avoidRouteDistanceTickLabelOverlap(getPositionedRouteDistanceTicks(110_730, 56, 260, 4));
+  assert.deepEqual(ticks.map(({ label }) => label), ["0 km", "50 km", "110.7 km"]);
+  assert.equal(ticks[0].x, 56);
+  assert.equal(ticks.at(-1).x, 260);
+  assert.ok(ticks[1].x - ticks[0].x > 80);
+  assert.ok(ticks[2].x - ticks[1].x > 80);
+});
+
 test("medium routes retain evenly spaced major ticks and a clearly positioned finish", () => {
   const ticks = getPositionedRouteDistanceTicks(12_500, 136, 1144, 7);
   assert.deepEqual(ticks.map(({ distanceM }) => distanceM), [0, 5_000, 10_000, 12_500]);
@@ -166,7 +175,7 @@ test("profile boundary markers preserve component and section identities at shar
   assert.deepEqual(shared.sectionKeys, ["0:same-id", "1:same-id"]);
 });
 
-test("the shared browser exposes accessible inline details with a bounded reduced-motion-aware scroll", async () => {
+test("the shared browser exposes accessible inline details without unexpected profile-driven page scrolling", async () => {
   const source = await readFile(new URL("./RouteSectionBrowser.tsx", import.meta.url), "utf8");
   assert.match(source, /aria-pressed=\{isSelected\}/);
   assert.match(source, /aria-expanded=\{isSelected\}/);
@@ -177,8 +186,8 @@ test("the shared browser exposes accessible inline details with a bounded reduce
   assert.match(source, /distanceKm\} km · \+\{section\.ascentM\} m \/ −\{section\.descentM\} m/);
   assert.match(source, /min-h-\[68px\]/);
   assert.match(source, /onSelectSection\(isSelected \? null : section\)/);
-  assert.match(source, /scrollIntoView\(\{ behavior: reducedMotion \? "auto" : "smooth", block: "nearest" \}\)/);
-  assert.match(source, /getBoundingClientRect\(\)/);
+  assert.doesNotMatch(source, /scrollIntoView/);
+  assert.doesNotMatch(source, /getBoundingClientRect|scrollIntoView/);
 });
 
 test("Route Mode and Race Mode share the browser and clear the opposite map selection", async () => {
@@ -225,13 +234,14 @@ test("Route Mode and Race Mode share the browser and clear the opposite map sele
   assert.match(map, /selectedSectionPoints/);
   assert.match(map, /groupAnalyzedPointsBySegment\(points\)/);
   assert.match(map, /stroke="#f2d675"/);
-  assert.match(map, /color: "#a7c957"/);
+  assert.match(map, /color: "#17211c", weight: 8, opacity: 1/);
   assert.match(map, /getNiceAxisScale\(minElevation, maxElevation/);
   assert.match(map, /getPositionedRouteDistanceTicks\(totalDistance/);
-  assert.match(map, /const plot = \{ left: 136, right: 56, top: 24, bottom: 72 \}/);
-  assert.match(map, /fontSize="22" textAnchor=\{anchor\}/);
+  assert.match(map, /const plot = \{ left: 56, right: 20, top: 16, bottom: 38 \}/);
+  assert.match(map, /fontSize="10" textAnchor=\{anchor\}/);
   assert.match(map, /getRouteSectionBoundaryMarkers\(sections\)/);
-  assert.match(map, /onClick=\{\(\) => onSelectSection\(section\)\}/);
+  assert.match(map, /const isSelected = selectedSection\?\.id === section\.id/);
+  assert.match(map, /onSelectSection\(isSelected \? null : section\)/);
   assert.match(map, /aria-label=\{`Select Route Section/);
   assert.match(map, /segmentIndex\}:\$\{section\.id\}:profile-hit/);
   assert.match(map, /aria-pressed=\{mapExpanded\}/);
@@ -244,7 +254,8 @@ test("Route Mode and Race Mode share the browser and clear the opposite map sele
   assert.match(routeView, /onSelectSection=\{selectSection\}/);
   assert.match(raceView, /onSelectSection=\{selectSection\}/);
   const browser = await readFile(new URL("./RouteSectionBrowser.tsx", import.meta.url), "utf8");
-  assert.match(browser, /What to expect · GPX elevation profile/);
+  assert.match(browser, /expectation\.paragraphs\[0\] \?\? section\.description/);
+  assert.match(browser, /Detailed elevation changes/);
   assert.match(browser, /presentRouteSectionNarrativeV2\(gradientIntelligence, routeSections, section\)/);
   assert.match(browser, /TERRAIN_INTELLIGENCE_V1_ENABLED && <section[\s\S]*?<SectionSubheading>Mapped terrain<\/SectionSubheading>/);
   assert.match(browser, /getTerrainSectionPresentation\(section, terrainEvidenceState\)/);

@@ -1,7 +1,6 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
-import CourseAnalysis from "./CourseAnalysis";
 import CourseExplorer from "./CourseExplorer";
 import CourseBriefView from "./CourseBriefView";
 import RouteSectionBrowser, { RouteSectionBrowserHeading } from "./RouteSectionBrowser";
@@ -33,6 +32,8 @@ import type { PersistedMapillaryEnrichmentRecord, PersistedOsmEnrichmentRecord }
 import type { TerrainEvidenceState } from "./routeSectionPresentation";
 import { TERRAIN_INTELLIGENCE_V1_ENABLED } from "./featureFlags";
 import { toggleKeyMomentSelection } from "./routeSectionSelection";
+import { buildSustainedGradientKeyMoments } from "./routeGradientMoments";
+import RouteTakeaways from "./RouteTakeaways";
 
 export default function RouteAnalysisView({
   analysis,
@@ -63,6 +64,10 @@ export default function RouteAnalysisView({
     () => mapillaryEvidenceByRouteSection(analysis.routeSections, mapillaryEvidence),
     [analysis.routeSections, mapillaryEvidence],
   );
+  const keyMoments = useMemo(() => [
+    ...analysis.keyMoments,
+    ...buildSustainedGradientKeyMoments(analysis.gradientIntelligence, analysis.keyMoments),
+  ], [analysis.keyMoments, analysis.gradientIntelligence]);
 
   function selectMoment(momentId: string) {
     setSelectedSectionKey(null);
@@ -182,18 +187,22 @@ export default function RouteAnalysisView({
     <>
       <section className="bg-[#f4f2ed]">
         <div className="mx-auto max-w-7xl px-6 py-16 lg:px-10 lg:py-20">
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#71805d]">GPX-derived route analysis</p>
-          <h2 className="mt-3 break-words text-3xl font-semibold tracking-[-0.035em] sm:text-4xl">{analysis.name}</h2>
-          <p className="mt-3 text-sm text-black/45">Route structure and metrics are calculated locally from the selected GPX file.</p>
-          <div className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-            <Metric label="Distance" value={`${analysis.metrics.distanceKm.toFixed(2)} km`} />
-            <Metric label="Elevation gain" value={`${analysis.metrics.elevationGainM.toLocaleString("en-US")} m`} />
-            <Metric label="Elevation loss" value={`${analysis.metrics.elevationLossM.toLocaleString("en-US")} m`} />
-            <Metric label="Highest point" value={`${Math.round(analysis.metrics.highestPointM).toLocaleString("en-US")} m`} />
-            <Metric label="Lowest point" value={`${Math.round(analysis.metrics.lowestPointM).toLocaleString("en-US")} m`} />
-          </div>
-          <CourseExplorer selectedMoment={selectedMoment} selectedSectionKey={selectedSectionKey} onSelectSection={selectSection} routeName={analysis.name} routeAnalysis={analysis} keyMoments={analysis.keyMoments} loading={false} error="" showExtendedMetrics />
+          <CourseExplorer
+            selectedMoment={selectedMoment}
+            selectedSectionKey={selectedSectionKey}
+            onSelectSection={selectSection}
+            routeName={analysis.name}
+            heading="GPX Route Analysis"
+            eyebrow="YOUR ROUTE · GPX-DERIVED"
+            supportingText="Route structure and measurements are calculated locally from the GPX file selected in this browser."
+            routeAnalysis={analysis}
+            keyMoments={keyMoments}
+            loading={false}
+            error=""
+            showExtendedMetrics
+          />
           <CourseBriefView routeAnalysis={analysis} routeKey={routeFingerprint?.routeFingerprint ?? analysis.name} />
+          <RouteTakeaways analysis={analysis} />
         </div>
       </section>
 
@@ -210,16 +219,15 @@ export default function RouteAnalysisView({
         <div className="mx-auto max-w-7xl px-6 py-16 lg:px-10 lg:py-20">
           <SectionHeading eyebrow="GPX-derived facts · independent of section boundaries" title="Key Route Moments" />
           <div className="grid gap-8 md:grid-cols-2 xl:grid-cols-3">
-            {analysis.keyMoments.map((moment) => (
+            {keyMoments.map((moment) => (
               <div key={moment.id} className="rounded-3xl border border-black/10 bg-white p-6">
-                <KeyMoment title={moment.title} distance={moment.distance} gain={moment.gain} loss={moment.loss} text={moment.text} source={moment.source} selected={selectedMoment === moment.id} onSelect={() => selectMoment(moment.id)} compact />
+                <KeyMoment title={moment.title} distance={moment.distance} gain={moment.gain} loss={moment.loss} text={moment.text} source={moment.source} selected={selectedMoment === moment.id} onSelect={() => selectMoment(moment.id)} compact focusStartKm={moment.focusStartKm} focusEndKm={moment.focusEndKm} segmentIndex={moment.segmentIndex} focusStartPosition={moment.focusStartPosition} focusEndPosition={moment.focusEndPosition} routePoints={analysis.points} />
               </div>
             ))}
           </div>
         </div>
       </section>
 
-      <CourseAnalysis analysis={analysis.metrics} sourceDescription="the GPX file selected in this browser" sourceLabel="GPX-derived" showExtendedMetrics />
       <TerrainImageViewer image={selectedImage} onClose={() => setSelectedImage(null)} />
     </>
   );
@@ -242,10 +250,6 @@ function withOsmConflicts(record: PersistedOsmEnrichmentRecord): GeoEnrichmentDa
 
 function isPersistedMapillary(value: PersistedMapillaryEnrichmentRecord | MapillaryTerrainProofData): value is PersistedMapillaryEnrichmentRecord {
   return "data" in value && "schemaVersion" in value;
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return <div className="rounded-2xl border border-black/10 bg-white p-4 sm:p-5"><p className="text-[10px] uppercase tracking-[0.15em] text-black/40 sm:text-xs">{label}</p><p className="mt-2 break-words text-xl font-semibold sm:text-2xl">{value}</p></div>;
 }
 
 function SectionHeading({ eyebrow, title }: { eyebrow: string; title: string }) {

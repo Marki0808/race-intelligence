@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import type { MapillaryImageEvidence, MapillarySectionEvidence } from "./mapillaryTerrainProof";
 import type { RouteSection } from "./routeSectionEngine";
 import type { GradientIntelligenceV1 } from "./gradientIntelligence";
@@ -36,18 +36,6 @@ export default function RouteSectionBrowser({
   terrainEvidenceState?: TerrainEvidenceState;
 }) {
   const orderedSections = numberRouteSectionsForDisplay(sections);
-  const rowRefs = useRef(new Map<string, HTMLLIElement>());
-
-  useEffect(() => {
-    if (!selectedSectionKey || typeof window === "undefined") return;
-    const row = rowRefs.current.get(selectedSectionKey);
-    if (!row) return;
-    const bounds = row.getBoundingClientRect();
-    if (bounds.top >= 0 && bounds.bottom <= window.innerHeight) return;
-    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    row.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "nearest" });
-  }, [selectedSectionKey]);
-
   return (
     <div>
       {sections.length ? (
@@ -56,11 +44,7 @@ export default function RouteSectionBrowser({
             {orderedSections.map(({ section, ordinal }) => {
               const isSelected = routeSectionSelectionKey(section) === selectedSectionKey;
               return (
-                <li key={routeSectionSelectionKey(section)} ref={(node) => {
-                  const key = routeSectionSelectionKey(section);
-                  if (node) rowRefs.current.set(key, node);
-                  else rowRefs.current.delete(key);
-                }}>
+                <li key={routeSectionSelectionKey(section)}>
                   <button
                     type="button"
                     aria-pressed={isSelected}
@@ -149,16 +133,10 @@ function SectionDetail({
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#71805d]">Route Section {ordinal} · {section.segmentIndex === 0 ? "Track segment 1" : `Track segment ${section.segmentIndex + 1}`}</p>
           <h3 className="mt-2 text-2xl font-semibold">{title} · {section.startKm}–{section.endKm} km</h3>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-black/55">{section.description}</p>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-black/55">{expectation.paragraphs[0] ?? section.description}</p>
         </div>
         <button type="button" aria-label={`Close Route Section ${ordinal} details`} onClick={onClose} className="min-h-11 rounded-full border border-black/15 bg-white px-4 text-sm font-semibold text-black/70 hover:bg-[#e9eddf] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d]">Close details</button>
       </div>
-      <section className="mt-5 rounded-2xl border border-[#71805d]/20 bg-white/80 p-4 sm:p-5" aria-label="What to expect from the elevation profile">
-        <SectionSubheading>What to expect · GPX elevation profile</SectionSubheading>
-        <div className="mt-2 space-y-2 text-sm leading-6 text-black/65">
-          {expectation.paragraphs.map((paragraph, index) => <p key={`${expectation.sectionId}-${expectation.segmentIndex}-${index}`}>{paragraph}</p>)}
-        </div>
-      </section>
       <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
         <SectionMetric label="Ascent" value={`+${section.ascentM} m`} />
         <SectionMetric label="Descent" value={`−${section.descentM} m`} />
@@ -166,18 +144,25 @@ function SectionDetail({
         <SectionMetric label="Running rhythm" value={title} />
       </div>
       <MiniProfile section={section} />
-      {section.embeddedEvents.length > 0 && (
-        <details className="mt-5 rounded-2xl border border-black/10 bg-white/75 p-4">
-          <summary className="cursor-pointer text-sm font-semibold">Notable changes within this section ({section.embeddedEvents.length})</summary>
-          <ul className="mt-3 space-y-2 text-sm text-black/55">
-            {sortRouteEmbeddedEventsForDisplay(section.embeddedEvents).map((event) => <li key={event.id}>{event.startKm}–{event.endKm} km · {event.distanceKm} km {event.rhythm} · +{event.ascentM} m / −{event.descentM} m</li>)}
-          </ul>
-        </details>
-      )}
       <div className="mt-6 border-t border-black/10 pt-5">
         <SectionSubheading>Section map · GPX-derived</SectionSubheading>
         <TerrainSectionMap points={section.mapData ?? []} startDistanceKm={section.startKm} endDistanceKm={section.endKm} />
       </div>
+      {(expectation.paragraphs.length > 1 || section.embeddedEvents.length > 0) && (
+        <details className="mt-5 rounded-2xl border border-black/10 bg-white/75 p-4">
+          <summary className="min-h-11 cursor-pointer py-3 text-sm font-semibold">Detailed elevation changes</summary>
+          {expectation.paragraphs.length > 1 && (
+            <div className="mt-2 space-y-2 text-sm leading-6 text-black/60" aria-label="Detailed GPX elevation narrative">
+              {expectation.paragraphs.slice(1).map((paragraph, index) => <p key={`${expectation.sectionId}-${expectation.segmentIndex}-detail-${index}`}>{paragraph}</p>)}
+            </div>
+          )}
+          {section.embeddedEvents.length > 0 && (
+            <ul className="mt-3 space-y-2 text-sm text-black/55" aria-label="Measured route changes">
+              {sortRouteEmbeddedEventsForDisplay(section.embeddedEvents).map((event) => <li key={event.id}>{event.startKm}–{event.endKm} km · {event.distanceKm} km {event.rhythm} · +{event.ascentM} m / −{event.descentM} m</li>)}
+            </ul>
+          )}
+        </details>
+      )}
       {TERRAIN_INTELLIGENCE_V1_ENABLED && <section className="mt-6 min-w-0 border-t border-black/10 pt-5" aria-label="Mapped terrain evidence">
         <SectionSubheading>Mapped terrain</SectionSubheading>
         {terrain.status === "available" ? (

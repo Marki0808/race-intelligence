@@ -11,13 +11,13 @@ const [data, presentation, home, racePage, raceMode, sectionBrowser] = await Pro
   readFile(new URL("./RouteSectionBrowser.tsx", import.meta.url), "utf8"),
 ]);
 
-test("Istria terrain claims are explicitly organizer-sourced and linked in both consumers", () => {
+test("Istria course character remains sourced on its race page and is no longer featured on the homepage", () => {
   assert.match(data, /organizer describes the section leading to Buzet as very rocky and demanding/);
   assert.match(data, /says it gets easier toward Umag/);
   assert.match(presentation, /Organizer&apos;s terrain description/);
   assert.match(presentation, /Source: \{terrainSource\.title\}/);
   assert.match(presentation, /href=\{terrainSource\.url\}/);
-  assert.match(home, /terrainSource=\{homepageRaceRecord\.sources\.find\(\(source\) => source\.id === "official-110k"\)\}/);
+  assert.doesNotMatch(home, /CourseCharacter|homepageRaceRecord|official-110k/);
   assert.match(racePage, /terrainSource=\{record\.sources\.find\(\(source\) => source\.id === "official-110k"\)\}/);
 });
 

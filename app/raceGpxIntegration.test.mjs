@@ -13,7 +13,7 @@ const [home, discoveryUi, routeMode, downloadModule, downloadRoute, transfer] = 
 
 test("homepage exposes race-page discovery beside the existing manual GPX entry", () => {
   assert.match(home, /<RaceGpxDiscovery\s*\/>/);
-  assert.match(home, /href="\/route"[\s\S]*?Open GPX upload/);
+  assert.match(home, /href="\/route"[\s\S]*?Upload a GPX route/);
   assert.match(discoveryUi, /\/api\/race-gpx-discovery/);
 });
 

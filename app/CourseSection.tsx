@@ -20,6 +20,8 @@ import type { RaceRecordData } from "./raceTypes";
 import type { RouteSection } from "./routeSectionEngine";
 import { routeSectionSelectionKey } from "./routeSectionSelection";
 import { TERRAIN_INTELLIGENCE_V1_ENABLED } from "./featureFlags";
+import { buildSustainedGradientKeyMoments } from "./routeGradientMoments";
+import RouteTakeaways from "./RouteTakeaways";
 
 export default function CourseSection({
   raceRecord,
@@ -52,6 +54,10 @@ export default function CourseSection({
   const displayedSections = useMemo(() => TERRAIN_INTELLIGENCE_V1_ENABLED && routeAnalysis && currentTerrain?.data
     ? attachTerrainEvidenceToRouteSections(routeAnalysis.routeSections, currentTerrain.data)
     : routeAnalysis?.routeSections ?? [], [routeAnalysis, currentTerrain]);
+  const keyMoments = useMemo(() => [
+    ...raceRecord.intelligence.keyMoments,
+    ...buildSustainedGradientKeyMoments(routeAnalysis?.gradientIntelligence, raceRecord.intelligence.keyMoments),
+  ], [raceRecord.intelligence.keyMoments, routeAnalysis?.gradientIntelligence]);
 
   useEffect(() => () => {
     terrainController.current?.abort();
@@ -170,13 +176,17 @@ export default function CourseSection({
         selectedSectionKey={selectedSectionKey}
         onSelectSection={selectSection}
         routeName={`${raceRecord.race.name} · ${raceRecord.edition.year}`}
+        heading={raceRecord.race.name || "Race course"}
+        eyebrow={`${raceRecord.edition.year} edition · GPX-derived`}
+        supportingText="The profile and measurements below come from the selected edition’s GPX track."
         startLocation={raceRecord.edition.startLocation}
         finishLocation={raceRecord.edition.finishLocation}
         routeAnalysis={routeAnalysis}
-        keyMoments={raceRecord.intelligence.keyMoments}
+        keyMoments={keyMoments}
         loading={isLoading}
         error={currentError}
         onRetry={retryRaceGpx}
+        showExtendedMetrics
       />
       <CourseBriefView
         key={editionKey}
@@ -184,6 +194,7 @@ export default function CourseSection({
         routeAnalysis={routeAnalysis}
         loading={isLoading}
       />
+      {routeAnalysis && <RouteTakeaways analysis={routeAnalysis} />}
       {routeAnalysis && (
         <section className="mt-12">
           <RouteSectionBrowserHeading action={TERRAIN_INTELLIGENCE_V1_ENABLED ? <TerrainEvidenceAction state={terrainState} onCheck={() => void checkTerrainEvidence()} /> : undefined} />
@@ -197,7 +208,7 @@ export default function CourseSection({
         </section>
       )}
       <div className="mt-16">
-        {raceRecord.intelligence.keyMoments.map((item) => (
+        {keyMoments.map((item) => (
           <KeyMoment
             key={item.id}
             title={item.title}
@@ -206,6 +217,10 @@ export default function CourseSection({
             distance={item.distance}
             focusStartKm={item.focusStartKm}
             focusEndKm={item.focusEndKm}
+            segmentIndex={item.segmentIndex}
+            focusStartPosition={item.focusStartPosition}
+            focusEndPosition={item.focusEndPosition}
+            routePoints={routeAnalysis?.points}
             gain={item.gain}
             loss={item.loss}
             text={item.text}
