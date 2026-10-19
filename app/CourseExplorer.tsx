@@ -49,6 +49,7 @@ export default function CourseExplorer({
   const leafletRef = useRef<typeof import("leaflet") | null>(null);
   const routeLineRefs = useRef<Map<number, Polyline>>(new Map());
   const highlightLineRefs = useRef<Layer[]>([]);
+  const lastMapSelectionRef = useRef<string | null>(null);
   const points = useMemo(() => routeAnalysis?.points ?? [], [routeAnalysis]);
   const sections = routeAnalysis?.routeSections ?? [];
   const selectedSection = findSelectedRouteSection(sections, selectedSectionKey);
@@ -57,11 +58,17 @@ export default function CourseExplorer({
     [points, selectedSection],
   );
   const selectedMomentData = selectedMoment ? keyMoments.find((item) => item.id === selectedMoment) ?? null : null;
-  const selectedMomentInterval = selectedMomentData ? resolveKeyMomentInterval(points, selectedMomentData) : null;
+  const selectedMomentInterval = useMemo(() => selectedMomentData ? resolveKeyMomentInterval(points, selectedMomentData) : null, [points, selectedMomentData]);
   const selectedMomentPoints = useMemo(
     () => selectedMomentData ? clipRoutePointsToKeyMoment(points, selectedMomentData) : [],
     [points, selectedMomentData],
   );
+  const selectedMomentFocusPoints = useMemo(() => {
+    if (selectedMomentData?.measurement?.kind !== "point") return selectedMomentPoints;
+    const { distanceM, segmentIndex } = selectedMomentData.measurement;
+    const nearby = points.filter((point) => point.segmentIndex === segmentIndex && Math.abs(point.distanceM - distanceM) <= 500);
+    return nearby.length ? nearby : selectedMomentPoints;
+  }, [points, selectedMomentData, selectedMomentPoints]);
   const metrics = routeAnalysis?.metrics;
   const selectedSectionOrdinal = selectedSection ? sections.findIndex((section) => section.id === selectedSection.id && section.segmentIndex === selectedSection.segmentIndex) + 1 : 0;
   const displayedMetrics = selectedSection ? {
@@ -98,7 +105,7 @@ export default function CourseExplorer({
         const segmentIndex = segment[0].segmentIndex ?? 0;
         const line = L.polyline(
           segment.map(({ latitude, longitude }) => [latitude, longitude]) as [number, number][],
-          { color: "#718078", weight: 4, opacity: 0.78 },
+          { color: "#aeb7b0", weight: 3, opacity: 0.92 },
         ).addTo(map!);
         segmentLines.set(segmentIndex, line);
       });
@@ -153,6 +160,7 @@ export default function CourseExplorer({
       leafletRef.current = null;
       routeLineRefs.current.clear();
       highlightLineRefs.current = [];
+      lastMapSelectionRef.current = null;
       setMapReady(false);
     };
   }, [finishLocation, points, startLocation]);
@@ -169,9 +177,7 @@ export default function CourseExplorer({
 
     for (const line of highlightLineRefs.current) line.removeFrom(map);
     highlightLineRefs.current = [];
-    for (const line of routeLineRefs.current.values()) {
-      line.setStyle({ opacity: selectedSection || selectedMomentInterval ? 0.28 : 0.78, weight: selectedSection || selectedMomentInterval ? 3 : 4 });
-    }
+    for (const line of routeLineRefs.current.values()) line.setStyle({ color: "#aeb7b0", opacity: 0.92, weight: 3 });
 
     if (selectedSection && selectedSectionPoints.length > 1) {
       const highlight = L.polyline(
@@ -199,20 +205,21 @@ export default function CourseExplorer({
       }).addTo(map));
     }
 
-    if (selectedSection && selectedSectionPoints.length > 0) {
-      map.fitBounds(selectedSectionPoints.map((point) => [point.latitude, point.longitude]), { padding: [50, 50] });
-      return;
-    }
-
-    if (!selectedSection && selectedMomentInterval && selectedMomentPoints.length > 0) {
-      map.fitBounds(selectedMomentPoints.map((point) => [point.latitude, point.longitude]), { padding: [50, 50] });
-      return;
-    }
-
-    if (points.length > 0) {
+    const selection = selectedSection
+      ? `section:${selectedSection.segmentIndex}:${selectedSection.id}`
+      : selectedMomentData ? `moment:${selectedMomentData.id}` : "none";
+    const previous = lastMapSelectionRef.current;
+    lastMapSelectionRef.current = selection;
+    // Section emphasis never changes the full-route viewport. Leaving a Key Moment focus
+    // restores the route frame; Key Moment selection itself keeps its existing map focus.
+    if (selectedMomentData && selectedMomentInterval && selectedMomentPoints.length > 0) {
+      map.fitBounds(selectedMomentFocusPoints.map((point) => [point.latitude, point.longitude]), { padding: [50, 50], maxZoom: 15 });
+    } else if (previous?.startsWith("moment:") && selection !== previous && points.length > 0) {
+      map.fitBounds(points.map((point) => [point.latitude, point.longitude]), { padding: [30, 30] });
+    } else if (previous !== null && previous !== "none" && selection === "none" && points.length > 0) {
       map.fitBounds(points.map((point) => [point.latitude, point.longitude]), { padding: [30, 30] });
     }
-  }, [mapReady, points, selectedMomentInterval, selectedMomentPoints, selectedSection, selectedSectionPoints]);
+  }, [mapReady, points, selectedMomentData, selectedMomentFocusPoints, selectedMomentInterval, selectedMomentPoints, selectedSection, selectedSectionPoints]);
 
   return (
     <div className="mt-10 overflow-hidden rounded-[2rem] border border-black/10 bg-[#17211c] text-white sm:mt-14">

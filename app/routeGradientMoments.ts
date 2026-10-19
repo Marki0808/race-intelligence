@@ -34,6 +34,15 @@ export function buildSustainedGradientKeyMoments(
       segmentIndex: strongest.segmentIndex,
       focusStartPosition: { distanceM: interval.startDistanceM, segmentIndex: strongest.segmentIndex },
       focusEndPosition: { distanceM: interval.endDistanceM, segmentIndex: strongest.segmentIndex },
+      measurement: {
+        kind: 'gradient',
+        direction,
+        startDistanceM: interval.startDistanceM,
+        endDistanceM: interval.endDistanceM,
+        distanceM: interval.distanceM,
+        averageNetGradientPct: interval.metrics.netGradientPct,
+        segmentIndex: strongest.segmentIndex,
+      },
       text: `The GPX-smoothed profile averages ${signedGrade} net grade ${gradePhrase} over ${(interval.distanceM / 1000).toFixed(1)} km.`,
       source: 'GPX-derived smoothed profile',
     }];

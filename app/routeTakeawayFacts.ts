@@ -1,42 +1,28 @@
 import type { RouteAnalysisData } from "./gpxAnalysis.ts";
 
-export type RouteTakeaway = { id: string; text: string; segmentIndex: number };
+export type RouteTakeaway = { id: string; text: string; segmentIndex: number; sectionId: string };
 
-const rhythmText: Record<string, string> = {
-  climb: "climb-led",
-  descent: "descent-led",
-  rolling: "rolling",
-  flat: "low-vertical-change",
-};
-
-/** Summarizes only the ordered Route Section character within each GPX component. */
+/** Emits only a route-level concentration insight when one section contains a strict majority of measured vertical change. */
 export function buildRouteTakeaways(analysis: Pick<RouteAnalysisData, "routeSections">): RouteTakeaway[] {
-  const byComponent = new Map<number, typeof analysis.routeSections>();
-  for (const section of analysis.routeSections) {
-    const entries = byComponent.get(section.segmentIndex) ?? [];
-    entries.push(section);
-    byComponent.set(section.segmentIndex, entries);
-  }
-  return [...byComponent.entries()]
-    .sort(([left], [right]) => left - right)
-    .slice(0, 3)
-    .flatMap(([segmentIndex, sections]) => {
-      const ordered = [...sections].sort((a, b) => a.startPosition.distanceM - b.startPosition.distanceM);
-      const rhythms = ordered.reduce<string[]>((result, section) => {
-        const label = rhythmText[section.dominantRhythm] ?? "unknown";
-        if (label !== "unknown" && result.at(-1) !== label) result.push(label);
-        return result;
-      }, []);
-      if (!rhythms.length) return [];
-      const componentLabel = `Track segment ${segmentIndex + 1}`;
-      const text = rhythms.length === 1
-        ? `Every analyzed Route Section in ${componentLabel} is classified as ${rhythms[0]}.`
-        : `Within ${componentLabel}, the analyzed sections progress from ${joinRhythms(rhythms)}.`;
-      return [{ id: `route-takeaway-${segmentIndex}`, text, segmentIndex }];
+  const sections = analysis.routeSections.filter((section) => Number.isFinite(section.ascentM) && Number.isFinite(section.descentM) && section.ascentM >= 0 && section.descentM >= 0);
+  if (sections.length < 2) return [];
+  const totalAscent = sections.reduce((sum, section) => sum + section.ascentM, 0);
+  const totalDescent = sections.reduce((sum, section) => sum + section.descentM, 0);
+  const majorityClimb = totalAscent > 0 ? sections.filter((section) => section.ascentM / totalAscent > 0.5).sort((a, b) => b.ascentM - a.ascentM || a.startPosition.distanceM - b.startPosition.distanceM)[0] : undefined;
+  const majorityDescent = totalDescent > 0 ? sections.filter((section) => section.descentM / totalDescent > 0.5).sort((a, b) => b.descentM - a.descentM || a.startPosition.distanceM - b.startPosition.distanceM)[0] : undefined;
+  const insights: RouteTakeaway[] = [];
+  if (majorityClimb && majorityClimb.id === majorityDescent?.id) {
+    insights.push({
+      id: `route-takeaway-${majorityClimb.segmentIndex}-${majorityClimb.id}-vertical`,
+      sectionId: majorityClimb.id,
+      segmentIndex: majorityClimb.segmentIndex,
+      text: `More than half of the climbing and descending measured across the Route Sections is concentrated within ${formatKm(majorityClimb.startKm)}–${formatKm(majorityClimb.endKm)} km.`,
     });
+  } else {
+    if (majorityClimb) insights.push({ id: `route-takeaway-${majorityClimb.segmentIndex}-${majorityClimb.id}-climb`, sectionId: majorityClimb.id, segmentIndex: majorityClimb.segmentIndex, text: `More than half of the climbing measured across the route sections falls within ${formatKm(majorityClimb.startKm)}–${formatKm(majorityClimb.endKm)} km.` });
+    if (majorityDescent) insights.push({ id: `route-takeaway-${majorityDescent.segmentIndex}-${majorityDescent.id}-descent`, sectionId: majorityDescent.id, segmentIndex: majorityDescent.segmentIndex, text: `More than half of the descending measured across the route sections falls within ${formatKm(majorityDescent.startKm)}–${formatKm(majorityDescent.endKm)} km.` });
+  }
+  return insights.slice(0, 3);
 }
 
-function joinRhythms(values: readonly string[]) {
-  if (values.length === 2) return `${values[0]} to ${values[1]}`;
-  return `${values.slice(0, -1).join(", ")}, then ${values.at(-1)}`;
-}
+function formatKm(value: number) { return Number(value.toFixed(2)).toString(); }

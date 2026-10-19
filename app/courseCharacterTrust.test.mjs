@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const [data, presentation, home, racePage, raceMode, sectionBrowser] = await Promise.all([
+const [data, presentation, home, racePage, raceMode, sectionBrowser, keyRouteMoments] = await Promise.all([
   readFile(new URL("./istria110kData.ts", import.meta.url), "utf8"),
   readFile(new URL("./CourseCharacter.tsx", import.meta.url), "utf8"),
   readFile(new URL("./page.tsx", import.meta.url), "utf8"),
   readFile(new URL("./RacePageContent.tsx", import.meta.url), "utf8"),
   readFile(new URL("./CourseSection.tsx", import.meta.url), "utf8"),
   readFile(new URL("./RouteSectionBrowser.tsx", import.meta.url), "utf8"),
+  readFile(new URL("./KeyRouteMoments.tsx", import.meta.url), "utf8"),
 ]);
 
 test("Istria course character remains sourced on its race page and is no longer featured on the homepage", () => {
@@ -35,7 +36,7 @@ test("GPX-derived Course Character avoids unqualified technicality and location 
 test("Race Mode removes the incorrect None status while retaining mutually exclusive selection", () => {
   assert.doesNotMatch(raceMode, /Selected:\s*\{selectedMoment \?\? "None"\}/);
   assert.match(raceMode, /function selectMoment\(momentId: string\)\s*\{[\s\S]*?moment: toggleKeyMomentSelection\(current\.editionKey === editionKey \? current\.moment : null, momentId\)/);
-  assert.match(raceMode, /selected=\{selectedMoment === item\.id\}/);
+  assert.match(keyRouteMoments, /selected=\{selectedMoment === moment\.id\}/);
   assert.match(raceMode, /sectionKey: section \? routeSectionSelectionKey\(section\) : null/);
   assert.match(raceMode, /moment: section \? null/);
   assert.match(sectionBrowser, /aria-pressed=\{isSelected\}/);

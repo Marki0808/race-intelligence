@@ -5,7 +5,7 @@ import CourseExplorer from "./CourseExplorer";
 import CourseBriefView from "./CourseBriefView";
 import RouteSectionBrowser, { RouteSectionBrowserHeading } from "./RouteSectionBrowser";
 import TerrainEvidenceAction from "./TerrainEvidenceAction";
-import KeyMoment from "./KeyMoment";
+import KeyRouteMoments from "./KeyRouteMoments";
 import type { GeoEnrichmentData } from "./geoEnrichment";
 import { requestRouteTerrainEvidence } from "./routeTerrainEvidenceClient";
 import type { RouteAnalysisData } from "./gpxAnalysis";
@@ -202,7 +202,6 @@ export default function RouteAnalysisView({
             showExtendedMetrics
           />
           <CourseBriefView routeAnalysis={analysis} routeKey={routeFingerprint?.routeFingerprint ?? analysis.name} />
-          <RouteTakeaways analysis={analysis} />
         </div>
       </section>
 
@@ -211,22 +210,12 @@ export default function RouteAnalysisView({
           <RouteSectionBrowserHeading action={TERRAIN_INTELLIGENCE_V1_ENABLED ? (
             <TerrainEvidenceAction state={terrainEvidenceState} onCheck={() => void loadEvidence()} />
           ) : undefined} />
-          <RouteSectionBrowser sections={displayedSections} gradientIntelligence={analysis.gradientIntelligence} selectedSectionKey={selectedSectionKey} onSelectSection={selectSection} imageEvidence={imageEvidence} onSelectImage={setSelectedImage} terrainEvidenceState={terrainEvidenceState} />
+          <RouteSectionBrowser sections={displayedSections} routePoints={analysis.points} gradientIntelligence={analysis.gradientIntelligence} selectedSectionKey={selectedSectionKey} onSelectSection={selectSection} imageEvidence={imageEvidence} onSelectImage={setSelectedImage} terrainEvidenceState={terrainEvidenceState} />
         </div>
       </section>
 
-      <section className="bg-[#f4f2ed]">
-        <div className="mx-auto max-w-7xl px-6 py-16 lg:px-10 lg:py-20">
-          <SectionHeading eyebrow="GPX-derived facts · independent of section boundaries" title="Key Route Moments" />
-          <div className="grid gap-8 md:grid-cols-2 xl:grid-cols-3">
-            {keyMoments.map((moment) => (
-              <div key={moment.id} className="rounded-3xl border border-black/10 bg-white p-6">
-                <KeyMoment title={moment.title} distance={moment.distance} gain={moment.gain} loss={moment.loss} text={moment.text} source={moment.source} selected={selectedMoment === moment.id} onSelect={() => selectMoment(moment.id)} compact focusStartKm={moment.focusStartKm} focusEndKm={moment.focusEndKm} segmentIndex={moment.segmentIndex} focusStartPosition={moment.focusStartPosition} focusEndPosition={moment.focusEndPosition} routePoints={analysis.points} />
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
+      <KeyRouteMoments moments={keyMoments} routePoints={analysis.points} totalDistanceM={analysis.metrics.distanceKm * 1000} selectedMoment={selectedMoment} onSelect={selectMoment} />
+      <RouteTakeaways analysis={analysis} />
 
       <TerrainImageViewer image={selectedImage} onClose={() => setSelectedImage(null)} />
     </>
@@ -250,8 +239,4 @@ function withOsmConflicts(record: PersistedOsmEnrichmentRecord): GeoEnrichmentDa
 
 function isPersistedMapillary(value: PersistedMapillaryEnrichmentRecord | MapillaryTerrainProofData): value is PersistedMapillaryEnrichmentRecord {
   return "data" in value && "schemaVersion" in value;
-}
-
-function SectionHeading({ eyebrow, title }: { eyebrow: string; title: string }) {
-  return <div className="mb-8"><p className="text-xs font-semibold uppercase tracking-[0.25em] text-[#71805d]">{eyebrow}</p><h2 className="mt-3 text-3xl font-semibold tracking-[-0.035em] sm:text-4xl">{title}</h2></div>;
 }

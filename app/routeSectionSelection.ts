@@ -23,8 +23,14 @@ export type RouteMomentInterval = {
 /** Resolves a Key Moment only when its distance interval can be bound to one GPX component. */
 export function resolveKeyMomentInterval(
   points: readonly GpxRoutePointData[],
-  moment: Pick<KeyMomentData, "focusStartKm" | "focusEndKm" | "segmentIndex" | "focusStartPosition" | "focusEndPosition">,
+  moment: Pick<KeyMomentData, "focusStartKm" | "focusEndKm" | "segmentIndex" | "focusStartPosition" | "focusEndPosition" | "measurement">,
 ): RouteMomentInterval | null {
+  if (moment.measurement?.kind === "point") {
+    const { distanceM, segmentIndex } = moment.measurement;
+    if (!Number.isFinite(distanceM) || moment.segmentIndex !== segmentIndex ||
+      !points.some((point) => point.segmentIndex === segmentIndex && point.distanceM === distanceM)) return null;
+    return { segmentIndex, startDistanceM: distanceM, endDistanceM: distanceM };
+  }
   const components = [...new Set(points.map((point) => point.segmentIndex))];
   const hasStartPosition = moment.focusStartPosition !== undefined;
   const hasEndPosition = moment.focusEndPosition !== undefined;

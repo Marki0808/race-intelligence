@@ -44,6 +44,14 @@ test("Key Moment km bounds remain usable on a single component and short edge in
   assert.deepEqual(clipRoutePointsToKeyMoment(points, edgeMoment).map((item) => item.distanceM), [0, 200]);
 });
 
+test("point Key Moments highlight only the exact source sample and its GPX component", () => {
+  const points = [point(0, 1000, 10), point(0, 2000, 20), point(1, 2000, 100), point(1, 3000, 110)];
+  const peak = moment({ segmentIndex: 1, measurement: { kind: "point", distanceM: 2000, elevationM: 1000, segmentIndex: 1 }, focusStartPosition: { distanceM: 2000, segmentIndex: 1 }, focusEndPosition: { distanceM: 2000, segmentIndex: 1 } });
+  assert.deepEqual(resolveKeyMomentInterval(points, peak), { segmentIndex: 1, startDistanceM: 2000, endDistanceM: 2000 });
+  assert.deepEqual(clipRoutePointsToKeyMoment(points, peak).map(({ segmentIndex, distanceM }) => [segmentIndex, distanceM]), [[1, 2000]]);
+  assert.equal(resolveKeyMomentInterval(points, { ...peak, segmentIndex: 0 }), null);
+});
+
 test("Key Moment without component identity fails closed for disconnected components", () => {
   const points = [point(0, 0, 0), point(0, 1000, 10), point(1, 1000, 100), point(1, 2000, 110)];
   assert.equal(resolveKeyMomentInterval(points, moment({ segmentIndex: undefined })), null);
@@ -227,9 +235,13 @@ test("Route Mode and Race Mode share the browser and clear the opposite map sele
   assert.match(map, /selectedMomentInterval=\{selectedSection \? null : selectedMomentInterval\}/);
   assert.match(map, /selectedMomentPoints\.map\(\(\{ latitude, longitude \}\)/);
   const keyMoment = await readFile(new URL("./KeyMoment.tsx", import.meta.url), "utf8");
-  assert.match(keyMoment, /aria-pressed=\{onSelect \? selected : undefined\}/);
-  assert.match(raceView, /selected=\{selectedMoment === item\.id\}/);
-  assert.match(routeView, /selected=\{selectedMoment === moment\.id\}/);
+  assert.match(keyMoment, /startX = 8 \+ card\.startPercent \* 3\.04/);
+  assert.match(keyMoment, /endX = 8 \+ card\.endPercent \* 3\.04/);
+  assert.match(keyMoment, /aria-pressed=\{selected\}/);
+  assert.match(raceView, /<KeyRouteMoments moments=\{keyMoments\}/);
+  assert.match(routeView, /<KeyRouteMoments moments=\{keyMoments\}/);
+  const sharedMoments = await readFile(new URL("./KeyRouteMoments.tsx", import.meta.url), "utf8");
+  assert.match(sharedMoments, /selected=\{selectedMoment === moment\.id\}/);
   assert.match(map, /keyMoments\.find\(\(item\) => item\.id === selectedMoment\)/);
   assert.match(map, /selectedSectionPoints/);
   assert.match(map, /groupAnalyzedPointsBySegment\(points\)/);

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { buildSustainedGradientKeyMoments } from "./routeGradientMoments.ts";
 import { getKeyMomentProfilePoints, keyMomentProfilePolyline } from "./routeKeyMomentProfile.ts";
 import { buildRouteTakeaways } from "./routeTakeawayFacts.ts";
+import { orderKeyMomentsForDisplay, presentKeyMomentCard } from "./routeKeyMomentPresentation.ts";
 
 const interval = (overrides = {}) => ({
   intervalId: "interval-1", segmentIndex: 0, startDistanceM: 2000, endDistanceM: 4000, distanceM: 2000,
@@ -10,7 +11,7 @@ const interval = (overrides = {}) => ({
   direction: "climb", gradientBand: "steep", character: "sustained-steep-climb", confidence: "high", intervalLengthClass: "sustained", measurementAvailability: "available", ...overrides,
 });
 const intelligence = (intervals) => ({ schemaVersion: 1, algorithmVersion: 2, source: "route-dynamics-smoothed-profile", assumptions: { resampleIntervalM: 100, medianFilterRadiusM: 200, movingAverageRadiusM: 300 }, sections: [{ sectionId: "section-0", segmentIndex: 0, startDistanceM: 0, endDistanceM: 5000, status: "available", sectionCharacter: "climbing", progression: "steady", multiScaleMetrics: [], intervals }] });
-const section = (id, segmentIndex, start, end, rhythm) => ({ id, segmentIndex, startPosition: { distanceM: start, segmentIndex }, endPosition: { distanceM: end, segmentIndex }, startKm: start / 1000, endKm: end / 1000, dominantRhythm: rhythm });
+const section = (id, segmentIndex, start, end, rhythm, ascentM = 0, descentM = 0) => ({ id, segmentIndex, startPosition: { distanceM: start, segmentIndex }, endPosition: { distanceM: end, segmentIndex }, startKm: start / 1000, endKm: end / 1000, dominantRhythm: rhythm, ascentM, descentM });
 
 test("sustained climb and descent highlights use high-confidence existing intervals and preserve precise component identity", () => {
   const climb = intelligence([interval()]);
@@ -39,7 +40,7 @@ test("an existing climb moment covering a gradient feature prevents a duplicate 
   assert.deepEqual(buildSustainedGradientKeyMoments(intelligence([interval()]), existing), []);
 });
 
-test("Key Moment sparkline uses only actual samples from its validated component and interval", () => {
+test("legacy Key Moment profile helper remains component-scoped for existing consumers", () => {
   const points = [
     { distanceM: 0, elevationM: 10, latitude: 0, longitude: 0, segmentIndex: 0 },
     { distanceM: 1000, elevationM: 20, latitude: 0, longitude: 0, segmentIndex: 0 },
@@ -56,14 +57,35 @@ test("Key Moment sparkline uses only actual samples from its validated component
   assert.equal(keyMomentProfilePolyline(profile.slice(0, 1)), null);
 });
 
-test("route takeaways preserve ordered rhythm within each disconnected component and never bridge components", () => {
-  const result = buildRouteTakeaways({ routeSections: [
-    section("a", 0, 0, 1000, "climb"), section("b", 0, 1000, 2000, "climb"), section("c", 0, 2000, 3000, "rolling"),
-    section("d", 1, 3000, 4000, "descent"), section("e", 1, 4000, 5000, "flat"),
+test("takeaways require a genuine majority insight and never expose internal labels or section chronology", () => {
+  const none = buildRouteTakeaways({ routeSections: [section("a", 0, 0, 1000, "climb", 50, 50), section("b", 0, 1000, 2000, "rolling", 50, 50)] });
+  assert.deepEqual(none, []);
+  const insights = buildRouteTakeaways({ routeSections: [
+    section("a", 0, 0, 1000, "climb", 70, 10), section("b", 0, 1000, 2000, "rolling", 20, 20), section("c", 1, 2000, 3000, "descent", 10, 70),
   ] });
-  assert.deepEqual(result.map(({ text }) => text), [
-    "Within Track segment 1, the analyzed sections progress from climb-led to rolling.",
-    "Within Track segment 2, the analyzed sections progress from descent-led to low-vertical-change.",
-  ]);
-  assert.ok(result.length <= 3);
+  assert.equal(insights.length, 2);
+  assert.match(insights[0].text, /More than half of the climbing measured/);
+  assert.match(insights[1].text, /More than half of the descending measured/);
+  assert.doesNotMatch(insights.map((item) => item.text).join(" "), /Track segment|climb-led|descent-led|progress from|rolling/);
+  assert.ok(insights.every((item) => item.segmentIndex >= 0 && item.sectionId));
+  assert.ok(insights.length <= 3);
+});
+
+test("Key Moment presentation preserves consistent measured values, exact positions and distinct point markers", () => {
+  const points = [
+    { distanceM: 0, elevationM: 10, latitude: 0, longitude: 0, segmentIndex: 0 },
+    { distanceM: 2000, elevationM: 40, latitude: 0, longitude: 0, segmentIndex: 0 },
+    { distanceM: 3000, elevationM: 60, latitude: 0, longitude: 0, segmentIndex: 0 },
+    { distanceM: 5000, elevationM: 20, latitude: 0, longitude: 0, segmentIndex: 0 },
+  ];
+  const grade = { id: "grade", number: "", title: "Sustained steep climb", distance: "2–3 km", focusStartKm: 2, focusEndKm: 3, segmentIndex: 0, text: "Smoothed profile grade.", source: "GPX-derived", measurement: { kind: "gradient", direction: "climb", startDistanceM: 2000, endDistanceM: 3000, distanceM: 1000, averageNetGradientPct: 12.2, segmentIndex: 0 } };
+  const card = presentKeyMomentCard(grade, points, 5000);
+  assert.equal(card?.value, "+12.2%");
+  assert.equal(card?.valueContext, "average net grade over 1.0 km uphill");
+  assert.equal(card?.location, "2–3 km");
+  assert.equal(presentKeyMomentCard({ ...grade, measurement: { ...grade.measurement, distanceM: 1700 } }, points, 5000), null);
+  const high = { ...grade, id: "high", title: "Highest point", measurement: { kind: "point", distanceM: 3000, elevationM: 60, segmentIndex: 0 } };
+  assert.deepEqual(orderKeyMomentsForDisplay([high, grade]).map((item) => item.id), ["grade", "high"]);
+  assert.equal(presentKeyMomentCard(high, points, 5000)?.location, "At 3 km");
+  assert.equal(presentKeyMomentCard({ ...high, measurement: { ...high.measurement, segmentIndex: 1 } }, points, 5000), null);
 });

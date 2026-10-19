@@ -1,6 +1,7 @@
 import type { GpxRoutePointData } from "./gpxAnalysis";
 import type { GpxRouteMetricsData } from "./gpxAnalysis";
 import type { KeyMomentData } from "./raceTypes";
+import type { KeyMomentMeasurement } from "./raceTypes";
 import type { RouteDynamicEvent, RouteDynamicsResult } from "./routeDynamics";
 
 export type RouteElevationExtreme = {
@@ -18,6 +19,8 @@ export type StructuredRouteKeyMomentEvent = {
   endKm: number;
   distanceKm: number;
   elevationChangeM: number;
+  startDistanceM: number;
+  endDistanceM: number;
 };
 
 type RouteKeyMomentBaseFact = {
@@ -28,6 +31,9 @@ type RouteKeyMomentBaseFact = {
   text: string;
   gain?: number;
   loss?: number;
+  measurement?: KeyMomentMeasurement;
+  exactStartDistanceM?: number;
+  exactEndDistanceM?: number;
 };
 
 /** Selects first-in-route extrema, preserving the current tie behavior. */
@@ -70,6 +76,8 @@ export function selectStructuredRouteKeyMomentEvents(
     endKm: event.endKm,
     distanceKm: event.endKm - event.startKm,
     elevationChangeM: kind === "climb" ? event.ascentM : event.descentM,
+    startDistanceM: event.startPosition.distanceM,
+    endDistanceM: event.endPosition.distanceM,
   }));
 }
 
@@ -88,6 +96,7 @@ export function createRouteKeyMoments(
       endKm: extrema.highest.point.distanceM / 1000,
       segmentIndex: extrema.highest.point.segmentIndex,
       text: `The GPX records its highest elevation here: ${Math.round(metrics.highestPointM)} m.`,
+      measurement: { kind: "point", distanceM: extrema.highest.point.distanceM, elevationM: extrema.highest.point.elevationM, segmentIndex: extrema.highest.point.segmentIndex },
     },
     {
       title: "Lowest point",
@@ -95,6 +104,7 @@ export function createRouteKeyMoments(
       endKm: extrema.lowest.point.distanceM / 1000,
       segmentIndex: extrema.lowest.point.segmentIndex,
       text: `The GPX records its lowest elevation here: ${Math.round(metrics.lowestPointM)} m.`,
+      measurement: { kind: "point", distanceM: extrema.lowest.point.distanceM, elevationM: extrema.lowest.point.elevationM, segmentIndex: extrema.lowest.point.segmentIndex },
     },
     ...selectStructuredRouteKeyMomentEvents(dynamics).map(toDisplayFact),
   ];
@@ -112,27 +122,35 @@ export function createRouteKeyMoments(
       endKm: rolling.endKm,
       segmentIndex: rolling.segmentIndex ?? 0,
       text: "Repeated climbs and descents create a rolling elevation pattern.",
+      exactStartDistanceM: rolling.startPosition.distanceM,
+      exactEndDistanceM: rolling.endPosition.distanceM,
+      measurement: { kind: "rolling", startDistanceM: rolling.startPosition.distanceM, endDistanceM: rolling.endPosition.distanceM, distanceM: rolling.endPosition.distanceM - rolling.startPosition.distanceM, segmentIndex: rolling.segmentIndex ?? 0 },
     });
   }
 
   return facts.slice(0, 8).map((fact, index) => {
-    const startKm = round1(fact.startKm);
-    const endKm = round1(fact.endKm);
-    const pointFact = Math.abs(endKm - startKm) < 0.05;
+    const exactStart = fact.exactStartDistanceM ?? fact.startKm * 1000;
+    const exactEnd = fact.exactEndDistanceM ?? fact.endKm * 1000;
+    const startKm = round1(exactStart / 1000);
+    const endKm = round1(exactEnd / 1000);
+    const boundedStartKm = Math.min(metrics.distanceKm, startKm);
+    const boundedEndKm = Math.min(metrics.distanceKm, endKm);
+    const pointFact = fact.measurement?.kind === "point";
     return {
       id: `route-fact-${index + 1}`,
       number: String(index + 1).padStart(2, "0"),
       title: fact.title,
       distance: pointFact ? `~${startKm} km` : `${startKm}–${endKm} km`,
-      focusStartKm: pointFact ? Math.max(0, startKm - 0.5) : startKm,
-      focusEndKm: pointFact ? Math.min(metrics.distanceKm, endKm + 0.5) : endKm,
+      focusStartKm: boundedStartKm,
+      focusEndKm: boundedEndKm,
       segmentIndex: fact.segmentIndex,
-      focusStartPosition: { distanceM: (pointFact ? Math.max(0, startKm - 0.5) : startKm) * 1000, segmentIndex: fact.segmentIndex },
-      focusEndPosition: { distanceM: (pointFact ? Math.min(metrics.distanceKm, endKm + 0.5) : endKm) * 1000, segmentIndex: fact.segmentIndex },
+      focusStartPosition: { distanceM: exactStart, segmentIndex: fact.segmentIndex },
+      focusEndPosition: { distanceM: exactEnd, segmentIndex: fact.segmentIndex },
       ...(fact.gain !== undefined ? { gain: `+${Math.round(fact.gain).toLocaleString("en-US")} m` } : {}),
       ...(fact.loss !== undefined ? { loss: `−${Math.round(fact.loss).toLocaleString("en-US")} m` } : {}),
       text: fact.text,
       source: "GPX-derived",
+      ...(fact.measurement ? { measurement: fact.measurement } : {}),
     };
   });
 }
@@ -171,6 +189,9 @@ function toDisplayFact(fact: StructuredRouteKeyMomentEvent): RouteKeyMomentBaseF
     startKm: fact.startKm,
     endKm: fact.endKm,
     segmentIndex: fact.segmentIndex,
+    exactStartDistanceM: fact.startDistanceM,
+    exactEndDistanceM: fact.endDistanceM,
+    measurement: { kind: "event", direction: fact.kind, startDistanceM: fact.startDistanceM, endDistanceM: fact.endDistanceM, distanceM: fact.endDistanceM - fact.startDistanceM, elevationChangeM: fact.elevationChangeM, segmentIndex: fact.segmentIndex, roles: fact.roles },
     text,
     ...(fact.kind === "climb" ? { gain: fact.elevationChangeM } : { loss: fact.elevationChangeM }),
   };

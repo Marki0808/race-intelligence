@@ -1,80 +1,48 @@
 "use client";
 
 import type { GpxRoutePointData } from "./gpxAnalysis";
-import { getKeyMomentProfilePoints, keyMomentProfilePolyline } from "./routeKeyMomentProfile";
 import type { KeyMomentData } from "./raceTypes";
-
-type KeyMomentProps = {
-  title: string;
-  distance: string;
-  gain?: string;
-  loss?: string;
-  text: string;
-  source: string;
-  onSelect?: () => void;
-  selected?: boolean;
-  compact?: boolean;
-  focusStartKm?: number;
-  focusEndKm?: number;
-  routePoints?: readonly GpxRoutePointData[];
-  segmentIndex?: number;
-  focusStartPosition?: KeyMomentData["focusStartPosition"];
-  focusEndPosition?: KeyMomentData["focusEndPosition"];
-};
+import { presentKeyMomentCard } from "./routeKeyMomentPresentation";
 
 export default function KeyMoment({
-  title,
-  distance,
-  gain,
-  loss,
-  text,
-  source,
+  moment,
+  totalDistanceM,
+  routePoints,
   onSelect,
   selected = false,
-  compact = false,
-  focusStartKm,
-  focusEndKm,
-  routePoints = [],
-  segmentIndex,
-  focusStartPosition,
-  focusEndPosition,
-}: KeyMomentProps) {
-  const profilePoints = focusStartKm !== undefined && focusEndKm !== undefined
-    ? getKeyMomentProfilePoints(routePoints, { focusStartKm, focusEndKm, segmentIndex, focusStartPosition, focusEndPosition })
-    : [];
-  const profileLine = keyMomentProfilePolyline(profilePoints);
+}: {
+  moment: KeyMomentData;
+  totalDistanceM: number;
+  routePoints: readonly GpxRoutePointData[];
+  onSelect: () => void;
+  selected?: boolean;
+}) {
+  const card = presentKeyMomentCard(moment, routePoints, totalDistanceM);
+  if (!card) return null;
+  const isPoint = card.kind === "point";
+  const startX = 8 + card.startPercent * 3.04;
+  const endX = 8 + card.endPercent * 3.04;
+  const rawWidth = Math.max(0, endX - startX);
+  const markerWidth = Math.max(3, rawWidth);
+  const markerX = Math.min(312 - markerWidth, startX - Math.max(0, markerWidth - rawWidth) / 2);
   return (
-    <div className={selected ? "rounded-xl ring-1 ring-[#71805d]/35" : ""}>
-      <h3 className={compact ? "text-xl font-semibold" : "mt-12 text-xl font-semibold"}>
-        <button
-          type="button"
-          onClick={onSelect}
-          aria-pressed={onSelect ? selected : undefined}
-          className={`${onSelect ? "cursor-pointer text-left" : "cursor-default text-left"} ${selected ? "text-[#53663c] underline decoration-[#a7c957] decoration-2 underline-offset-4" : ""} focus-visible:rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#71805d]`}
-        >
-          {title}
+    <article className={`rounded-2xl border bg-white p-5 transition sm:p-6 ${selected ? "border-[#71805d] ring-2 ring-[#71805d]/25" : "border-black/10"}`}>
+      <h3 className="text-base font-semibold text-[#17211c] sm:text-lg">
+        <button type="button" onClick={onSelect} aria-pressed={selected} className="min-h-11 text-left focus-visible:rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d]">
+          {card.title}
         </button>
       </h3>
-
-      <div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-black/45">
-        <span>{distance}</span>
-
-        {gain && <span className="text-[#71805d]">{gain}</span>}
-
-        {loss && <span className="text-black/45">{loss}</span>}
-      </div>
-
-      <p className="mt-4 text-sm leading-6 text-black/55">
-        {text}
-      </p>
-
-      {profileLine && <svg viewBox="0 0 320 68" className="mt-4 h-16 w-full rounded-lg bg-[#f4f2ed] p-2" preserveAspectRatio="none" role="img" aria-label={`GPX elevation profile around ${distance}`}>
-        <polyline points={profileLine} fill="none" stroke={selected ? "#17211c" : "#71805d"} strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>}
-
-      <div className="mt-5 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#71805d]">
-        🔵 {source}
-      </div>
-    </div>
+      <p className="mt-3 text-2xl font-semibold tabular-nums tracking-tight text-[#17211c] sm:text-3xl">{card.value}</p>
+      {card.valueContext && <p className="mt-1 text-xs font-medium text-black/45">{card.valueContext}</p>}
+      <p className="mt-3 text-sm font-semibold tabular-nums text-[#53663c]">{card.location}</p>
+      <svg className="mt-3 h-8 w-full" viewBox="0 0 320 24" role="img" aria-label={`${card.title}: ${card.location} along the ${ (totalDistanceM / 1000).toFixed(2) } kilometre route${!isPoint && rawWidth < 3 ? "; marker enlarged for visibility, interval length is unchanged" : ""}`} preserveAspectRatio="none">
+        <line x1="8" x2="312" y1="12" y2="12" stroke="#d4d8d1" strokeWidth="4" strokeLinecap="round" />
+        {isPoint ? <circle cx={startX} cy="12" r="6" fill={selected ? "#17211c" : "#71805d"} stroke="white" strokeWidth="2" /> : (
+          <rect x={markerX} y="7" width={markerWidth} height="10" rx="5" fill={selected ? "#17211c" : "#71805d"} />
+        )}
+      </svg>
+      <p className="mt-3 text-sm leading-6 text-black/60">{moment.text}</p>
+      <p className="mt-4 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#71805d]">{moment.source}</p>
+    </article>
   );
 }

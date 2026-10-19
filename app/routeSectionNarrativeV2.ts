@@ -27,7 +27,7 @@ export function presentRouteSectionNarrativeV2(
   if ((phases.status !== "available" && phases.status !== "limited") || !phases.measurements || !phases.coverage.complete) {
     return { ...base, status: phases.status, phases, paragraphs: fallback(phases.status), trace: [] };
   }
-  const rendered = render(phases);
+  const rendered = render(phases, target);
   return {
     ...base,
     status: phases.status,
@@ -39,9 +39,9 @@ export function presentRouteSectionNarrativeV2(
 
 type Rendered = { text: string; intervalIds: string[]; measuredFields: string[] };
 
-function render(model: RouteNarrativePhasesV2): Rendered[] {
+function render(model: RouteNarrativePhasesV2, target: RouteSection): Rendered[] {
   const selected = selectNarrativePhases(model);
-  const paragraphs: Rendered[] = [overview(model)];
+  const paragraphs: Rendered[] = [overview(model, target)];
   let paragraphPhases: Array<{ phase: RouteNarrativePhaseV2; index: number }> = [];
   const flush = () => {
     if (!paragraphPhases.length) return;
@@ -212,16 +212,31 @@ function isDirectional(direction: RouteNarrativePhaseV2["direction"] | undefined
   return direction === "climb" || direction === "descent";
 }
 
-function overview(model: RouteNarrativePhasesV2): Rendered {
-  const measurements = model.measurements!;
-  const distance = km(measurements.distanceM);
-  const net = measurements.netElevationChangeM;
-  const text = net >= 30
-    ? `Across ${distance}, the section ends ${Math.round(net)} m higher than it starts.`
-    : net <= -30
-      ? `Across ${distance}, the section ends ${Math.round(Math.abs(net))} m lower than it starts.`
-      : `Across ${distance}, the start and finish elevations differ by ${Math.round(Math.abs(net))} m, despite ${Math.round(measurements.ascentM)} m of ascent and ${Math.round(measurements.descentM)} m of descent.`;
-  return { text, intervalIds: model.phases.flatMap(phase => phase.intervalIds), measuredFields: ["measurements.distanceM", "measurements.netElevationChangeM", "measurements.ascentM", "measurements.descentM"] };
+function overview(model: RouteNarrativePhasesV2, target: RouteSection): Rendered {
+  const hasClimb = model.phases.some((phase) => phase.direction === "climb");
+  const hasDescent = model.phases.some((phase) => phase.direction === "descent");
+  const character = target.dominantRhythm === "climb"
+    ? `Climbing is the stronger pattern across this section${hasDescent ? ", with descending intervals also shaping the profile" : ""}.`
+    : target.dominantRhythm === "descent"
+      ? `Descending is the stronger pattern across this section${hasClimb ? ", with climbs also shaping the profile" : ""}.`
+      : target.dominantRhythm === "rolling"
+        ? "Climbing and descending both shape the profile across this section."
+        : "Elevation changes remain limited across most of this section.";
+  let transition: string | null = null;
+  for (let index = 1; index < model.phases.length; index += 1) {
+    const before = model.phases[index - 1];
+    const after = model.phases[index];
+    const bothDirectional = (before.direction === "climb" || before.direction === "descent") &&
+      (after.direction === "climb" || after.direction === "descent");
+    if (bothDirectional && before.direction !== after.direction && before.distanceM >= 1500 && after.distanceM >= 1500 &&
+      before.confidence !== "unknown" && after.confidence !== "unknown" &&
+      Math.abs(before.endDistanceM - after.startDistanceM) <= 1) {
+      transition = `A ${before.direction === "climb" ? "sustained climb" : "sustained descent"} is followed by a ${after.direction === "climb" ? "sustained climb" : "sustained descent"}.`;
+      break;
+    }
+  }
+  const text = [character, transition].filter(Boolean).join(" ");
+  return { text, intervalIds: model.phases.flatMap(phase => phase.intervalIds), measuredFields: ["section.dominantRhythm", "phase.direction", "phase.distanceM", "phase.startDistanceM", "phase.endDistanceM", "phase.confidence", "measurements.ascentM", "measurements.descentM", "measurements.netElevationChangeM"] };
 }
 
 function notableGradeSegments(phase: RouteNarrativePhaseV2) {

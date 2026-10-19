@@ -5,7 +5,7 @@ import CourseExplorer from "./CourseExplorer";
 import CourseBriefView from "./CourseBriefView";
 import RouteSectionBrowser, { RouteSectionBrowserHeading } from "./RouteSectionBrowser";
 import TerrainEvidenceAction from "./TerrainEvidenceAction";
-import KeyMoment from "./KeyMoment";
+import KeyRouteMoments from "./KeyRouteMoments";
 import { toggleKeyMomentSelection } from "./routeSectionSelection";
 import type { GeoEnrichmentData } from "./geoEnrichment";
 import { attachTerrainEvidenceToRouteSections } from "./routeEvidenceAdapter";
@@ -54,10 +54,10 @@ export default function CourseSection({
   const displayedSections = useMemo(() => TERRAIN_INTELLIGENCE_V1_ENABLED && routeAnalysis && currentTerrain?.data
     ? attachTerrainEvidenceToRouteSections(routeAnalysis.routeSections, currentTerrain.data)
     : routeAnalysis?.routeSections ?? [], [routeAnalysis, currentTerrain]);
-  const keyMoments = useMemo(() => [
-    ...raceRecord.intelligence.keyMoments,
-    ...buildSustainedGradientKeyMoments(routeAnalysis?.gradientIntelligence, raceRecord.intelligence.keyMoments),
-  ], [raceRecord.intelligence.keyMoments, routeAnalysis?.gradientIntelligence]);
+  const keyMoments = useMemo(() => routeAnalysis ? [
+    ...routeAnalysis.keyMoments,
+    ...buildSustainedGradientKeyMoments(routeAnalysis.gradientIntelligence, routeAnalysis.keyMoments),
+  ] : [], [routeAnalysis]);
 
   useEffect(() => () => {
     terrainController.current?.abort();
@@ -194,12 +194,12 @@ export default function CourseSection({
         routeAnalysis={routeAnalysis}
         loading={isLoading}
       />
-      {routeAnalysis && <RouteTakeaways analysis={routeAnalysis} />}
       {routeAnalysis && (
         <section className="mt-12">
           <RouteSectionBrowserHeading action={TERRAIN_INTELLIGENCE_V1_ENABLED ? <TerrainEvidenceAction state={terrainState} onCheck={() => void checkTerrainEvidence()} /> : undefined} />
           <RouteSectionBrowser
             sections={displayedSections}
+            routePoints={routeAnalysis.points}
             gradientIntelligence={routeAnalysis.gradientIntelligence}
             selectedSectionKey={selectedSectionKey}
             onSelectSection={selectSection}
@@ -207,27 +207,8 @@ export default function CourseSection({
           />
         </section>
       )}
-      <div className="mt-16">
-        {keyMoments.map((item) => (
-          <KeyMoment
-            key={item.id}
-            title={item.title}
-            selected={selectedMoment === item.id}
-            onSelect={() => selectMoment(item.id)}
-            distance={item.distance}
-            focusStartKm={item.focusStartKm}
-            focusEndKm={item.focusEndKm}
-            segmentIndex={item.segmentIndex}
-            focusStartPosition={item.focusStartPosition}
-            focusEndPosition={item.focusEndPosition}
-            routePoints={routeAnalysis?.points}
-            gain={item.gain}
-            loss={item.loss}
-            text={item.text}
-            source={item.source}
-          />
-        ))}
-      </div>
+      {routeAnalysis && <KeyRouteMoments moments={keyMoments} routePoints={routeAnalysis.points} totalDistanceM={routeAnalysis.metrics.distanceKm * 1000} selectedMoment={selectedMoment} onSelect={selectMoment} />}
+      {routeAnalysis && <RouteTakeaways analysis={routeAnalysis} />}
     </div>
   );
 }

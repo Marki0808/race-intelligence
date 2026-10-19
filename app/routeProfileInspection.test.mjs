@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import test from "node:test";
+import ts from "typescript";
 import { nearestRouteProfilePoint } from "./routeProfileInspection.ts";
 
 const [explorer, routeAnalysisView, raceSection, sectionBrowser] = await Promise.all([
@@ -9,6 +11,16 @@ const [explorer, routeAnalysisView, raceSection, sectionBrowser] = await Promise
   readFile(new URL("./CourseSection.tsx", import.meta.url), "utf8"),
   readFile(new URL("./RouteSectionBrowser.tsx", import.meta.url), "utf8"),
 ]);
+const require = createRequire(import.meta.url);
+
+function loadProfilePresentationHelper() {
+  const url = new URL("./routeProfilePresentation.ts", import.meta.url);
+  const source = require("node:fs").readFileSync(url, "utf8");
+  const js = ts.transpile(source, { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 });
+  const transpiledModule = { exports: {} };
+  new Function("exports", "require", "module", "__filename", "__dirname", js)(transpiledModule.exports, (specifier) => specifier === "./routeSectionSelection" ? { routeSectionSelectionKey: (section) => `${section.segmentIndex}:${section.id}` } : require(specifier), transpiledModule, url.pathname, new URL(".", url).pathname);
+  return transpiledModule.exports;
+}
 
 test("profile inspection returns the nearest measured GPX sample without interpolation", () => {
   const points = [
@@ -66,7 +78,7 @@ test("section profile selection toggles and clears without scrolling to the sect
 test("section details keep one concise overview visible and place full chronology after metrics, profile and map", () => {
   const overview = sectionBrowser.indexOf("{expectation.paragraphs[0] ?? section.description}");
   const metrics = sectionBrowser.indexOf("<SectionMetric label=\"Ascent\"");
-  const profile = sectionBrowser.indexOf("<MiniProfile section={section} />");
+  const profile = sectionBrowser.indexOf("<RouteSectionProfile section={section} routePoints={routePoints} />");
   const map = sectionBrowser.indexOf("<SectionSubheading>Section map · GPX-derived</SectionSubheading>");
   const detail = sectionBrowser.indexOf("<summary className=\"min-h-11 cursor-pointer py-3 text-sm font-semibold\">Detailed elevation changes");
   assert.ok(overview >= 0 && overview < metrics && metrics < profile && profile < map && map < detail);
@@ -81,11 +93,13 @@ test("Race and Route Mode share the same evidence-bounded sustained-gradient mom
     readFile(new URL("./KeyMoment.tsx", import.meta.url), "utf8"),
     readFile(new URL("./routeGradientMoments.ts", import.meta.url), "utf8"),
   ]);
-  assert.match(raceView, /buildSustainedGradientKeyMoments\(routeAnalysis\?\.gradientIntelligence, raceRecord\.intelligence\.keyMoments\)/);
+  assert.match(raceView, /buildSustainedGradientKeyMoments\(routeAnalysis\.gradientIntelligence, routeAnalysis\.keyMoments\)/);
   assert.match(routeView, /buildSustainedGradientKeyMoments\(analysis\.gradientIntelligence, analysis\.keyMoments\)/);
-  assert.match(keyMoment, /getKeyMomentProfilePoints\(routePoints/);
-  assert.match(keyMoment, /keyMomentProfilePolyline\(profilePoints\)/);
+  assert.match(keyMoment, /presentKeyMomentCard\(moment, routePoints, totalDistanceM\)/);
+  assert.match(keyMoment, /markerWidth = Math\.max\(3, rawWidth\)/);
   assert.match(routeView, /routePoints=\{analysis\.points\}/);
+  assert.match(raceView, /routePoints=\{routeAnalysis\.points\}/);
+  assert.doesNotMatch(raceView, /raceRecord\.intelligence\.keyMoments/);
   assert.match(helper, /interval\.confidence === 'high'/);
   assert.match(helper, /interval\.distanceM >= 1500/);
   assert.match(helper, /interval\.gradientBand === 'steep'/);
@@ -100,13 +114,49 @@ test("route character takeaways are shared by both modes and remain component lo
   ]);
   assert.match(raceView, /<RouteTakeaways analysis=\{routeAnalysis\}/);
   assert.match(routeView, /<RouteTakeaways analysis=\{analysis\}/);
-  assert.match(component, /Understand the character of the course\./);
+  assert.match(component, /Course Takeaways/);
   assert.match(component, /Don’t just analyze the route\. Understand it\./);
+  assert.match(component, /if \(!takeaways\.length\) return null/);
+  assert.ok(routeView.indexOf("<RouteSectionBrowser") < routeView.indexOf("<KeyRouteMoments") && routeView.indexOf("<KeyRouteMoments") < routeView.indexOf("<RouteTakeaways"));
+  assert.ok(raceSection.indexOf("<RouteSectionBrowser") < raceSection.indexOf("<KeyRouteMoments") && raceSection.indexOf("<KeyRouteMoments") < raceSection.indexOf("<RouteTakeaways"));
 });
 
-test("map dims the full route and emphasizes only the selected component-scoped section", () => {
-  assert.match(explorer, /color: "#718078", weight: 4, opacity: 0\.78/);
+test("main and section maps retain full-route context and only overlay component-scoped selected geometry", async () => {
+  const sectionMap = await readFile(new URL("./TerrainSectionMap.tsx", import.meta.url), "utf8");
+  assert.match(explorer, /color: "#aeb7b0", weight: 3, opacity: 0\.92/);
   assert.match(explorer, /clipRoutePointsToSection\(points, selectedSection\)/);
   assert.match(explorer, /color: "#17211c", weight: 8, opacity: 1/);
-  assert.match(explorer, /key=\{`\$\{section\.segmentIndex\}:\$\{section\.id\}:profile-hit`\}/);
+  assert.doesNotMatch(explorer, /fitBounds\(selectedSectionPoints/);
+  assert.match(explorer, /lastMapSelectionRef/);
+  assert.match(sectionMap, /groupAnalyzedPointsBySegment\(points\)/);
+  assert.match(sectionMap, /clipRoutePointsToSection\(points, section\)/);
+  assert.match(sectionMap, /color: "#aeb7b0", weight: 3/);
+  assert.match(sectionMap, /color: "#17211c", weight: 7/);
+  assert.match(sectionMap, /zoomControl: true/);
+});
+
+test("section mini-profile uses absolute route bounds, elevation axes, actual samples and pointer/touch inspection", async () => {
+  const [browser, profile, helperSource] = await Promise.all([
+    readFile(new URL("./RouteSectionBrowser.tsx", import.meta.url), "utf8"),
+    readFile(new URL("./RouteSectionProfile.tsx", import.meta.url), "utf8"),
+    readFile(new URL("./routeSectionProfilePresentation.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(browser, /routePoints=\{routePoints\}/);
+  assert.match(profile, /point\.segmentIndex === section\.segmentIndex/);
+  assert.match(profile, /Elevation \(m\)/);
+  assert.match(profile, /onPointerMove/);
+  assert.match(profile, /event\.pointerType === "touch"/);
+  assert.match(profile, /press and hold/);
+  const presentation = loadProfilePresentationHelper();
+  const helperUrl = new URL("./routeSectionProfilePresentation.ts", import.meta.url);
+  const helperJs = ts.transpile(helperSource, { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 });
+  const helperModule = { exports: {} };
+  new Function("exports", "require", "module", "__filename", "__dirname", helperJs)(helperModule.exports, (specifier) => specifier === "./routeProfilePresentation" || specifier === "./routeProfilePresentation.ts" ? presentation : require(specifier), helperModule, helperUrl.pathname, new URL(".", helperUrl).pathname);
+  const layout = helperModule.exports.createRouteSectionProfileLayout(30_450, 42_750, 100, 900, 360, 224);
+  assert.ok(layout);
+  assert.equal(layout.xForDistance(30_450), 62);
+  assert.equal(layout.xForDistance(42_750), 344);
+  assert.equal(layout.distanceTicks[0].label, "30.45 km");
+  assert.equal(layout.distanceTicks.at(-1).label, "42.75 km");
+  assert.ok(layout.distanceTicks.every((tick) => tick.x >= 62 && tick.x <= 344));
 });

@@ -9,17 +9,20 @@ import { getRouteImageryPresentation, getTerrainSectionPresentation, numberRoute
 import { routeSectionSelectionKey } from "./routeSectionSelection";
 import { sortRouteEmbeddedEventsForDisplay } from "./routeSectionEngine";
 import TerrainSectionMap from "./TerrainSectionMap";
+import RouteSectionProfile from "./RouteSectionProfile";
+import type { GpxRoutePointData } from "./gpxAnalysis";
 import { TERRAIN_INTELLIGENCE_V1_ENABLED } from "./featureFlags";
 
 const rhythmLabels: Record<RouteSection["dominantRhythm"], string> = {
-  climb: "Climb",
-  descent: "Descent",
-  rolling: "Rolling",
-  flat: "Flat",
+  climb: "Mostly climbing",
+  descent: "Mostly descending",
+  rolling: "Rolling elevation",
+  flat: "Low elevation change",
 };
 
 export default function RouteSectionBrowser({
   sections,
+  routePoints = [],
   selectedSectionKey,
   onSelectSection,
   gradientIntelligence,
@@ -28,6 +31,7 @@ export default function RouteSectionBrowser({
   terrainEvidenceState = "not-requested",
 }: {
   sections: readonly RouteSection[];
+  routePoints?: readonly GpxRoutePointData[];
   selectedSectionKey: string | null;
   onSelectSection: (section: RouteSection | null) => void;
   gradientIntelligence?: GradientIntelligenceV1;
@@ -67,6 +71,7 @@ export default function RouteSectionBrowser({
                       <SectionDetail
                         section={section}
                         ordinal={ordinal}
+                        routePoints={routePoints}
                         gradientIntelligence={gradientIntelligence}
                         routeSections={sections}
                         imageEvidence={imageEvidence.get(routeSectionSelectionKey(section)) ?? null}
@@ -106,6 +111,7 @@ export function RouteSectionBrowserHeading({ action }: { action?: ReactNode }) {
 function SectionDetail({
   section,
   ordinal,
+  routePoints,
   gradientIntelligence,
   routeSections,
   imageEvidence,
@@ -115,6 +121,7 @@ function SectionDetail({
 }: {
   section: RouteSection;
   ordinal: number;
+  routePoints: readonly GpxRoutePointData[];
   gradientIntelligence: GradientIntelligenceV1 | undefined;
   routeSections: readonly RouteSection[];
   imageEvidence: MapillarySectionEvidence | null;
@@ -141,12 +148,12 @@ function SectionDetail({
         <SectionMetric label="Ascent" value={`+${section.ascentM} m`} />
         <SectionMetric label="Descent" value={`−${section.descentM} m`} />
         <SectionMetric label="Elevation range" value={`${section.elevationMinM}–${section.elevationMaxM} m`} />
-        <SectionMetric label="Running rhythm" value={title} />
+        <SectionMetric label="Section pattern" value={title} />
       </div>
-      <MiniProfile section={section} />
+      <RouteSectionProfile section={section} routePoints={routePoints} />
       <div className="mt-6 border-t border-black/10 pt-5">
         <SectionSubheading>Section map · GPX-derived</SectionSubheading>
-        <TerrainSectionMap points={section.mapData ?? []} startDistanceKm={section.startKm} endDistanceKm={section.endKm} />
+        <TerrainSectionMap points={routePoints} section={section} startDistanceKm={section.startKm} endDistanceKm={section.endKm} />
       </div>
       {(expectation.paragraphs.length > 1 || section.embeddedEvents.length > 0) && (
         <details className="mt-5 rounded-2xl border border-black/10 bg-white/75 p-4">
@@ -204,23 +211,6 @@ function SectionDetail({
       )}
     </article>
   );
-}
-
-function MiniProfile({ section }: { section: RouteSection }) {
-  const width = 900;
-  const height = 100;
-  const points = section.elevationProfile;
-  if (points.length < 2) return null;
-  const elevations = points.map((point) => point.elevationM);
-  const min = Math.min(...elevations);
-  const max = Math.max(...elevations);
-  const range = Math.max(1, max - min);
-  const line = points.map((point, index) => {
-    const x = (index / (points.length - 1)) * width;
-    const y = height - ((point.elevationM - min) / range) * (height - 8) - 4;
-    return `${x},${y}`;
-  }).join(" ");
-  return <svg viewBox={`0 0 ${width} ${height}`} className="mt-6 h-20 w-full rounded-xl bg-white/70 p-2" preserveAspectRatio="none" role="img" aria-label={`${section.dominantRhythm} elevation profile for ${section.startKm} to ${section.endKm} km`}><polyline points={line} fill="none" stroke="#71805d" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" /></svg>;
 }
 
 function SectionMetric({ label, value }: { label: string; value: string }) {

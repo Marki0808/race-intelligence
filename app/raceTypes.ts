@@ -8,11 +8,19 @@ export type KeyMomentData = {
   segmentIndex?: number;
   focusStartPosition?: { distanceM: number; segmentIndex: number };
   focusEndPosition?: { distanceM: number; segmentIndex: number };
+  /** Optional measured source facts used to render a route-position marker and primary value safely. */
+  measurement?: KeyMomentMeasurement;
   gain?: string;
   loss?: string;
   text: string;
   source: string;
 };
+
+export type KeyMomentMeasurement =
+  | { kind: "event"; direction: "climb" | "descent"; startDistanceM: number; endDistanceM: number; distanceM: number; elevationChangeM: number; segmentIndex: number; roles: Array<"longest" | "largest"> }
+  | { kind: "gradient"; direction: "climb" | "descent"; startDistanceM: number; endDistanceM: number; distanceM: number; averageNetGradientPct: number; segmentIndex: number }
+  | { kind: "rolling"; startDistanceM: number; endDistanceM: number; distanceM: number; segmentIndex: number }
+  | { kind: "point"; distanceM: number; elevationM: number; segmentIndex: number };
 
 export type CourseCharacterData = {
   terrain: string;

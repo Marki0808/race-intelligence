@@ -119,7 +119,7 @@ test("unknown intervals remain explicit and break rather than bridge narrative p
   const result = analyze([["climb", 8, 2000], ["unknown", 0, 1500], ["descent", -6, 2000]]);
   const text = result.narrative.paragraphs.join(" ");
   assert.equal(result.narrative.status, "limited");
-  assert.match(text, /ends .* higher than it starts/);
+  assert.match(result.narrative.paragraphs[0], /Climbing and descending both shape the profile/);
   assert.match(text, /uncertain across 1\.5 km in 1 stretch/);
   assert.doesNotMatch(text, /gives way|interrupts|followed by/);
 });
@@ -127,8 +127,22 @@ test("unknown intervals remain explicit and break rather than bridge narrative p
 test("neutral sections and low-vertical movement stay distinct from unknown", () => {
   const result = analyze([["low-vertical-movement", 0], ["low-vertical-movement", 0], ["low-vertical-movement", 0], ["low-vertical-movement", 0]]);
   assert.equal(result.phases.phases[0].direction, "low-vertical-movement");
-  assert.match(result.narrative.paragraphs.join(" "), /elevation changes stay limited/);
+  assert.match(result.narrative.paragraphs[0], /Elevation changes remain limited/);
   assert.doesNotMatch(result.narrative.paragraphs.join(" "), /uncertain interval direction/);
+});
+
+test("visible section overview explains the dominant pattern and a supported sustained direction change", () => {
+  const result = analyze([["climb", 7, 2500], ["descent", -6, 2000]]);
+  assert.match(result.narrative.paragraphs[0], /Climbing and descending both shape the profile/);
+  assert.match(result.narrative.paragraphs[0], /sustained climb is followed by a sustained descent/);
+  assert.deepEqual(result.narrative.trace[0].intervalIds, result.phases.phases.flatMap((phase) => phase.intervalIds));
+  assert.ok(result.narrative.trace[0].measuredFields.includes("section.dominantRhythm"));
+});
+
+test("section overview does not synthesize a transition across an unknown interval", () => {
+  const result = analyze([["climb", 8, 2000], ["unknown", 0, 1000], ["descent", -7, 2000]]);
+  assert.match(result.narrative.paragraphs[0], /Climbing and descending both shape the profile/);
+  assert.doesNotMatch(result.narrative.paragraphs[0], /followed by|gives way|resumes/);
 });
 
 test("phase and prose identities preserve disconnected component identity and deterministic output", () => {
@@ -175,7 +189,7 @@ test("adaptive prose summarizes a long phase sequence while retaining major chro
   assert.match(text, /3\.0 km climb, averaging \+9%.*then a 3\.0 km descent/);
   assert.match(text, /uncertain across 1\.0 km in 2 separate stretches/);
   assert.doesNotMatch(text, /uncertain stretch.*uncertain stretch/i);
-  assert.doesNotMatch(text, /gives way|followed by/);
+  assert.equal((text.match(/followed by/g) ?? []).length, 1, "only the measured sustained transition appears in the overview");
   for (const trace of result.narrative.trace) {
     assert.ok(trace.intervalIds.length > 0);
     assert.ok(trace.measuredFields.length > 0);
