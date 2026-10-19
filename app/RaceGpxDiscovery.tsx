@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -51,6 +51,7 @@ function isSafeDisplayUrl(value: unknown): value is string {
 
 export default function RaceGpxDiscovery() {
   const router = useRouter();
+  const discoveryInFlight = useRef(false);
   const [raceUrl, setRaceUrl] = useState("");
   const [submittedUrl, setSubmittedUrl] = useState("");
   const [candidates, setCandidates] = useState<Candidate[]>([]);
@@ -66,6 +67,10 @@ export default function RaceGpxDiscovery() {
   const [message, setMessage] = useState("");
 
   async function discoverPage(url: string) {
+    if (discoveryInFlight.current) return;
+    discoveryInFlight.current = true;
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 15_000);
     setCandidates([]);
     setArchives([]);
     setArchiveFiles([]);
@@ -83,6 +88,7 @@ export default function RaceGpxDiscovery() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url }),
+        signal: controller.signal,
       });
       const result = await response.json() as DiscoveryResponse;
       if (result.status === "success" && Array.isArray(result.candidates)) {
@@ -137,6 +143,9 @@ export default function RaceGpxDiscovery() {
     } catch {
       setMessage("Race-page discovery is temporarily unavailable. You can upload a GPX file instead.");
       setStatus("error");
+    } finally {
+      window.clearTimeout(timeoutId);
+      discoveryInFlight.current = false;
     }
   }
 
@@ -266,7 +275,7 @@ export default function RaceGpxDiscovery() {
   const busy = status === "loading" || status === "downloading" || status === "ready";
 
   return (
-    <div className="mt-5 rounded-2xl border border-white/10 bg-black/10 p-4 sm:p-5">
+    <div className="mt-5 rounded-2xl border border-white/10 bg-[#202c26] p-4 sm:p-5">
       <form onSubmit={handleDiscovery} className="flex min-w-0 flex-col gap-3">
         <label htmlFor="official-race-url" className="text-sm font-semibold text-white">Official race webpage</label>
         <input
@@ -279,9 +288,9 @@ export default function RaceGpxDiscovery() {
           onChange={(event) => setRaceUrl(event.target.value)}
           placeholder="https://race-website.example/course"
           disabled={busy}
-          className="min-w-0 w-full rounded-xl border border-white/20 bg-white/5 px-4 py-3 text-sm text-white outline-none placeholder:text-white/35 focus:border-[#a7c957] disabled:opacity-60"
+          className="min-h-11 min-w-0 w-full rounded-xl border border-white/30 bg-white/10 px-4 py-3 text-sm text-white outline-none placeholder:text-white/55 focus-visible:border-[#a7c957] focus-visible:ring-2 focus-visible:ring-[#a7c957]/50 disabled:cursor-not-allowed disabled:opacity-60"
         />
-        <button type="submit" disabled={busy || !raceUrl.trim()} className="min-h-11 rounded-full bg-[#a7c957] px-5 py-2.5 text-sm font-semibold text-[#17211c] disabled:cursor-wait disabled:opacity-60">
+        <button type="submit" disabled={busy || !raceUrl.trim()} className="min-h-11 rounded-full bg-[#a7c957] px-5 py-2.5 text-sm font-semibold text-[#17211c] disabled:cursor-not-allowed disabled:opacity-60">
           {status === "loading" ? "Searching race page…" : "Find GPX route links"}
         </button>
       </form>

@@ -17,6 +17,40 @@ test("homepage exposes race-page discovery beside the existing manual GPX entry"
   assert.match(discoveryUi, /\/api\/race-gpx-discovery/);
 });
 
+test("race URL input is enabled and focusable on initial idle render", () => {
+  assert.match(discoveryUi, /useState<"idle" \| "loading"[\s\S]*?>\("idle"\)/);
+  assert.match(discoveryUi, /id="official-race-url"[\s\S]*?type="url"[\s\S]*?value=\{raceUrl\}[\s\S]*?onChange=\{\(event\) => setRaceUrl\(event\.target\.value\)\}[\s\S]*?disabled=\{busy\}/);
+  assert.match(discoveryUi, /const busy = status === "loading" \|\| status === "downloading" \|\| status === "ready"/);
+  assert.doesNotMatch(discoveryUi, /disabled=\{status !== "idle"\}/);
+});
+
+test("typing or pasting updates the submitted URL and the search button has accurate idle/loading states", () => {
+  assert.match(discoveryUi, /onChange=\{\(event\) => setRaceUrl\(event\.target\.value\)\}/);
+  assert.match(discoveryUi, /await discoverPage\(raceUrl\.trim\(\)\)/);
+  assert.match(discoveryUi, /disabled=\{busy \|\| !raceUrl\.trim\(\)\}/);
+  assert.match(discoveryUi, /status === "loading" \? "Searching race page…" : "Find GPX route links"/);
+  assert.match(discoveryUi, /disabled:cursor-not-allowed/);
+  assert.doesNotMatch(discoveryUi, /disabled:cursor-wait/);
+});
+
+test("discovery loading is bounded, duplicate submits are blocked, and errors restore an enabled retry path", () => {
+  assert.match(discoveryUi, /if \(discoveryInFlight\.current\) return/);
+  assert.match(discoveryUi, /new AbortController\(\)/);
+  assert.match(discoveryUi, /window\.setTimeout\(\(\) => controller\.abort\(\), 15_000\)/);
+  assert.match(discoveryUi, /signal: controller\.signal/);
+  assert.match(discoveryUi, /finally \{\s*window\.clearTimeout\(timeoutId\);\s*discoveryInFlight\.current = false;/);
+  assert.match(discoveryUi, /catch \{\s*setMessage\("Race-page discovery is temporarily unavailable[\s\S]*?setStatus\("error"\)/);
+  assert.match(discoveryUi, /setMessage\(""\);\s*setStatus\("loading"\)/);
+});
+
+test("supported-race registry lookup remains independent from official-page discovery state", () => {
+  assert.match(home, /<RaceGpxDiscovery\s*\/>/);
+  assert.match(home, /<RaceSearch records=\{raceRegistry\}\s*\/>/);
+  assert.doesNotMatch(home, /RaceGpxDiscovery[^<]*busy|RaceSearch[^<]*busy/);
+  assert.match(discoveryUi, /const \[raceUrl, setRaceUrl\] = useState\(""\)/);
+  assert.match(discoveryUi, /const \[status, setStatus\] = useState/);
+});
+
 test("candidate UI requires explicit radio selection and confirmation even for one candidate", () => {
   assert.match(discoveryUi, /const \[selectedUrl, setSelectedUrl\] = useState\(""\)/);
   assert.match(discoveryUi, /type="radio"/);
