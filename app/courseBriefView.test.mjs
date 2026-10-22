@@ -54,8 +54,10 @@ test("Route Mode passes its existing analysis to Course Brief without another GP
 });
 
 test("view preserves structural text only and isolates failures from course content", () => {
-  assert.match(componentSource, /currentState\.result\.structuralOutput\.observations\.map/);
-  assert.match(componentSource, /\{observation\.text\}/);
+  assert.match(componentSource, /composeCourseBriefWholeRouteNarrative\(currentState\.result\.input, currentState\.result\.structuralOutput, currentState\.result\.selection\.selectedCandidates\)/);
+  assert.match(componentSource, /narrative\.paragraphs\.map/);
+  assert.match(componentSource, /\{paragraph\.text\}/);
+  assert.doesNotMatch(componentSource, /structuralOutput\.observations\.map/);
   assert.match(componentSource, /Course Brief is unavailable for this route/);
   assert.match(componentSource, /\.catch\(\(\) => \{/);
   assert.doesNotMatch(componentSource, /geographicPresentation|\.geographic\b|location label/i);
@@ -63,7 +65,8 @@ test("view preserves structural text only and isolates failures from course cont
 });
 
 test("single-column layout wraps long text on narrow screens", () => {
-  assert.match(componentSource, /min-w-0 space-y-3/);
+  assert.match(componentSource, /min-w-0 space-y-4 text-base leading-7/);
   assert.match(componentSource, /\[overflow-wrap:anywhere\]/);
-  assert.match(componentSource, /px-4 py-3[\s\S]*?sm:px-5/);
+  assert.match(componentSource, /GPX-derived summary/);
+  assert.doesNotMatch(componentSource, /rounded-xl border border-black\/10 bg-white/);
 });

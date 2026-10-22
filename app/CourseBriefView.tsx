@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { composeCourseBrief } from "./courseBriefComposition.ts";
 import type { CourseBriefCompositionResult } from "./courseBriefComposition.ts";
+import { composeCourseBriefWholeRouteNarrative } from "./courseBriefWholeRouteNarrative.ts";
 import type { RouteAnalysisData } from "./gpxAnalysis.ts";
 
 type CourseBriefViewState =
@@ -40,19 +41,20 @@ export default function CourseBriefView({
   }, [routeAnalysis, routeKey]);
 
   const currentState = state?.routeAnalysis === routeAnalysis && state.routeKey === routeKey ? state : null;
+  const narrative = useMemo(() => currentState?.status === "ready"
+    ? composeCourseBriefWholeRouteNarrative(currentState.result.input, currentState.result.structuralOutput, currentState.result.selection.selectedCandidates)
+    : null, [currentState]);
   let content: ReactNode;
   if (loading || (routeAnalysis && (!currentState || currentState.status === "loading"))) {
     content = <p role="status" className="text-sm leading-6 text-black/45">Preparing the GPX-derived course summary…</p>;
   } else if (!routeAnalysis || !currentState || currentState.status !== "ready") {
     content = <p role="status" className="text-sm leading-6 text-black/45">Course Brief is unavailable for this route.</p>;
   } else {
-    content = <ol className="min-w-0 space-y-3">
-        {currentState.result.structuralOutput.observations.map((observation, index) => (
-          <li key={`${observation.candidateId}:${index}`} className="min-w-0 rounded-xl border border-black/10 bg-white px-4 py-3 text-sm leading-6 text-black/70 [overflow-wrap:anywhere] sm:px-5">
-            {observation.text}
-          </li>
-        ))}
-      </ol>;
+    content = narrative
+      ? <div className="min-w-0 space-y-4 text-base leading-7 text-black/70 [overflow-wrap:anywhere]">
+          {narrative.paragraphs.map((paragraph) => <p key={`segment-${paragraph.componentIndex}-paragraph-${paragraph.paragraphIndex}`}>{paragraph.text}</p>)}
+        </div>
+      : <p role="status" className="text-sm leading-6 text-black/45">Course Brief is unavailable for this route.</p>;
   }
 
   return (
