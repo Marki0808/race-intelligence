@@ -5,9 +5,11 @@ import { createRouteFingerprint } from "./routeFingerprint.ts";
 import { createAnalysisInputFingerprint } from "./analysisInputFingerprint.ts";
 import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis.ts";
 import { lookupSharedRoute } from "./api/route-persistence/route.ts";
-import { getOrCreateRouteAnalysis } from "./routePersistence.ts";
+import { getOrCreateRouteAnalysis, ROUTE_ANALYSIS_VERSION } from "./routePersistence.ts";
 import { getSharedRouteEligibility } from "./sharedRouteEligibility.ts";
 import { validatePersistenceRequest } from "./routePersistenceValidation.ts";
+import { buildSustainedGradientKeyMoments } from "./routeGradientMoments.ts";
+import { expandKeyMomentsForDisplay, orderKeyMomentsForDisplay, presentKeyMomentCard } from "./routeKeyMomentPresentation.ts";
 
 const validFingerprint = `route-v2-sha256-${"a".repeat(64)}`;
 const validAnalysisInputFingerprint = `analysis-input-v2-sha256-${"b".repeat(64)}`;
@@ -44,7 +46,7 @@ function createLookupDependencies() {
     getOsm: async () => { calls.osmReads += 1; return null; },
     getMapillary: async () => { calls.mapillaryReads += 1; return null; },
   };
-  return { calls, store, dependencies: { isDatabaseConfigured: () => true, store } };
+  return { calls, analyses, store, dependencies: { isDatabaseConfigured: () => true, store } };
 }
 
 test("server persistence API accepts only supported, version-matched request shapes", () => {
@@ -166,6 +168,48 @@ test("shared analysis lookup persists only a matching registry input and mismatc
   assert.equal(cached.cacheHit, true);
   assert.equal(localCalculations, 1);
   assert.equal(localAnalyses.size, 1);
+});
+
+test("Istria shared lookup invalidates pre-measurement cached analysis and restores all supported Key Moment cards", async () => {
+  const { eligible } = await getRegisteredIstria();
+  const lookup = createLookupDependencies();
+  const staleAnalysis = structuredClone(eligible.analysis);
+  for (const moment of staleAnalysis.keyMoments) Reflect.deleteProperty(moment, "measurement");
+  lookup.analyses.set(`${ROUTE_ANALYSIS_VERSION - 1}:${eligible.analysisInputFingerprint}`, {
+    routeFingerprint: eligible.routeFingerprint,
+    routeFingerprintVersion: eligible.routeFingerprintVersion,
+    analysisVersion: ROUTE_ANALYSIS_VERSION - 1,
+    analysisInputFingerprint: eligible.analysisInputFingerprint,
+    generatedAt: 1,
+    analysis: staleAnalysis,
+  });
+
+  const staleMoments = expandKeyMomentsForDisplay([
+    ...staleAnalysis.keyMoments,
+    ...buildSustainedGradientKeyMoments(staleAnalysis.gradientIntelligence, staleAnalysis.keyMoments),
+  ]);
+  const staleCards = orderKeyMomentsForDisplay(staleMoments)
+    .map((moment) => presentKeyMomentCard(moment, staleAnalysis.points, staleAnalysis.metrics.distanceKm * 1000))
+    .filter(Boolean);
+  assert.deepEqual(staleCards.map(({ title }) => title), ["Steepest sustained climb", "Steepest sustained descent"]);
+
+  const response = await lookupSharedRoute(eligible, eligible.analysisInputFingerprint, lookup.dependencies);
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.analysis.keyMoments.every((moment) => moment.measurement), true);
+  assert.equal(lookup.calls.analysisWrites, 1);
+
+  const moments = expandKeyMomentsForDisplay([
+    ...body.analysis.keyMoments,
+    ...buildSustainedGradientKeyMoments(body.analysis.gradientIntelligence, body.analysis.keyMoments),
+  ]);
+  const cards = orderKeyMomentsForDisplay(moments)
+    .map((moment) => presentKeyMomentCard(moment, body.analysis.points, body.analysis.metrics.distanceKm * 1000))
+    .filter(Boolean);
+  assert.deepEqual(cards.map(({ title }) => title), [
+    "Longest climb", "Biggest climb", "Longest descent", "Biggest descent",
+    "Steepest sustained climb", "Steepest sustained descent", "Highest point", "Lowest point",
+  ]);
 });
 
 test("V1 shared route lookup skips OSM cache reads while preserving shared analysis and imagery lookup", async () => {

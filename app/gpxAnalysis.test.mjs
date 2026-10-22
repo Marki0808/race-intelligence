@@ -324,5 +324,5 @@ test("the shared engine reproduces the Istria race GPX metrics as a regression c
   assert.equal(fingerprint.routeFingerprintVersion, 2);
   assert.match(fingerprint.routeFingerprint, /^route-v2-sha256-[a-f0-9]{64}$/);
   assert.match(analysisInput, /^analysis-input-v2-sha256-[a-f0-9]{64}$/);
-  assert.equal(ROUTE_ANALYSIS_VERSION, 4);
+  assert.equal(ROUTE_ANALYSIS_VERSION, 5);
 });
