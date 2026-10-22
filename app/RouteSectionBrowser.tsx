@@ -7,7 +7,6 @@ import type { GradientIntelligenceV1 } from "./gradientIntelligence";
 import { presentRouteSectionNarrativeV2 } from "./routeSectionNarrativeV2";
 import { getRouteImageryPresentation, getTerrainSectionPresentation, numberRouteSectionsForDisplay, type TerrainEvidenceState } from "./routeSectionPresentation";
 import { routeSectionSelectionKey } from "./routeSectionSelection";
-import { sortRouteEmbeddedEventsForDisplay } from "./routeSectionEngine";
 import TerrainSectionMap from "./TerrainSectionMap";
 import RouteSectionProfile from "./RouteSectionProfile";
 import type { GpxRoutePointData } from "./gpxAnalysis";
@@ -133,6 +132,7 @@ function SectionDetail({
   const terrain = getTerrainSectionPresentation(section, terrainEvidenceState);
   const imagery = getRouteImageryPresentation(imageEvidence);
   const expectation = presentRouteSectionNarrativeV2(gradientIntelligence, routeSections, section);
+  const whatToExpect = expectation.paragraphs.length ? expectation.paragraphs : [section.description];
 
   return (
     <article className="rounded-3xl border border-[#71805d]/30 bg-[#f4f2ed] p-5 sm:p-8" aria-label={`Route Section ${ordinal} details`}>
@@ -140,10 +140,17 @@ function SectionDetail({
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#71805d]">Route Section {ordinal} · {section.segmentIndex === 0 ? "Track segment 1" : `Track segment ${section.segmentIndex + 1}`}</p>
           <h3 className="mt-2 text-2xl font-semibold">{title} · {section.startKm}–{section.endKm} km</h3>
-          <p className="mt-3 max-w-3xl text-base leading-7 text-black/75">{expectation.paragraphs[0] ?? section.description}</p>
         </div>
         <button type="button" aria-label={`Close Route Section ${ordinal} details`} onClick={onClose} className="min-h-11 rounded-full border border-black/15 bg-white px-4 text-sm font-semibold text-black/70 hover:bg-[#e9eddf] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d]">Close details</button>
       </div>
+      <section className="mt-5 border-t border-black/10 pt-5" aria-label="What to Expect">
+        <SectionSubheading>What to Expect</SectionSubheading>
+        <div className="mt-3 max-w-4xl space-y-3 text-sm leading-6 text-black/70" aria-live="polite">
+          {whatToExpect.map((paragraph, index) => (
+            <p key={`${expectation.sectionId}-${expectation.segmentIndex}-expectation-${index}`}>{paragraph}</p>
+          ))}
+        </div>
+      </section>
       <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
         <SectionMetric label="Ascent" value={`+${section.ascentM} m`} />
         <SectionMetric label="Descent" value={`−${section.descentM} m`} />
@@ -155,21 +162,6 @@ function SectionDetail({
         <SectionSubheading>Section map · GPX-derived</SectionSubheading>
         <TerrainSectionMap points={routePoints} section={section} startDistanceKm={section.startKm} endDistanceKm={section.endKm} />
       </div>
-      {(expectation.paragraphs.length > 1 || section.embeddedEvents.length > 0) && (
-        <details className="mt-5 rounded-2xl border border-black/10 bg-white/75 p-4">
-          <summary className="min-h-11 cursor-pointer py-3 text-sm font-semibold">Detailed elevation changes</summary>
-          {expectation.paragraphs.length > 1 && (
-            <div className="mt-2 space-y-2 text-sm leading-6 text-black/60" aria-label="Detailed GPX elevation narrative">
-              {expectation.paragraphs.slice(1).map((paragraph, index) => <p key={`${expectation.sectionId}-${expectation.segmentIndex}-detail-${index}`}>{paragraph}</p>)}
-            </div>
-          )}
-          {section.embeddedEvents.length > 0 && (
-            <ul className="mt-3 space-y-2 text-sm text-black/55" aria-label="Measured route changes">
-              {sortRouteEmbeddedEventsForDisplay(section.embeddedEvents).map((event) => <li key={event.id}>{event.startKm}–{event.endKm} km · {event.distanceKm} km {event.rhythm} · +{event.ascentM} m / −{event.descentM} m</li>)}
-            </ul>
-          )}
-        </details>
-      )}
       {TERRAIN_INTELLIGENCE_V1_ENABLED && <section className="mt-6 min-w-0 border-t border-black/10 pt-5" aria-label="Mapped terrain evidence">
         <SectionSubheading>Mapped terrain</SectionSubheading>
         {terrain.status === "available" ? (

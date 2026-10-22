@@ -75,15 +75,16 @@ test("section profile selection toggles and clears without scrolling to the sect
   assert.match(sectionBrowser, /aria-expanded=\{isSelected\}/);
 });
 
-test("section details keep one concise overview visible and place full chronology after metrics, profile and map", () => {
-  const overview = sectionBrowser.indexOf("{expectation.paragraphs[0] ?? section.description}");
+test("section details present the full generated chronology under What to Expect without raw interval lists", () => {
+  const heading = sectionBrowser.indexOf("<SectionSubheading>What to Expect</SectionSubheading>");
+  const narrative = sectionBrowser.indexOf("whatToExpect.map(");
   const metrics = sectionBrowser.indexOf("<SectionMetric label=\"Ascent\"");
   const profile = sectionBrowser.indexOf("<RouteSectionProfile section={section} routePoints={routePoints} />");
   const map = sectionBrowser.indexOf("<SectionSubheading>Section map · GPX-derived</SectionSubheading>");
-  const detail = sectionBrowser.indexOf("<summary className=\"min-h-11 cursor-pointer py-3 text-sm font-semibold\">Detailed elevation changes");
-  assert.ok(overview >= 0 && overview < metrics && metrics < profile && profile < map && map < detail);
-  assert.match(sectionBrowser, /expectation\.paragraphs\.slice\(1\)/);
-  assert.match(sectionBrowser, /<details className=/);
+  assert.ok(heading >= 0 && heading < narrative && narrative < metrics && metrics < profile && profile < map);
+  assert.match(sectionBrowser, /presentRouteSectionNarrativeV2\(gradientIntelligence, routeSections, section\)/);
+  assert.doesNotMatch(sectionBrowser, /Detailed elevation changes|Measured route changes|sortRouteEmbeddedEventsForDisplay/);
+  assert.doesNotMatch(sectionBrowser, /expectation\.paragraphs\.slice\(1\)/);
 });
 
 test("Race and Route Mode share compact measured Key Moment cards and a complete-route profile", async () => {

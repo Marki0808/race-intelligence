@@ -274,8 +274,10 @@ test("Route Mode and Race Mode share the browser and clear the opposite map sele
   assert.match(routeView, /onSelectSection=\{selectSection\}/);
   assert.match(raceView, /onSelectSection=\{selectSection\}/);
   const browser = await readFile(new URL("./RouteSectionBrowser.tsx", import.meta.url), "utf8");
-  assert.match(browser, /expectation\.paragraphs\[0\] \?\? section\.description/);
-  assert.match(browser, /Detailed elevation changes/);
+  assert.match(browser, /<SectionSubheading>What to Expect<\/SectionSubheading>/);
+  assert.match(browser, /whatToExpect\.map\(/);
+  assert.doesNotMatch(browser, /Detailed elevation changes|Measured route changes|sortRouteEmbeddedEventsForDisplay/);
+  assert.doesNotMatch(browser, /expectation\.paragraphs\.slice\(1\)/);
   assert.match(browser, /presentRouteSectionNarrativeV2\(gradientIntelligence, routeSections, section\)/);
   assert.match(browser, /TERRAIN_INTELLIGENCE_V1_ENABLED && <section[\s\S]*?<SectionSubheading>Mapped terrain<\/SectionSubheading>/);
   assert.match(browser, /getTerrainSectionPresentation\(section, terrainEvidenceState\)/);

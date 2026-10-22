@@ -217,6 +217,14 @@ test("short simple sections stay concise and retain climb-to-descent order", () 
   assert.match(result.narrative.paragraphs[1], /2\.5 km climb.*then a 2\.5 km descent/);
 });
 
+test("a defining climb near the section finish remains in chronological prose", () => {
+  const result = analyze([["descent", -8, 4000], ["climb", 12, 2000]]);
+  const text = result.narrative.paragraphs.join(" ");
+  assert.match(text, /4\.0 km descent/);
+  assert.match(text, /then a 2\.0 km climb/);
+  assert.ok(text.indexOf("4.0 km descent") < text.indexOf("2.0 km climb"));
+});
+
 test("a short directional feature is retained when it contributes a defining share of that direction's elevation change", () => {
   const result = analyze([["descent", -9, 4000], ["climb", 4, 500]]);
   const text = result.narrative.paragraphs.join(" ");
