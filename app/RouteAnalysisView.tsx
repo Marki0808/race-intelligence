@@ -33,6 +33,7 @@ import type { TerrainEvidenceState } from "./routeSectionPresentation";
 import { TERRAIN_INTELLIGENCE_V1_ENABLED } from "./featureFlags";
 import { toggleKeyMomentSelection } from "./routeSectionSelection";
 import { buildSustainedGradientKeyMoments } from "./routeGradientMoments";
+import { expandKeyMomentsForDisplay } from "./routeKeyMomentPresentation";
 import RouteTakeaways from "./RouteTakeaways";
 
 export default function RouteAnalysisView({
@@ -64,10 +65,10 @@ export default function RouteAnalysisView({
     () => mapillaryEvidenceByRouteSection(analysis.routeSections, mapillaryEvidence),
     [analysis.routeSections, mapillaryEvidence],
   );
-  const keyMoments = useMemo(() => [
+  const keyMoments = useMemo(() => expandKeyMomentsForDisplay([
     ...analysis.keyMoments,
     ...buildSustainedGradientKeyMoments(analysis.gradientIntelligence, analysis.keyMoments),
-  ], [analysis.keyMoments, analysis.gradientIntelligence]);
+  ]), [analysis.keyMoments, analysis.gradientIntelligence]);
 
   function selectMoment(momentId: string) {
     setSelectedSectionKey(null);

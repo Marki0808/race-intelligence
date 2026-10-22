@@ -21,6 +21,7 @@ import type { RouteSection } from "./routeSectionEngine";
 import { routeSectionSelectionKey } from "./routeSectionSelection";
 import { TERRAIN_INTELLIGENCE_V1_ENABLED } from "./featureFlags";
 import { buildSustainedGradientKeyMoments } from "./routeGradientMoments";
+import { expandKeyMomentsForDisplay } from "./routeKeyMomentPresentation";
 import RouteTakeaways from "./RouteTakeaways";
 
 export default function CourseSection({
@@ -54,10 +55,10 @@ export default function CourseSection({
   const displayedSections = useMemo(() => TERRAIN_INTELLIGENCE_V1_ENABLED && routeAnalysis && currentTerrain?.data
     ? attachTerrainEvidenceToRouteSections(routeAnalysis.routeSections, currentTerrain.data)
     : routeAnalysis?.routeSections ?? [], [routeAnalysis, currentTerrain]);
-  const keyMoments = useMemo(() => routeAnalysis ? [
+  const keyMoments = useMemo(() => routeAnalysis ? expandKeyMomentsForDisplay([
     ...routeAnalysis.keyMoments,
     ...buildSustainedGradientKeyMoments(routeAnalysis.gradientIntelligence, routeAnalysis.keyMoments),
-  ] : [], [routeAnalysis]);
+  ]) : [], [routeAnalysis]);
 
   useEffect(() => () => {
     terrainController.current?.abort();

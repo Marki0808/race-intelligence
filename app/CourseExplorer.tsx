@@ -3,11 +3,14 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent } from "react";
 import type { Layer, Map as LeafletMap, Polyline } from "leaflet";
 import type { KeyMomentData } from "./raceTypes";
+import type { KeyMomentProfileMarkerInput } from "./routeKeyMomentProfileMarkers";
 import { groupAnalyzedPointsBySegment, type RouteAnalysisData } from "./gpxAnalysis";
 import type { RouteSection } from "./routeSectionEngine";
 import { clipRoutePointsToKeyMoment, clipRoutePointsToSection, findSelectedRouteSection, resolveKeyMomentInterval } from "./routeSectionSelection";
 import { avoidRouteDistanceTickLabelOverlap, getNiceAxisScale, getPositionedRouteDistanceTicks, getRouteDistancePosition, getRouteSectionBoundaryMarkers } from "./routeProfilePresentation";
 import { nearestRouteProfilePoint } from "./routeProfileInspection";
+import { layoutKeyMomentProfileMarkers } from "./routeKeyMomentProfileMarkers";
+import { ROUTE_MAP_STYLES } from "./routeMapStyles";
 
 export default function CourseExplorer({
   selectedMoment,
@@ -103,9 +106,10 @@ export default function CourseExplorer({
       const segmentLines = new Map<number, Polyline>();
       groupAnalyzedPointsBySegment(points).filter((segment) => segment.length > 1).forEach((segment) => {
         const segmentIndex = segment[0].segmentIndex ?? 0;
+        L.polyline(segment.map(({ latitude, longitude }) => [latitude, longitude]) as [number, number][], ROUTE_MAP_STYLES.contextHalo).addTo(map!);
         const line = L.polyline(
           segment.map(({ latitude, longitude }) => [latitude, longitude]) as [number, number][],
-          { color: "#aeb7b0", weight: 3, opacity: 0.92 },
+          ROUTE_MAP_STYLES.context,
         ).addTo(map!);
         segmentLines.set(segmentIndex, line);
       });
@@ -177,21 +181,20 @@ export default function CourseExplorer({
 
     for (const line of highlightLineRefs.current) line.removeFrom(map);
     highlightLineRefs.current = [];
-    for (const line of routeLineRefs.current.values()) line.setStyle({ color: "#aeb7b0", opacity: 0.92, weight: 3 });
+    for (const line of routeLineRefs.current.values()) line.setStyle(ROUTE_MAP_STYLES.context);
 
     if (selectedSection && selectedSectionPoints.length > 1) {
-      const highlight = L.polyline(
-        selectedSectionPoints.map(({ latitude, longitude }) => [latitude, longitude]) as [number, number][],
-        { color: "#17211c", weight: 8, opacity: 1, lineCap: "round", lineJoin: "round" },
-      ).addTo(map);
+      const coordinates =
+        selectedSectionPoints.map(({ latitude, longitude }) => [latitude, longitude]) as [number, number][];
+      highlightLineRefs.current.push(L.polyline(coordinates, ROUTE_MAP_STYLES.selectedHalo).addTo(map));
+      const highlight = L.polyline(coordinates, ROUTE_MAP_STYLES.selectedSection).addTo(map);
       highlightLineRefs.current.push(highlight);
     }
 
     if (!selectedSection && selectedMomentInterval && selectedMomentPoints.length > 1) {
-      const highlight = L.polyline(
-        selectedMomentPoints.map(({ latitude, longitude }) => [latitude, longitude]) as [number, number][],
-        { color: "#f2d675", weight: 7, opacity: 1, lineCap: "round", lineJoin: "round" },
-      ).addTo(map);
+      const coordinates = selectedMomentPoints.map(({ latitude, longitude }) => [latitude, longitude]) as [number, number][];
+      highlightLineRefs.current.push(L.polyline(coordinates, ROUTE_MAP_STYLES.selectedHalo).addTo(map));
+      const highlight = L.polyline(coordinates, ROUTE_MAP_STYLES.selectedMoment).addTo(map);
       highlightLineRefs.current.push(highlight);
     }
     if (!selectedSection && selectedMomentInterval && selectedMomentPoints.length === 1) {
@@ -310,7 +313,7 @@ function Metric({ label, value }: { label: string; value: string }) {
   return <div><p className="text-[10px] uppercase tracking-[0.16em] text-white/40 sm:text-xs">{label}</p><p className="mt-2 text-lg font-semibold sm:text-xl">{value}</p></div>;
 }
 
-function ElevationProfile({
+export function ElevationProfile({
   points,
   selectedPoints,
   minElevation,
@@ -319,15 +322,21 @@ function ElevationProfile({
   selectedMomentInterval,
   sections,
   onSelectSection,
+  momentMarkers = [],
+  selectedMoment = null,
+  onSelectMoment,
 }: {
-  points: RouteAnalysisData["points"];
-  selectedPoints: RouteAnalysisData["points"];
+  points: readonly RouteAnalysisData["points"][number][];
+  selectedPoints: readonly RouteAnalysisData["points"][number][];
   minElevation: number;
   maxElevation: number;
   selectedSection: RouteSection | null;
   selectedMomentInterval: ReturnType<typeof resolveKeyMomentInterval>;
   sections: readonly RouteSection[];
   onSelectSection?: (section: RouteSection | null) => void;
+  momentMarkers?: readonly KeyMomentProfileMarkerInput[];
+  selectedMoment?: string | null;
+  onSelectMoment?: (momentId: string) => void;
 }) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [chartSize, setChartSize] = useState({ width: 1200, height: 288 });
@@ -358,6 +367,7 @@ function ElevationProfile({
   const desiredDistanceTickCount = Math.min(7, Math.max(3, Math.floor((width - plot.left - plot.right) / 48)));
   const distanceTicks = avoidRouteDistanceTickLabelOverlap(getPositionedRouteDistanceTicks(totalDistance, plot.left, width - plot.right, desiredDistanceTickCount));
   const boundaries = getRouteSectionBoundaryMarkers(sections);
+  const positionedMomentMarkers = layoutKeyMomentProfileMarkers(momentMarkers, points, totalDistance, width, height);
   const xForDistance = (distanceM: number) => getRouteDistancePosition(distanceM, totalDistance, plot.left, width - plot.right);
   const yForElevation = (elevationM: number) => plot.top + ((elevationScale.maximum - elevationM) / (elevationScale.maximum - elevationScale.minimum)) * plotHeight;
   const toProfilePoint = (point: RouteAnalysisData["points"][number]) => {
@@ -428,10 +438,17 @@ function ElevationProfile({
       onSelectSection?.(isSelected ? null : section);
     }
   };
+  const onMomentKeyDown = (event: KeyboardEvent<SVGGElement>, momentId: string) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      event.stopPropagation();
+      onSelectMoment?.(momentId);
+    }
+  };
 
   return (
     <div className="relative">
-    <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} className="h-56 w-full touch-pan-y sm:h-64 lg:h-72" preserveAspectRatio="none" aria-label="GPX-derived elevation profile. Hover to inspect elevation, or press and hold on touch. Select a section interval to update its metrics; selected Key Moments are highlighted." role="group" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerLeave} onPointerLeave={onPointerLeave}>
+    <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} className="h-56 w-full touch-pan-y sm:h-64 lg:h-72" preserveAspectRatio="none" aria-label={momentMarkers.length ? "Full-route elevation profile with numbered, keyboard-accessible Key Moment markers." : "GPX-derived elevation profile. Hover to inspect elevation, or press and hold on touch. Select a section interval to update its metrics; selected Key Moments are highlighted."} role="group" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerLeave} onPointerLeave={onPointerLeave}>
       <title>Elevation profile in meters across the route distance in kilometers</title>
       {elevationScale.ticks.map((tick) => {
         const y = yForElevation(tick);
@@ -510,6 +527,18 @@ function ElevationProfile({
       {paths.map((segment, index) => <polyline key={index} points={segment.map(toProfilePoint).join(" ")} fill="none" stroke="#a7c957" strokeOpacity={selectedSection || selectedMomentInterval ? "0.3" : "0.9"} strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" pointerEvents="none" />)}
       {(selectedSection || selectedMomentInterval) && selectedPoints.length > 1 && <polyline points={selectedPoints.map(toProfilePoint).join(" ")} fill="none" stroke="#f2d675" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" pointerEvents="none" />}
       {(selectedSection || selectedMomentInterval) && selectedPoints.length === 1 && <circle cx={xForDistance(selectedPoints[0].distanceM)} cy={yForElevation(selectedPoints[0].elevationM)} r="7" fill="#f2d675" pointerEvents="none" />}
+      {positionedMomentMarkers.map((marker) => {
+        const isSelected = selectedMoment === marker.id;
+        return <g key={marker.id} role="button" tabIndex={0} aria-pressed={isSelected} aria-label={`${marker.number}. ${marker.description}${isSelected ? ". Selected; activate to clear selection." : ". Activate to select this Key Moment."}`}
+          className="cursor-pointer outline-none focus-visible:drop-shadow-[0_0_4px_#f2d675]" onKeyDown={(event) => onMomentKeyDown(event, marker.id)}
+          onClick={(event) => { event.preventDefault(); event.stopPropagation(); onSelectMoment?.(marker.id); }}
+          onPointerDown={(event) => event.stopPropagation()} onPointerMove={(event) => event.stopPropagation()} onPointerUp={(event) => event.stopPropagation()}>
+          <line x1={marker.markerX} x2={marker.anchorX} y1={marker.markerY} y2={marker.anchorY} stroke={isSelected ? "#f2d675" : "#ffffff"} strokeOpacity={isSelected ? "0.9" : "0.68"} strokeWidth="1.5" pointerEvents="none" />
+          <circle cx={marker.markerX} cy={marker.markerY} r={isSelected ? 14 : 10} fill={isSelected ? "#17211c" : "#f4f2ed"} stroke={isSelected ? "#f2d675" : "#17211c"} strokeWidth={isSelected ? 2.5 : 1.5} className="transition-[r,fill,stroke] duration-200 motion-reduce:transition-none" />
+          <text x={marker.markerX} y={marker.markerY + 3.5} textAnchor="middle" fill={isSelected ? "#ffffff" : "#17211c"} fontSize="9" fontWeight="700" pointerEvents="none">{marker.number}</text>
+          <circle cx={marker.markerX} cy={marker.markerY} r="16" fill="transparent" pointerEvents="all" />
+        </g>;
+      })}
       {inspectedPoint && <g pointerEvents="none">
         <line x1={xForDistance(inspectedPoint.distanceM)} x2={xForDistance(inspectedPoint.distanceM)} y1={plot.top} y2={height - plot.bottom} stroke="white" strokeOpacity="0.6" strokeWidth="2" strokeDasharray="5 6" />
         <circle cx={xForDistance(inspectedPoint.distanceM)} cy={yForElevation(inspectedPoint.elevationM)} r="8" fill="#f2d675" stroke="#17211c" strokeWidth="3" />

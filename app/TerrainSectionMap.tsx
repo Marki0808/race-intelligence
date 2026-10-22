@@ -6,6 +6,7 @@ import type { GpxRoutePointData } from "./gpxAnalysis";
 import type { RouteSection } from "./routeSectionEngine";
 import { clipRoutePointsToSection } from "./routeSectionSelection";
 import { groupAnalyzedPointsBySegment } from "./gpxAnalysis";
+import { ROUTE_MAP_STYLES } from "./routeMapStyles";
 
 export default function TerrainSectionMap({
   points,
@@ -39,7 +40,10 @@ export default function TerrainSectionMap({
       mapRef.current = map;
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "&copy; OpenStreetMap contributors", maxZoom: 19 }).addTo(map);
       const coordinates = components.filter((segment) => segment.length > 1).map((segment) => segment.map(({ latitude, longitude }) => [latitude, longitude] as [number, number]));
-      for (const path of coordinates) L.polyline(path, { color: "#aeb7b0", weight: 3, opacity: 0.95, lineCap: "round", lineJoin: "round" }).addTo(map);
+      for (const path of coordinates) {
+        L.polyline(path, ROUTE_MAP_STYLES.contextHalo).addTo(map);
+        L.polyline(path, ROUTE_MAP_STYLES.context).addTo(map);
+      }
       const bounds = L.latLngBounds(points.map(({ latitude, longitude }) => [latitude, longitude]));
       if (bounds.isValid()) map.fitBounds(bounds, { padding: [22, 22], maxZoom: 13 });
       const valid = components.filter((segment) => segment.length > 1);
@@ -64,10 +68,11 @@ export default function TerrainSectionMap({
     for (const layer of selectionLayers.current) layer.removeFrom(map);
     selectionLayers.current = [];
     const selectedPoints = clipRoutePointsToSection(points, section);
-    if (selectedPoints.length > 1) selectionLayers.current.push(L.polyline(
-      selectedPoints.map(({ latitude, longitude }) => [latitude, longitude]) as [number, number][],
-      { color: "#17211c", weight: 7, opacity: 1, lineCap: "round", lineJoin: "round" },
-    ).addTo(map));
+    if (selectedPoints.length > 1) {
+      const coordinates = selectedPoints.map(({ latitude, longitude }) => [latitude, longitude]) as [number, number][];
+      selectionLayers.current.push(L.polyline(coordinates, ROUTE_MAP_STYLES.selectedHalo).addTo(map));
+      selectionLayers.current.push(L.polyline(coordinates, ROUTE_MAP_STYLES.selectedSection).addTo(map));
+    }
   }, [mapReady, points, section]);
 
   return points.length >= 2 ? (

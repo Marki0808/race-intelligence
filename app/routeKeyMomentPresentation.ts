@@ -1,16 +1,28 @@
 import type { GpxRoutePointData } from "./gpxAnalysis.ts";
-import type { KeyMomentData, KeyMomentMeasurement } from "./raceTypes.ts";
+import type { KeyMomentData } from "./raceTypes.ts";
 
 export type KeyMomentCardPresentation = {
-  kind: KeyMomentMeasurement["kind"];
+  kind: "event" | "gradient" | "point" | "rolling";
   title: string;
   value: string;
-  valueContext?: string;
-  location: string;
+  locationSentence: string;
   startPercent: number;
   endPercent: number;
   exactDistanceM: number;
 };
+
+/** Creates distinct presentation identities for ranking roles without changing analyzed RouteAnalysisData. */
+export function expandKeyMomentsForDisplay(moments: readonly KeyMomentData[]): KeyMomentData[] {
+  return moments.flatMap((moment) => {
+    const measurement = moment.measurement;
+    if (measurement?.kind !== "event" || !measurement.roles.includes("longest") || !measurement.roles.includes("largest")) return [moment];
+    return (["longest", "biggest"] as const).map((role) => ({
+      ...moment,
+      id: `${moment.id}:${role}`,
+      title: `${role === "longest" ? "Longest" : "Biggest"} ${measurement.direction}`,
+    }));
+  });
+}
 
 /** Fails closed unless measured values, bounds, component identity, and GPX point ownership agree. */
 export function presentKeyMomentCard(
@@ -26,16 +38,16 @@ export function presentKeyMomentCard(
   let end: number;
   let title = moment.title;
   let value: string;
-  let valueContext: string | undefined;
-  let location: string;
+  let locationSentence: string;
   if (measurement.kind === "point") {
     if (![measurement.distanceM, measurement.elevationM].every(Number.isFinite) || measurement.distanceM < 0 || measurement.distanceM > totalDistanceM) return null;
     const sourcePoint = points.find((point) => point.segmentIndex === measurement.segmentIndex && point.distanceM === measurement.distanceM);
     if (!sourcePoint || sourcePoint.elevationM !== measurement.elevationM) return null;
+    if (!/^(highest|lowest) point$/i.test(moment.title)) return null;
     start = end = measurement.distanceM;
     title = moment.title;
     value = `${Math.round(measurement.elevationM).toLocaleString("en-US")} m`;
-    location = `At ${formatKm(start)} km`;
+    locationSentence = `The ${moment.title.toLowerCase()} is at km ${formatKm(start)}.`;
   } else {
     start = measurement.startDistanceM;
     end = measurement.endDistanceM;
@@ -44,27 +56,28 @@ export function presentKeyMomentCard(
     if (!component.length || start < component[0].distanceM || end > component.at(-1)!.distanceM) return null;
     if (measurement.kind === "event") {
       if (!Number.isFinite(measurement.elevationChangeM) || measurement.elevationChangeM < 0 || !measurement.roles.length) return null;
-      const largest = measurement.roles.includes("largest");
-      title = `${largest ? "Biggest" : "Longest"}${largest && measurement.roles.includes("longest") ? " and longest" : ""} ${measurement.direction}`;
-      if (largest) {
+      const displayRole = /^biggest\b/i.test(moment.title) ? "biggest" : /^longest\b/i.test(moment.title) ? "longest" : (measurement.roles.includes("largest") ? "biggest" : "longest");
+      const role = displayRole === "biggest" ? "largest" : "longest";
+      if (!measurement.roles.includes(role)) return null;
+      title = `${displayRole === "biggest" ? "Biggest" : "Longest"} ${measurement.direction}`;
+      if (displayRole === "biggest") {
         value = `${measurement.direction === "climb" ? "+" : "−"}${Math.round(measurement.elevationChangeM).toLocaleString("en-US")} m`;
-        valueContext = measurement.roles.includes("longest") ? `${(measurement.distanceM / 1000).toFixed(1)} km event` : "elevation change";
       } else {
         value = `${(measurement.distanceM / 1000).toFixed(1)} km`;
-        valueContext = "detected event length";
       }
-      location = `${formatKm(start)}–${formatKm(end)} km`;
+      locationSentence = `This ${measurement.direction} runs from km ${formatKm(start)} to km ${formatKm(end)}.`;
     } else if (measurement.kind === "gradient") {
       if (!Number.isFinite(measurement.averageNetGradientPct) || (measurement.direction === "climb" ? measurement.averageNetGradientPct <= 0 : measurement.averageNetGradientPct >= 0)) return null;
-      title = `Sustained steep ${measurement.direction}`;
+      title = `Steepest sustained ${measurement.direction}`;
       value = `${measurement.averageNetGradientPct > 0 ? "+" : "−"}${Math.abs(measurement.averageNetGradientPct).toFixed(1)}%`;
-      valueContext = `average net grade over ${(measurement.distanceM / 1000).toFixed(1)} km ${measurement.direction === "climb" ? "uphill" : "downhill"}`;
-      location = `${formatKm(start)}–${formatKm(end)} km`;
-    } else {
+      locationSentence = `This sustained ${measurement.direction} runs from km ${formatKm(start)} to km ${formatKm(end)}.`;
+    } else if (measurement.kind === "rolling") {
+      if (![measurement.distanceM, measurement.startDistanceM, measurement.endDistanceM].every(Number.isFinite) || measurement.distanceM <= 0 || end <= start || Math.abs(end - start - measurement.distanceM) > 1) return null;
       title = moment.title;
       value = `${(measurement.distanceM / 1000).toFixed(1)} km`;
-      valueContext = "detected rolling stretch";
-      location = `${formatKm(start)}–${formatKm(end)} km`;
+      locationSentence = `This rolling stretch runs from km ${formatKm(start)} to km ${formatKm(end)}.`;
+    } else {
+      return null;
     }
   }
 
@@ -72,8 +85,7 @@ export function presentKeyMomentCard(
     kind: measurement.kind,
     title,
     value,
-    ...(valueContext ? { valueContext } : {}),
-    location,
+    locationSentence,
     startPercent: clampPercent(start / totalDistanceM * 100),
     endPercent: clampPercent(end / totalDistanceM * 100),
     exactDistanceM: end - start,
@@ -85,8 +97,11 @@ export function orderKeyMomentsForDisplay(moments: readonly KeyMomentData[]): Ke
   const rank = (moment: KeyMomentData) => {
     const measurement = moment.measurement;
     if (measurement?.kind === "event") {
-      if (measurement.roles.includes("largest")) return measurement.direction === "climb" ? 0 : 1;
-      return measurement.direction === "climb" ? 2 : 3;
+      if (/^longest\b/i.test(moment.title)) return measurement.direction === "climb" ? 0 : 2;
+      if (/^biggest\b/i.test(moment.title)) return measurement.direction === "climb" ? 1 : 3;
+      if (measurement.roles.includes("longest") && measurement.roles.includes("largest")) return measurement.direction === "climb" ? 0 : 2;
+      if (measurement.roles.includes("largest")) return measurement.direction === "climb" ? 1 : 3;
+      return measurement.direction === "climb" ? 0 : 2;
     }
     if (measurement?.kind === "gradient") return measurement.direction === "climb" ? 4 : 5;
     if (measurement?.kind === "point") return /highest/i.test(moment.title) ? 6 : /lowest/i.test(moment.title) ? 7 : 8;

@@ -140,7 +140,7 @@ function SectionDetail({
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#71805d]">Route Section {ordinal} · {section.segmentIndex === 0 ? "Track segment 1" : `Track segment ${section.segmentIndex + 1}`}</p>
           <h3 className="mt-2 text-2xl font-semibold">{title} · {section.startKm}–{section.endKm} km</h3>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-black/55">{expectation.paragraphs[0] ?? section.description}</p>
+          <p className="mt-3 max-w-3xl text-base leading-7 text-black/75">{expectation.paragraphs[0] ?? section.description}</p>
         </div>
         <button type="button" aria-label={`Close Route Section ${ordinal} details`} onClick={onClose} className="min-h-11 rounded-full border border-black/15 bg-white px-4 text-sm font-semibold text-black/70 hover:bg-[#e9eddf] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d]">Close details</button>
       </div>

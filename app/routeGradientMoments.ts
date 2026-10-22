@@ -27,7 +27,7 @@ export function buildSustainedGradientKeyMoments(
     return [{
       id: `gradient-sustained-${direction}`,
       number: '',
-      title: `Sustained steep ${noun}`,
+      title: `Steepest sustained ${noun}`,
       distance: `${startKm.toFixed(1)}–${endKm.toFixed(1)} km`,
       focusStartKm: startKm,
       focusEndKm: endKm,

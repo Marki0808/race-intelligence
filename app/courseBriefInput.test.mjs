@@ -4,6 +4,7 @@ import test from "node:test";
 import { buildCourseBriefInput } from "./courseBriefInput.ts";
 import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis.ts";
 import { createRouteKeyMoments, selectStructuredRouteKeyMomentEvents } from "./routeKeyMoments.ts";
+import { expandKeyMomentsForDisplay } from "./routeKeyMomentPresentation.ts";
 
 const OPTIONS = { analysisVersion: 2 };
 
@@ -358,7 +359,7 @@ test("event ties keep first event order and absent directions are omitted", () =
   assert.equal(selectStructuredRouteKeyMomentEvents({ events: [], totalDistanceKm: 0, resampledPoints: [], samples: [] }).length, 0);
 });
 
-test("existing Key Moment creation uses structured event selection and only deduplicates identical winners", () => {
+test("Key Moment display separates longest and biggest without changing analyzed data or structured Course Brief facts", () => {
   const same = makeEvent({ id: "segment-0-dynamic-event-1", rhythm: "climb", startKm: 1, endKm: 4, ascentM: 120 });
   const sameAnalysis = makeAnalysis({ events: [same] });
   const sameStructured = selectStructuredRouteKeyMomentEvents(sameAnalysis.routeDynamics);
@@ -366,6 +367,10 @@ test("existing Key Moment creation uses structured event selection and only dedu
   assert.equal(sameStructured.length, 1);
   assert.deepEqual(sameStructured[0].roles, ["longest", "largest"]);
   assert.equal(sameUi.filter(({ title }) => title === "Longest and biggest climb").length, 1);
+  const displayUi = expandKeyMomentsForDisplay(sameUi);
+  assert.deepEqual(displayUi.filter(({ title }) => /climb$/.test(title)).map(({ title }) => title), ["Longest climb", "Biggest climb"]);
+  assert.equal(sameUi.length, 3);
+  assert.deepEqual(sameStructured[0].roles, ["longest", "largest"]);
 
   const distinctAnalysis = makeAnalysis({ events: [
     makeEvent({ id: "segment-0-dynamic-event-1", rhythm: "climb", startKm: 1, endKm: 5, ascentM: 100 }),

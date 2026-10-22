@@ -86,7 +86,7 @@ test("section details keep one concise overview visible and place full chronolog
   assert.match(sectionBrowser, /<details className=/);
 });
 
-test("Race and Route Mode share the same evidence-bounded sustained-gradient moments and actual GPX profile cards", async () => {
+test("Race and Route Mode share compact measured Key Moment cards and a complete-route profile", async () => {
   const [raceView, routeView, keyMoment, helper] = await Promise.all([
     readFile(new URL("./CourseSection.tsx", import.meta.url), "utf8"),
     readFile(new URL("./RouteAnalysisView.tsx", import.meta.url), "utf8"),
@@ -95,8 +95,12 @@ test("Race and Route Mode share the same evidence-bounded sustained-gradient mom
   ]);
   assert.match(raceView, /buildSustainedGradientKeyMoments\(routeAnalysis\.gradientIntelligence, routeAnalysis\.keyMoments\)/);
   assert.match(routeView, /buildSustainedGradientKeyMoments\(analysis\.gradientIntelligence, analysis\.keyMoments\)/);
-  assert.match(keyMoment, /presentKeyMomentCard\(moment, routePoints, totalDistanceM\)/);
-  assert.match(keyMoment, /markerWidth = Math\.max\(3, rawWidth\)/);
+  assert.match(keyMoment, /aria-pressed=\{selected\}/);
+  assert.match(keyMoment, /card\.locationSentence/);
+  assert.doesNotMatch(keyMoment, /<svg|position bar|startPercent/);
+  const sharedMoments = await readFile(new URL("./KeyRouteMoments.tsx", import.meta.url), "utf8");
+  assert.match(sharedMoments, /<ElevationProfile[\s\S]*?momentMarkers=\{markerInputs\}/);
+  assert.match(sharedMoments, /Key Moments along the full route/);
   assert.match(routeView, /routePoints=\{analysis\.points\}/);
   assert.match(raceView, /routePoints=\{routeAnalysis\.points\}/);
   assert.doesNotMatch(raceView, /raceRecord\.intelligence\.keyMoments/);
@@ -123,15 +127,21 @@ test("route character takeaways are shared by both modes and remain component lo
 
 test("main and section maps retain full-route context and only overlay component-scoped selected geometry", async () => {
   const sectionMap = await readFile(new URL("./TerrainSectionMap.tsx", import.meta.url), "utf8");
-  assert.match(explorer, /color: "#aeb7b0", weight: 3, opacity: 0\.92/);
+  const mapStyles = await readFile(new URL("./routeMapStyles.ts", import.meta.url), "utf8");
+  assert.match(explorer, /ROUTE_MAP_STYLES\.contextHalo/);
+  assert.match(explorer, /ROUTE_MAP_STYLES\.context/);
   assert.match(explorer, /clipRoutePointsToSection\(points, selectedSection\)/);
-  assert.match(explorer, /color: "#17211c", weight: 8, opacity: 1/);
+  assert.match(explorer, /ROUTE_MAP_STYLES\.selectedSection/);
+  assert.match(explorer, /ROUTE_MAP_STYLES\.selectedMoment/);
   assert.doesNotMatch(explorer, /fitBounds\(selectedSectionPoints/);
   assert.match(explorer, /lastMapSelectionRef/);
   assert.match(sectionMap, /groupAnalyzedPointsBySegment\(points\)/);
   assert.match(sectionMap, /clipRoutePointsToSection\(points, section\)/);
-  assert.match(sectionMap, /color: "#aeb7b0", weight: 3/);
-  assert.match(sectionMap, /color: "#17211c", weight: 7/);
+  assert.match(sectionMap, /ROUTE_MAP_STYLES\.contextHalo/);
+  assert.match(sectionMap, /ROUTE_MAP_STYLES\.context/);
+  assert.match(sectionMap, /ROUTE_MAP_STYLES\.selectedSection/);
+  assert.match(mapStyles, /contextHalo: \{ color: "#f8f8f4", weight: 8/);
+  assert.match(mapStyles, /context: \{ color: "#46514d", weight: 4/);
   assert.match(sectionMap, /zoomControl: true/);
 });
 
