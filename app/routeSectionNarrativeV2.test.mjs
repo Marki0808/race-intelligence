@@ -76,7 +76,7 @@ test("comparable short alternations merge into a rolling phase while preserving 
   assert.equal(result.phases.phases.length, 1);
   assert.equal(result.phases.phases[0].direction, "rolling");
   assert.deepEqual(result.phases.phases[0].directionSequence, ["climb", "descent", "climb", "descent", "climb", "descent"]);
-  assert.match(result.narrative.paragraphs.join(" "), /climbs and descents alternate/);
+  assert.match(result.narrative.paragraphs.join(" "), /moves between climbs and descents/i);
 });
 
 test("a short known neutral bridge can join an alternating phase, but an unknown gap never can", () => {
@@ -94,22 +94,24 @@ test("a steep member prevents rolling compression and retains its own phase and 
   const result = analyze([["climb", 5], ["descent", -5], ["climb", 22], ["descent", -5], ["climb", 5]]);
   assert.notEqual(result.phases.phases[0].direction, "rolling");
   assert.ok(result.phases.phases.some(phase => phase.direction === "climb" && phase.gradeSegments.some(segment => segment.gradeBand === "extreme-grade")));
-  assert.match(result.narrative.paragraphs.join(" "), /short 0\.5 km climb averaging \+22% smoothed net grade interrupts the descending sequence/);
+  assert.match(result.narrative.paragraphs.join(" "), /brief but steep climb/i);
 });
 
 test("long climb and descent descriptions cover the full extent without applying a subsection grade to the whole phase", () => {
   const up = analyze([["climb", 4, 2000], ["climb", 12, 2000], ["climb", 6, 2000]]);
-  assert.match(up.narrative.paragraphs.join(" "), /6\.0 km climb/);
-  assert.match(up.narrative.paragraphs.join(" "), /2\.0 km sustained climb at \+12% smoothed net grade/);
+  assert.match(up.narrative.paragraphs.join(" "), /6\.0 km/);
+  assert.match(up.narrative.paragraphs.join(" "), /notably steep stretch/);
+  assert.doesNotMatch(up.narrative.paragraphs.join(" "), /smoothed net grade|\+12%/);
   const down = analyze([["descent", -3, 2000], ["descent", -13, 2000], ["descent", -6, 2000]]);
-  assert.match(down.narrative.paragraphs.join(" "), /6\.0 km descent/);
-  assert.match(down.narrative.paragraphs.join(" "), /2\.0 km sustained descent at −13% smoothed net grade/);
+  assert.match(down.narrative.paragraphs.join(" "), /6\.0 km/);
+  assert.match(down.narrative.paragraphs.join(" "), /notably steep stretch/);
+  assert.doesNotMatch(down.narrative.paragraphs.join(" "), /smoothed net grade|−13%/);
 });
 
 test("short steep opposite-direction interruption remains chronological and independently traceable", () => {
   const result = analyze([["climb", 6, 2500], ["descent", -12, 500], ["climb", 7, 3000]]);
   const text = result.narrative.paragraphs.join(" ");
-  assert.match(text, /short 0\.5 km descent averaging −12% smoothed net grade interrupts the climbing sequence/);
+  assert.match(text, /short, steep descent/i);
   const interruption = result.narrative.trace.find(item => item.intervalIds.includes("s0-i1"));
   assert.ok(interruption.intervalIds.includes("s0-i0"));
   assert.ok(interruption.intervalIds.includes("s0-i2"));
@@ -119,30 +121,30 @@ test("unknown intervals remain explicit and break rather than bridge narrative p
   const result = analyze([["climb", 8, 2000], ["unknown", 0, 1500], ["descent", -6, 2000]]);
   const text = result.narrative.paragraphs.join(" ");
   assert.equal(result.narrative.status, "limited");
-  assert.match(result.narrative.paragraphs[0], /Climbing and descending both shape the profile/);
-  assert.match(text, /uncertain across 1\.5 km in 1 stretch/);
+  assert.doesNotMatch(text, /Local interval direction|unknownReasonCodes|uncertain across/);
   assert.doesNotMatch(text, /gives way|interrupts|followed by/);
 });
 
 test("neutral sections and low-vertical movement stay distinct from unknown", () => {
   const result = analyze([["low-vertical-movement", 0], ["low-vertical-movement", 0], ["low-vertical-movement", 0], ["low-vertical-movement", 0]]);
   assert.equal(result.phases.phases[0].direction, "low-vertical-movement");
-  assert.match(result.narrative.paragraphs[0], /Elevation changes remain limited/);
+  assert.match(result.narrative.paragraphs[0], /elevation changes stay limited/i);
   assert.doesNotMatch(result.narrative.paragraphs.join(" "), /uncertain interval direction/);
 });
 
 test("visible section overview explains the dominant pattern and a supported sustained direction change", () => {
   const result = analyze([["climb", 7, 2500], ["descent", -6, 2000]]);
-  assert.match(result.narrative.paragraphs[0], /Climbing and descending both shape the profile/);
-  assert.match(result.narrative.paragraphs[0], /sustained climb is followed by a sustained descent/);
-  assert.deepEqual(result.narrative.trace[0].intervalIds, result.phases.phases.flatMap((phase) => phase.intervalIds));
-  assert.ok(result.narrative.trace[0].measuredFields.includes("section.dominantRhythm"));
+  assert.match(result.narrative.paragraphs[0], /climb.*followed by.*descent/i);
+  assert.equal(result.narrative.paragraphs.length, 1);
+  assert.ok(result.narrative.trace[0].intervalIds.length > 0);
+  assert.ok(result.narrative.trace[0].measuredFields.includes("phase.direction"));
 });
 
 test("section overview does not synthesize a transition across an unknown interval", () => {
   const result = analyze([["climb", 8, 2000], ["unknown", 0, 1000], ["descent", -7, 2000]]);
-  assert.match(result.narrative.paragraphs[0], /Climbing and descending both shape the profile/);
   assert.doesNotMatch(result.narrative.paragraphs[0], /followed by|gives way|resumes/);
+  assert.match(result.narrative.paragraphs[0], /climb/i);
+  assert.match(result.narrative.paragraphs[0], /descend/i);
 });
 
 test("phase and prose identities preserve disconnected component identity and deterministic output", () => {
@@ -183,13 +185,13 @@ test("adaptive prose summarizes a long phase sequence while retaining major chro
   const text = result.narrative.paragraphs.join(" ");
   assert.ok(result.narrative.phases.phases.length > 5);
   assert.ok(result.narrative.paragraphs.length < result.narrative.phases.phases.length);
-  assert.equal(result.narrative.algorithmVersion, 3);
+  assert.equal(result.narrative.algorithmVersion, 4);
   assert.deepEqual(result.narrative.phases.phases.flatMap(phase => phase.intervalIds), result.gradient.sections[0].intervals.map(item => item.intervalId));
-  assert.match(text, /5\.0 km climb/);
-  assert.match(text, /3\.0 km climb, averaging \+9%.*then a 3\.0 km descent/);
-  assert.match(text, /uncertain across 1\.0 km in 2 separate stretches/);
-  assert.doesNotMatch(text, /uncertain stretch.*uncertain stretch/i);
-  assert.equal((text.match(/followed by/g) ?? []).length, 1, "only the measured sustained transition appears in the overview");
+  assert.match(text, /5\.0 km/);
+  assert.match(text, /climb|ascent/i);
+  assert.match(text, /descent/i);
+  assert.doesNotMatch(text, /uncertain stretch.*uncertain stretch|Local interval direction/);
+  assert.ok((text.match(/\./g) ?? []).length <= 5, "complex sections remain concise");
   for (const trace of result.narrative.trace) {
     assert.ok(trace.intervalIds.length > 0);
     assert.ok(trace.measuredFields.length > 0);
@@ -200,11 +202,11 @@ test("adaptive prose summarizes a long phase sequence while retaining major chro
 
 test("uncertainty is summarized once without bridging known phases or changing the whole-section direction", () => {
   const result = analyze([["climb", 8, 2000], ["unknown", 0, 500], ["descent", -7, 1500], ["unknown", 0, 1000], ["climb", 9, 2000]]);
-  const uncertainty = result.narrative.paragraphs.filter(text => /Local interval direction is uncertain/.test(text));
+  const uncertainty = result.narrative.paragraphs.filter(text => /Some local elevation changes are unclear/.test(text));
   assert.equal(uncertainty.length, 1);
-  assert.match(uncertainty[0], /1\.5 km in 2 separate stretches/);
+  assert.match(uncertainty[0], /smaller transitions/);
   assert.doesNotMatch(result.narrative.paragraphs.join(" "), /the climb gives way to.*descent/i);
-  const uncertaintyIndex = result.narrative.paragraphs.findIndex(text => /Local interval direction is uncertain/.test(text));
+  const uncertaintyIndex = result.narrative.paragraphs.findIndex(text => /Some local elevation changes are unclear/.test(text));
   const uncertaintyTrace = result.narrative.trace.find(trace => trace.paragraphIndex === uncertaintyIndex);
   assert.ok(uncertaintyTrace.intervalIds.includes("s0-i1"));
   assert.ok(uncertaintyTrace.intervalIds.includes("s0-i3"));
@@ -213,25 +215,23 @@ test("uncertainty is summarized once without bridging known phases or changing t
 
 test("short simple sections stay concise and retain climb-to-descent order", () => {
   const result = analyze([["climb", 8, 2500], ["descent", -8, 2500]]);
-  assert.equal(result.narrative.paragraphs.length, 2);
-  assert.match(result.narrative.paragraphs[1], /2\.5 km climb.*then a 2\.5 km descent/);
+  assert.equal(result.narrative.paragraphs.length, 1);
+  assert.match(result.narrative.paragraphs[0], /2\.5 km.*followed by.*2\.5 km/);
 });
 
 test("a defining climb near the section finish remains in chronological prose", () => {
   const result = analyze([["descent", -8, 4000], ["climb", 12, 2000]]);
   const text = result.narrative.paragraphs.join(" ");
-  assert.match(text, /4\.0 km descent/);
-  assert.match(text, /then a 2\.0 km climb/);
-  assert.ok(text.indexOf("4.0 km descent") < text.indexOf("2.0 km climb"));
+  assert.match(text, /descent of about 4\.0 km/);
+  assert.match(text, /climb of about 2\.0 km/);
+  assert.ok(text.indexOf("descent of about 4.0 km") < text.indexOf("climb of about 2.0 km"));
 });
 
-test("a short directional feature is retained when it contributes a defining share of that direction's elevation change", () => {
+test("a short non-steep feature remains in structured facts without being overstated in prose", () => {
   const result = analyze([["descent", -9, 4000], ["climb", 4, 500]]);
   const text = result.narrative.paragraphs.join(" ");
-  assert.match(text, /0\.5 km climb/);
-  assert.match(text, /then a 0\.5 km climb/);
-  const feature = result.narrative.trace.find(trace => trace.paragraphIndex > 0 && trace.intervalIds.includes("s0-i1"));
-  assert.ok(feature?.intervalIds.includes("s0-i0"), "the adjacent reversal sentence traces the full measured sequence");
+  assert.ok(result.narrative.phases.phases.some(phase => phase.intervalIds.includes("s0-i1")));
+  assert.doesNotMatch(text, /0\.5 km climb/);
 });
 
 test("a near-duplicate subphase grade stays in structured data but is not repeated in the prose", () => {
@@ -239,6 +239,29 @@ test("a near-duplicate subphase grade stays in structured data but is not repeat
   const phase = result.narrative.phases.phases[0];
   assert.equal(phase.gradeSegments.some(segment => segment.distanceM === 1500 && segment.averageNetGradePct === 13), true);
   const text = result.narrative.paragraphs.join(" ");
-  assert.match(text, /2\.0 km climb/);
-  assert.doesNotMatch(text, /including 1\.5 km sustained climb/);
+  assert.match(text, /2\.0 km/);
+  assert.doesNotMatch(text, /including 1\.5 km sustained climb|smoothed net grade/);
+});
+
+test("runner-facing composition is a grammatical progression, not a phase-by-phase metric list", () => {
+  const result = analyze([
+    ["climb", 7, 3000], ["descent", -6, 1000], ["climb", 9, 2500],
+    ["descent", -8, 2500], ["climb", 6, 2000],
+  ]);
+  const text = result.narrative.paragraphs.join(" ");
+  assert.equal(result.narrative.paragraphs.length, 1);
+  assert.ok(text.endsWith("."));
+  assert.doesNotMatch(text, /averaging|smoothed net grade|\+\d+%|−\d+%/);
+  assert.doesNotMatch(text, /Early on, a .*\. Around the middle, a .*\. Later, a/);
+  assert.ok(result.narrative.trace[0].intervalIds.length > 0);
+});
+
+test("short steep climb and descent remain direction-specific without unsupported surface claims", () => {
+  const climb = analyze([["climb", 22, 500]]);
+  const descent = analyze([["descent", -22, 500]]);
+  assert.match(climb.narrative.paragraphs.join(" "), /steep climb/i);
+  assert.match(descent.narrative.paragraphs.join(" "), /steep descent/i);
+  for (const text of [climb.narrative.paragraphs.join(" "), descent.narrative.paragraphs.join(" ")]) {
+    assert.doesNotMatch(text, /rock|mud|root|surface|technical|weather|exposure|pace|fitness/i);
+  }
 });
