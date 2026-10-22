@@ -23,7 +23,7 @@ function interval(index, direction, grade, { length = 500, segmentIndex = 0, con
   };
 }
 
-function setup(specs, { segmentIndex = 0 } = {}) {
+function setup(specs, { segmentIndex = 0, dominantRhythm: dominantRhythmOverride } = {}) {
   let cursor = 0;
   const intervals = specs.map(([direction, grade, length], index) => {
     const result = interval(index, direction, grade, { length: length ?? 500, segmentIndex, startDistanceM: cursor });
@@ -36,7 +36,7 @@ function setup(specs, { segmentIndex = 0 } = {}) {
   const descentM = intervals.reduce((sum, item) => sum + item.metrics.descentM, 0);
   const hasClimb = specs.some(([direction]) => direction === "climb");
   const hasDescent = specs.some(([direction]) => direction === "descent");
-  const dominantRhythm = hasClimb && hasDescent ? "rolling" : hasDescent ? "descent" : hasClimb ? "climb" : "flat";
+  const dominantRhythm = dominantRhythmOverride ?? (hasClimb && hasDescent ? "rolling" : hasDescent ? "descent" : hasClimb ? "climb" : "flat");
   const section = {
     id: `section-${segmentIndex}`, segmentIndex, startKm: start / 1000, endKm: end / 1000,
     startPosition: { distanceM: start, segmentIndex }, endPosition: { distanceM: end, segmentIndex }, distanceKm: (end - start) / 1000,
@@ -185,7 +185,7 @@ test("adaptive prose summarizes a long phase sequence while retaining major chro
   const text = result.narrative.paragraphs.join(" ");
   assert.ok(result.narrative.phases.phases.length > 5);
   assert.ok(result.narrative.paragraphs.length < result.narrative.phases.phases.length);
-  assert.equal(result.narrative.algorithmVersion, 4);
+  assert.equal(result.narrative.algorithmVersion, 5);
   assert.deepEqual(result.narrative.phases.phases.flatMap(phase => phase.intervalIds), result.gradient.sections[0].intervals.map(item => item.intervalId));
   assert.match(text, /5\.0 km/);
   assert.match(text, /climb|ascent/i);
@@ -198,6 +198,52 @@ test("adaptive prose summarizes a long phase sequence while retaining major chro
   }
   const reversal = result.narrative.trace.find(trace => trace.intervalIds.includes("s0-i7"));
   assert.ok(reversal?.intervalIds.includes("s0-i8"), "the retained climb-to-descent sequence traces both phases");
+});
+
+test("a predominantly uphill section names its repeated climbs and brief easing without repeating itself", () => {
+  const result = analyze([
+    ["climb", 14, 3000], ["low-vertical-movement", 0, 500], ["climb", 12, 5000], ["descent", -4, 550],
+  ], { dominantRhythm: "climb" });
+  const text = result.narrative.paragraphs.join(" ");
+  assert.equal(text, "The section is predominantly uphill, with two sustained climbs and a brief easing between them; the second lasts about 5.0 km.");
+  assert.equal(result.narrative.paragraphs.length, 1);
+  assert.match(text, /predominantly uphill.*two sustained climbs.*brief easing/i);
+  assert.doesNotMatch(text, /uphill.*climb.*climb|ascent.*ascent/i);
+  assert.deepEqual(result.narrative.trace[0].intervalIds, result.phases.phases.flatMap(phase => phase.intervalIds));
+  assert.ok(result.narrative.trace[0].measuredFields.includes("section.dominantRhythm"));
+});
+
+test("a predominantly downhill section uses the same evidence rule and direction-specific wording", () => {
+  const result = analyze([
+    ["descent", -13, 3000], ["low-vertical-movement", 0, 500], ["descent", -11, 5000], ["climb", 4, 550],
+  ], { dominantRhythm: "descent" });
+  assert.equal(result.narrative.paragraphs[0], "The section is predominantly downhill, with two sustained descents and a brief easing between them; the second lasts about 5.0 km.");
+  assert.doesNotMatch(result.narrative.paragraphs.join(" "), /uphill|climb/i);
+});
+
+test("brief easing wording follows the phase builder's existing 1 km bridge boundary", () => {
+  const atBoundary = analyze([
+    ["climb", 12, 3000], ["low-vertical-movement", 0, 1000], ["climb", 12, 5000], ["descent", -4, 550],
+  ], { dominantRhythm: "climb" });
+  assert.match(atBoundary.narrative.paragraphs[0], /brief easing between them/i);
+
+  const longer = analyze([
+    ["climb", 12, 3000], ["low-vertical-movement", 0, 1500], ["climb", 12, 5000], ["descent", -4, 550],
+  ], { dominantRhythm: "climb" });
+  assert.match(longer.narrative.paragraphs[0], /stretch of limited elevation change between them/i);
+  assert.doesNotMatch(longer.narrative.paragraphs[0], /brief easing/i);
+});
+
+test("dominant wording is withheld when direction is not a strict measured majority or coverage is uncertain", () => {
+  const balanced = analyze([
+    ["climb", 8, 2500], ["low-vertical-movement", 0, 500], ["climb", 8, 2000], ["descent", -8, 4500],
+  ], { dominantRhythm: "climb" });
+  assert.doesNotMatch(balanced.narrative.paragraphs.join(" "), /predominantly uphill/i);
+
+  const uncertain = analyze([
+    ["climb", 12, 3000], ["low-vertical-movement", 0, 500], ["climb", 12, 5000], ["unknown", 0, 500],
+  ], { dominantRhythm: "climb" });
+  assert.doesNotMatch(uncertain.narrative.paragraphs.join(" "), /predominantly uphill/i);
 });
 
 test("uncertainty is summarized once without bridging known phases or changing the whole-section direction", () => {

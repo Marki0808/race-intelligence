@@ -3,11 +3,11 @@ import type { RouteSection } from "./routeSectionEngine.ts";
 import { buildRouteNarrativePhasesV2, type RouteNarrativePhaseV2, type RouteNarrativePhasesV2 } from "./routeNarrativePhases.ts";
 
 export const ROUTE_SECTION_NARRATIVE_V2_PRESENTATION_VERSION = 2;
-export const ROUTE_SECTION_NARRATIVE_V2_ALGORITHM_VERSION = 4;
+export const ROUTE_SECTION_NARRATIVE_V2_ALGORITHM_VERSION = 5;
 
 export type RouteSectionNarrativeV2 = {
   presentationVersion: 2;
-  algorithmVersion: 4;
+  algorithmVersion: 5;
   sectionId: string;
   segmentIndex: number;
   status: RouteNarrativePhasesV2["status"];
@@ -17,6 +17,8 @@ export type RouteSectionNarrativeV2 = {
 };
 
 type StoryEvent = { phase: RouteNarrativePhaseV2; index: number };
+// Match the phase builder's existing 1 km neutral-bridge allowance; longer gaps are not called "brief".
+const MAX_BRIEF_EASING_DISTANCE_M = 1000;
 
 /** Builds runner-facing prose from selected facts while preserving the validated chronological phase model. */
 export function presentRouteSectionNarrativeV2(
@@ -25,7 +27,7 @@ export function presentRouteSectionNarrativeV2(
   target: RouteSection,
 ): RouteSectionNarrativeV2 {
   const phases = buildRouteNarrativePhasesV2(gradient, routeSections, target);
-  const base = { presentationVersion: 2 as const, algorithmVersion: 4 as const, sectionId: target.id, segmentIndex: target.segmentIndex };
+  const base = { presentationVersion: 2 as const, algorithmVersion: 5 as const, sectionId: target.id, segmentIndex: target.segmentIndex };
   if ((phases.status !== "available" && phases.status !== "limited") || !phases.measurements || !phases.coverage.complete) {
     return { ...base, status: phases.status, phases, paragraphs: fallback(phases.status), trace: [] };
   }
@@ -58,8 +60,20 @@ function composeStory(model: RouteNarrativePhasesV2, target: RouteSection) {
         measuredFields: storyMeasuredFields,
       };
     }
-    if (first.phase.direction === second.phase.direction && middle.every(phase => phase.direction === "low-vertical-movement")) {
+    if (isNarrativeDirection(first.phase.direction) && first.phase.direction === second.phase.direction &&
+      middle.length > 0 && middle.every(phase => phase.direction === "low-vertical-movement")) {
       const direction = first.phase.direction === "climb" ? "ascent" : "descent";
+      if (hasSupportedDominantCharacter(model, target, first.phase.direction)) {
+        const noun = first.phase.direction === "climb" ? "uphill" : "downhill";
+        const easing = middle.reduce((sum, phase) => sum + phase.distanceM, 0) <= MAX_BRIEF_EASING_DISTANCE_M
+          ? "a brief easing between them"
+          : "a stretch of limited elevation change between them";
+        return {
+          text: `The section is predominantly ${noun}, with two sustained ${first.phase.direction === "climb" ? "climbs" : "descents"} and ${easing}; the second lasts about ${km(second.phase.distanceM)}.`,
+          intervalIds: [...new Set(model.phases.flatMap(phase => phase.intervalIds))],
+          measuredFields: storyMeasuredFields,
+        };
+      }
       const continuation = second.phase.distanceM >= 4000
         ? ` before another ${first.phase.direction} of about ${km(second.phase.distanceM)}`
         : ` before ${first.phase.direction === "climb" ? "the climb" : "the descent"} resumes`;
@@ -271,6 +285,19 @@ function describeOverallCharacter(target: RouteSection, model: RouteNarrativePha
   if (target.dominantRhythm === "rolling") return "Climbing and descending both shape the section.";
   if (!hasClimb && !hasDescent) return "Elevation changes stay limited across the section.";
   return null;
+}
+
+/** A section-level direction needs both the existing rhythm label and a measured phase majority. */
+function hasSupportedDominantCharacter(
+  model: RouteNarrativePhasesV2,
+  target: RouteSection,
+  direction: "climb" | "descent",
+): boolean {
+  if (target.dominantRhythm !== direction || !model.coverage.complete || model.coverage.unknownDistanceM > 0) return false;
+  const directionalDistanceM = model.phases
+    .filter(phase => phase.direction === direction)
+    .reduce((sum, phase) => sum + phase.distanceM, 0);
+  return directionalDistanceM > model.measurements!.distanceM / 2;
 }
 
 function isInterruptionSequence(model: RouteNarrativePhasesV2, before: StoryEvent, interruption: StoryEvent, after?: StoryEvent) {
