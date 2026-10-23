@@ -15,6 +15,8 @@ import { ROUTE_MAP_STYLES } from "./routeMapStyles";
 export default function CourseExplorer({
   selectedMoment,
   selectedSectionKey = null,
+  selectionSections,
+  sectionKind = "Route Section",
   onSelectSection,
   routeName,
   startLocation,
@@ -31,6 +33,8 @@ export default function CourseExplorer({
 }: {
   selectedMoment: string | null;
   selectedSectionKey?: string | null;
+  selectionSections?: readonly RouteSection[];
+  sectionKind?: "Route Section" | "Aid Station Section";
   onSelectSection?: (section: RouteSection | null) => void;
   routeName: string;
   startLocation?: string;
@@ -54,7 +58,7 @@ export default function CourseExplorer({
   const highlightLineRefs = useRef<Layer[]>([]);
   const lastMapSelectionRef = useRef<string | null>(null);
   const points = useMemo(() => routeAnalysis?.points ?? [], [routeAnalysis]);
-  const sections = routeAnalysis?.routeSections ?? [];
+  const sections = selectionSections ?? routeAnalysis?.routeSections ?? [];
   const selectedSection = findSelectedRouteSection(sections, selectedSectionKey);
   const selectedSectionPoints = useMemo(
     () => selectedSection ? clipRoutePointsToSection(points, selectedSection) : [],
@@ -243,6 +247,7 @@ export default function CourseExplorer({
               selectedSection={selectedSection}
               selectedMomentInterval={selectedSection ? null : selectedMomentInterval}
               sections={sections}
+              sectionKind={sectionKind}
               onSelectSection={onSelectSection}
             />
           ) : (
@@ -261,9 +266,9 @@ export default function CourseExplorer({
           <div className="mt-7 border-t border-white/10 pt-5">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-white/55" aria-live="polite">
-                {selectedSection ? `Metrics · Route Section ${selectedSectionOrdinal}` : "Full-route metrics"}
+                {selectedSection ? `Metrics · ${sectionKind} ${selectedSectionOrdinal}` : "Full-route metrics"}
               </p>
-              {selectedSection && onSelectSection && <button type="button" onClick={() => onSelectSection(null)} className="min-h-11 rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white/80 transition hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#a7c957]" aria-label="Clear Route Section selection">
+              {selectedSection && onSelectSection && <button type="button" onClick={() => onSelectSection(null)} className="min-h-11 rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white/80 transition hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#a7c957]" aria-label={`Clear ${sectionKind} selection`}>
                 Clear selection
               </button>}
             </div>
@@ -321,6 +326,7 @@ export function ElevationProfile({
   selectedSection,
   selectedMomentInterval,
   sections,
+  sectionKind = "Route Section",
   onSelectSection,
   momentMarkers = [],
   selectedMoment = null,
@@ -333,6 +339,7 @@ export function ElevationProfile({
   selectedSection: RouteSection | null;
   selectedMomentInterval: ReturnType<typeof resolveKeyMomentInterval>;
   sections: readonly RouteSection[];
+  sectionKind?: "Route Section" | "Aid Station Section";
   onSelectSection?: (section: RouteSection | null) => void;
   momentMarkers?: readonly KeyMomentProfileMarkerInput[];
   selectedMoment?: string | null;
@@ -511,7 +518,7 @@ export function ElevationProfile({
           pointerEvents="all"
           role="button"
           tabIndex={0}
-          aria-label={`Select Route Section ${ordinal}, track segment ${section.segmentIndex + 1}, ${section.startKm} to ${section.endKm} kilometers`}
+          aria-label={`Select ${sectionKind} ${ordinal}, track segment ${section.segmentIndex + 1}, ${section.startKm} to ${section.endKm} kilometers`}
           aria-pressed={selectedSection?.id === section.id && selectedSection.segmentIndex === section.segmentIndex}
           onClick={(event) => {
             if (event.detail > 0) {

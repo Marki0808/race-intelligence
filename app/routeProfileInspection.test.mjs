@@ -53,7 +53,7 @@ test("Race and Route Mode use accurate analysis headings and a single five-metri
   assert.match(explorer, /selectedSection\.descentM/);
   assert.match(explorer, /selectedSection\.elevationMaxM/);
   assert.match(explorer, /selectedSection\.elevationMinM/);
-  assert.match(explorer, /Clear Route Section selection/);
+  assert.match(explorer, /Clear \$\{sectionKind\} selection/);
 });
 
 test("profile inspection shows measured point values and distinguishes drags from interval selection", () => {
@@ -79,7 +79,7 @@ test("section details present the full generated chronology under What to Expect
   const heading = sectionBrowser.indexOf("<SectionSubheading>What to Expect</SectionSubheading>");
   const narrative = sectionBrowser.indexOf("whatToExpect.map(");
   const metrics = sectionBrowser.indexOf("<SectionMetric label=\"Ascent\"");
-  const profile = sectionBrowser.indexOf("<RouteSectionProfile section={section} routePoints={routePoints} />");
+  const profile = sectionBrowser.indexOf("<RouteSectionProfile section={section} routePoints={routePoints} sectionKind={sectionKind} />");
   const map = sectionBrowser.indexOf("<SectionSubheading>Section map · GPX-derived</SectionSubheading>");
   assert.ok(heading >= 0 && heading < narrative && narrative < metrics && metrics < profile && profile < map);
   assert.match(sectionBrowser, /presentRouteSectionNarrativeV2\(gradientIntelligence, routeSections, section\)/);

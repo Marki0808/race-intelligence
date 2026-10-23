@@ -1,4 +1,5 @@
 import { parseGpxText } from "./gpxAnalysis.ts";
+import { buildAidStationDiscoveryV1, type AidStationDiscoveryV1, type CapturedStationPage } from "./aidStationDiscovery.ts";
 import { inspectGpxArchive, OFFICIAL_GPX_ARCHIVE_LIMITS, type ExtractedGpxFile } from "./officialGpxArchive.ts";
 import {
   createOfficialGpxDiscovery,
@@ -17,7 +18,7 @@ export const OFFICIAL_GPX_DOWNLOAD_LIMITS = {
 } as const;
 
 export type OfficialGpxDownloadResult =
-  | { status: "success"; text: string }
+  | { status: "success"; text: string; aidStationDiscoveryV1?: AidStationDiscoveryV1 }
   | { status: "archive-choices"; archiveDigest: string; files: Array<Pick<ExtractedGpxFile, "id" | "displayLabel">> }
   | { status: "archive-inspection-success"; archiveDigest: string; files: ExtractedGpxFile[] }
   | { status: "unsafe-destination" | "invalid-url" | "candidate-not-found" | "archive-changed" | "invalid-gpx" | "invalid-archive" | "unsafe-archive" | "archive-too-large" | "no-gpx-in-archive" }
@@ -126,7 +127,7 @@ export function createOfficialGpxArchiveDownloader(
 }
 
 export function createOfficialGpxDownloadFlow(
-  discover: (sourceUrl: string) => Promise<OfficialGpxDiscoveryResult> = createOfficialGpxDiscovery(),
+  discover: (sourceUrl: string, onAcceptedPage?: (page: CapturedStationPage) => void, onOptionalStationPageUnavailable?: () => void) => Promise<OfficialGpxDiscoveryResult> = createOfficialGpxDiscovery(),
   download: (gpxUrl: string) => Promise<OfficialGpxDownloadResult> = createOfficialGpxDownloader(),
   downloadArchive: (archiveUrl: string) => Promise<OfficialGpxDownloadResult> = createOfficialGpxArchiveDownloader(),
 ) {
@@ -134,10 +135,17 @@ export function createOfficialGpxDownloadFlow(
     if (sourcePageUrl.length > 2_048 || candidateUrl.length > 2_048 || !validateOfficialPageUrl(sourcePageUrl) || !validateOfficialPageUrl(candidateUrl)) {
       return { status: "invalid-url" };
     }
-    const result = await discover(sourcePageUrl);
+    const stationPages: CapturedStationPage[] = [];
+    let stationSourceUnavailable = false;
+    const result = await discover(sourcePageUrl, (page) => {
+      if (stationPages.length < 3 && page.html.length <= 2_000_000) stationPages.push(page);
+    }, () => { stationSourceUnavailable = true; });
     if (result.status === "provider-failure") return result;
     if (result.status === "unsafe-destination") return result;
     if (result.status !== "success") return { status: "candidate-not-found" };
+    const selectedCourseIdentity = result.courseSelection?.preselection?.resourceUrl === candidateUrl
+      ? result.courseSelection.identity
+      : undefined;
     if (resourceType === "zip") {
       if (!result.archives?.some((resource) => resource.archiveUrl === candidateUrl)) return { status: "candidate-not-found" };
       const inspected = await downloadArchive(candidateUrl);
@@ -151,12 +159,39 @@ export function createOfficialGpxDownloadFlow(
       if (inspected.status !== "archive-inspection-success") return inspected;
       if (inspected.archiveDigest !== archiveDigest) return { status: "archive-changed" };
       const selectedFile = inspected.files.find((file) => file.id === entryId);
-      return selectedFile ? { status: "success", text: selectedFile.text } : { status: "candidate-not-found" };
+      if (!selectedFile) return { status: "candidate-not-found" };
+      const archiveCandidate = result.archives?.find((resource) => resource.archiveUrl === candidateUrl);
+      return {
+        status: "success",
+        text: selectedFile.text,
+        ...(stationPages.length ? { aidStationDiscoveryV1: buildAidStationDiscoveryV1(stationPages, {
+          resourceType: "zip-entry",
+          sourcePageUrl: archiveCandidate?.sourcePageUrl ?? sourcePageUrl,
+          resourceUrl: candidateUrl,
+          distanceLabel: archiveCandidate?.distanceLabel ?? null,
+          ...(selectedCourseIdentity ? { courseIdentity: selectedCourseIdentity } : {}),
+          entryId,
+          archiveDigest,
+        }, selectedFile.text, stationSourceUnavailable) } : {}),
+      };
     }
     if (!result.candidates.some((candidate) => candidate.gpxUrl === candidateUrl)) {
       return { status: "candidate-not-found" };
     }
-    return download(candidateUrl);
+    const candidate = result.candidates.find((item) => item.gpxUrl === candidateUrl);
+    if (!candidate) return { status: "candidate-not-found" };
+    const downloaded = await download(candidateUrl);
+    if (downloaded.status !== "success") return downloaded;
+    return {
+      ...downloaded,
+      ...(stationPages.length ? { aidStationDiscoveryV1: buildAidStationDiscoveryV1(stationPages, {
+        resourceType: "gpx",
+        sourcePageUrl: candidate.sourcePageUrl,
+        resourceUrl: candidate.gpxUrl,
+        distanceLabel: candidate.distanceLabel,
+        ...(selectedCourseIdentity ? { courseIdentity: selectedCourseIdentity } : {}),
+      }, downloaded.text, stationSourceUnavailable) } : {}),
+    };
   };
 }
 

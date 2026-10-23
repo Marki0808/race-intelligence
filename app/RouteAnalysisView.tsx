@@ -35,6 +35,7 @@ import { toggleKeyMomentSelection } from "./routeSectionSelection";
 import { buildSustainedGradientKeyMoments } from "./routeGradientMoments";
 import { expandKeyMomentsForDisplay } from "./routeKeyMomentPresentation";
 import RouteTakeaways from "./RouteTakeaways";
+import { buildAidStationSections } from "./aidStationSections";
 
 export default function RouteAnalysisView({
   analysis,
@@ -47,8 +48,10 @@ export default function RouteAnalysisView({
   persistenceScope?: "local" | "shared";
   sharedCache?: SharedRouteCache | null;
 }) {
-  const [selectedMoment, setSelectedMoment] = useState<string | null>(null);
-  const [selectedSectionKey, setSelectedSectionKey] = useState<string | null>(null);
+  type ViewState = { analysis: RouteAnalysisData; selectedMoment: string | null; selectedSectionKey: string | null; segmentationMode: "terrain" | "aid-station"; selectedImage: MapillaryImageEvidence | null };
+  const [viewState, setViewState] = useState<ViewState>(() => ({ analysis, selectedMoment: null, selectedSectionKey: null, segmentationMode: "terrain", selectedImage: null }));
+  const currentViewState = viewState.analysis === analysis ? viewState : { analysis, selectedMoment: null, selectedSectionKey: null, segmentationMode: "terrain" as const, selectedImage: null };
+  const { selectedMoment, selectedSectionKey, segmentationMode, selectedImage } = currentViewState;
   const [geoEvidence, setGeoEvidence] = useState<GeoEnrichmentData | null>(() => sharedCache?.osm ? withOsmConflicts(sharedCache.osm) : null);
   const [geoLoading, setGeoLoading] = useState(false);
   const evidenceRequestActive = useRef(false);
@@ -56,11 +59,16 @@ export default function RouteAnalysisView({
   const [mapillaryEvidence, setMapillaryEvidence] = useState<MapillaryTerrainProofData | null>(() => sharedCache?.mapillary
     ? mapMapillaryEvidenceToSections(sharedCache.mapillary, analysis.routeSections)
     : null);
-  const [selectedImage, setSelectedImage] = useState<MapillaryImageEvidence | null>(null);
-
   const displayedSections = useMemo(() => TERRAIN_INTELLIGENCE_V1_ENABLED && geoEvidence
     ? attachTerrainEvidenceToRouteSections(analysis.routeSections, geoEvidence)
     : analysis.routeSections, [analysis.routeSections, geoEvidence]);
+  const aidStationSections = useMemo(() => buildAidStationSections(analysis.aidStationDiscoveryV1, {
+    points: analysis.points,
+    routeDynamics: analysis.routeDynamics,
+    metrics: analysis.metrics,
+  }), [analysis.aidStationDiscoveryV1, analysis.points, analysis.routeDynamics, analysis.metrics]);
+  const showingAidStationSections = segmentationMode === "aid-station" && aidStationSections.available;
+  const activeSections = showingAidStationSections ? aidStationSections.sections : displayedSections;
   const imageEvidence = useMemo(
     () => mapillaryEvidenceByRouteSection(analysis.routeSections, mapillaryEvidence),
     [analysis.routeSections, mapillaryEvidence],
@@ -70,14 +78,20 @@ export default function RouteAnalysisView({
     ...buildSustainedGradientKeyMoments(analysis.gradientIntelligence, analysis.keyMoments),
   ]), [analysis.keyMoments, analysis.gradientIntelligence]);
 
+  function updateViewState(patch: Partial<Omit<ViewState, "analysis">>) {
+    setViewState((current) => ({
+      ...(current.analysis === analysis ? current : { analysis, selectedMoment: null, selectedSectionKey: null, segmentationMode: "terrain" as const, selectedImage: null }),
+      ...patch,
+      analysis,
+    }));
+  }
+
   function selectMoment(momentId: string) {
-    setSelectedSectionKey(null);
-    setSelectedMoment((current) => toggleKeyMomentSelection(current, momentId));
+    updateViewState({ selectedSectionKey: null, selectedMoment: toggleKeyMomentSelection(selectedMoment, momentId) });
   }
 
   function selectSection(section: RouteSection | null) {
-    setSelectedSectionKey(section ? routeSectionSelectionKey(section) : null);
-    if (section) setSelectedMoment(null);
+    updateViewState({ selectedSectionKey: section ? routeSectionSelectionKey(section) : null, ...(section ? { selectedMoment: null } : {}) });
   }
 
   async function loadEvidence() {
@@ -191,6 +205,8 @@ export default function RouteAnalysisView({
           <CourseExplorer
             selectedMoment={selectedMoment}
             selectedSectionKey={selectedSectionKey}
+            selectionSections={activeSections}
+            sectionKind={showingAidStationSections ? "Aid Station Section" : "Route Section"}
             onSelectSection={selectSection}
             routeName={analysis.name}
             heading="GPX Route Analysis"
@@ -208,17 +224,22 @@ export default function RouteAnalysisView({
 
       <section className="bg-white">
         <div className="mx-auto max-w-7xl px-6 py-16 lg:px-10 lg:py-20">
-          <RouteSectionBrowserHeading action={TERRAIN_INTELLIGENCE_V1_ENABLED ? (
+          <RouteSectionBrowserHeading controls={aidStationSections.available ? (
+            <div className="mt-4 inline-flex rounded-full border border-black/10 bg-[#f4f2ed] p-1" role="group" aria-label="Route section view">
+              <button type="button" aria-pressed={!showingAidStationSections} onClick={() => updateViewState({ segmentationMode: "terrain", selectedSectionKey: null })} className={`min-h-10 rounded-full px-4 text-sm font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d] ${!showingAidStationSections ? "bg-[#17211c] text-white" : "text-black/55 hover:bg-white"}`}>Terrain Sections</button>
+              <button type="button" aria-pressed={showingAidStationSections} onClick={() => updateViewState({ segmentationMode: "aid-station", selectedSectionKey: null })} className={`min-h-10 rounded-full px-4 text-sm font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d] ${showingAidStationSections ? "bg-[#17211c] text-white" : "text-black/55 hover:bg-white"}`}>Aid Station Sections</button>
+            </div>
+          ) : undefined} action={TERRAIN_INTELLIGENCE_V1_ENABLED ? (
             <TerrainEvidenceAction state={terrainEvidenceState} onCheck={() => void loadEvidence()} />
           ) : undefined} />
-          <RouteSectionBrowser sections={displayedSections} routePoints={analysis.points} gradientIntelligence={analysis.gradientIntelligence} selectedSectionKey={selectedSectionKey} onSelectSection={selectSection} imageEvidence={imageEvidence} onSelectImage={setSelectedImage} terrainEvidenceState={terrainEvidenceState} />
+          <RouteSectionBrowser sections={activeSections} routePoints={analysis.points} gradientIntelligence={showingAidStationSections ? undefined : analysis.gradientIntelligence} selectedSectionKey={selectedSectionKey} onSelectSection={selectSection} imageEvidence={showingAidStationSections ? new Map() : imageEvidence} onSelectImage={(image) => updateViewState({ selectedImage: image })} terrainEvidenceState={terrainEvidenceState} sectionKind={showingAidStationSections ? "Aid Station Section" : "Route Section"} sectionLabels={showingAidStationSections ? aidStationSections.labels : undefined} />
         </div>
       </section>
 
       <KeyRouteMoments moments={keyMoments} routePoints={analysis.points} totalDistanceM={analysis.metrics.distanceKm * 1000} selectedMoment={selectedMoment} onSelect={selectMoment} />
       <RouteTakeaways analysis={analysis} />
 
-      <TerrainImageViewer image={selectedImage} onClose={() => setSelectedImage(null)} />
+      <TerrainImageViewer image={selectedImage} onClose={() => updateViewState({ selectedImage: null })} />
     </>
   );
 }

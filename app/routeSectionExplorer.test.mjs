@@ -80,8 +80,8 @@ test("Key Moment controls can toggle off and existing mutual exclusion clears th
   assert.equal(toggleKeyMomentSelection("Peak", "Valley"), "Valley");
   const routeView = await readFile(new URL("./RouteAnalysisView.tsx", import.meta.url), "utf8");
   const raceView = await readFile(new URL("./CourseSection.tsx", import.meta.url), "utf8");
-  assert.match(routeView, /function selectMoment\(momentId: string\)\s*\{\s*setSelectedSectionKey\(null\)/);
-  assert.match(routeView, /if \(section\) setSelectedMoment\(null\)/);
+  assert.match(routeView, /function selectMoment\(momentId: string\)\s*\{\s*updateViewState\(\{ selectedSectionKey: null/);
+  assert.match(routeView, /function selectSection\(section: RouteSection \| null\)[\s\S]*?selectedMoment: null/);
   assert.match(raceView, /moment: toggleKeyMomentSelection/);
   assert.match(raceView, /sectionKey: section \? routeSectionSelectionKey\(section\) : null/);
 });
@@ -186,8 +186,9 @@ test("profile boundary markers preserve component and section identities at shar
 test("the shared browser exposes accessible inline details without unexpected profile-driven page scrolling", async () => {
   const source = await readFile(new URL("./RouteSectionBrowser.tsx", import.meta.url), "utf8");
   assert.match(source, /aria-pressed=\{isSelected\}/);
+  assert.match(source, /sectionKind=\{sectionKind\}/);
   assert.match(source, /aria-expanded=\{isSelected\}/);
-  assert.match(source, /aria-label=\{`Close Route Section/);
+  assert.match(source, /aria-label=\{`Close \$\{sectionKind\}/);
   assert.ok(source.indexOf("{isSelected && (") < source.indexOf("<SectionDetail"));
   assert.ok(source.indexOf("<SectionDetail") < source.indexOf("</li>"));
   assert.equal((source.match(/<SectionDetail\s/g) ?? []).length, 1);
@@ -206,8 +207,11 @@ test("Route Mode and Race Mode share the browser and clear the opposite map sele
   ]);
   const featureFlags = await readFile(new URL("./featureFlags.ts", import.meta.url), "utf8");
   assert.match(featureFlags, /TERRAIN_INTELLIGENCE_V1_ENABLED = false/);
-  assert.match(routeView, /<RouteSectionBrowser[\s\S]*?sections=\{displayedSections\}/);
-  assert.match(routeView, /gradientIntelligence=\{analysis\.gradientIntelligence\}/);
+  assert.match(routeView, /<RouteSectionBrowser[\s\S]*?sections=\{activeSections\}/);
+  assert.match(routeView, /Aid Station Sections/);
+  assert.match(routeView, /aria-pressed=\{!showingAidStationSections\}/);
+  assert.match(routeView, /aidStationSections\.available \? \(/);
+  assert.match(routeView, /gradientIntelligence=\{showingAidStationSections \? undefined : analysis\.gradientIntelligence\}/);
   assert.match(routeView, /TERRAIN_INTELLIGENCE_V1_ENABLED \? \([\s\S]*?<TerrainEvidenceAction state=\{terrainEvidenceState\}/);
   assert.match(routeView, /requestRouteTerrainEvidence\(analysis\.points\)/);
   assert.match(routeView, /async function loadEvidence\(\) \{\s*if \(!TERRAIN_INTELLIGENCE_V1_ENABLED\) return;/);
@@ -226,8 +230,8 @@ test("Route Mode and Race Mode share the browser and clear the opposite map sele
   assert.match(raceView, /terrainRequestActive\.current\) return/);
   assert.match(raceView, /terrainController\.current\?\.abort\(\)/);
   assert.match(raceView, /raceRecord\.edition\.distanceKm/);
-  assert.match(routeView, /function selectMoment[\s\S]*?setSelectedSectionKey\(null\)/);
-  assert.match(routeView, /function selectSection[\s\S]*?setSelectedMoment\(null\)/);
+  assert.match(routeView, /function selectMoment[\s\S]*?selectedSectionKey: null/);
+  assert.match(routeView, /function selectSection[\s\S]*?selectedMoment: null/);
   assert.match(raceView, /function selectMoment[\s\S]*?moment: toggleKeyMomentSelection\(current\.editionKey === editionKey \? current\.moment : null, momentId\)/);
   assert.match(raceView, /function selectSection[\s\S]*?moment: section \? null/);
   assert.match(map, /clipRoutePointsToSection\(points, selectedSection\)/);
@@ -262,7 +266,7 @@ test("Route Mode and Race Mode share the browser and clear the opposite map sele
   assert.match(map, /getRouteSectionBoundaryMarkers\(sections\)/);
   assert.match(map, /const isSelected = selectedSection\?\.id === section\.id/);
   assert.match(map, /onSelectSection\(isSelected \? null : section\)/);
-  assert.match(map, /aria-label=\{`Select Route Section/);
+  assert.match(map, /aria-label=\{`Select \$\{sectionKind\}/);
   assert.match(map, /segmentIndex\}:\$\{section\.id\}:profile-hit/);
   assert.match(map, /aria-pressed=\{mapExpanded\}/);
   assert.match(map, /const \[mapExpanded, setMapExpanded\] = useState\(false\)/);
@@ -279,7 +283,7 @@ test("Route Mode and Race Mode share the browser and clear the opposite map sele
   assert.doesNotMatch(browser, /Detailed elevation changes|Measured route changes|sortRouteEmbeddedEventsForDisplay/);
   assert.doesNotMatch(browser, /expectation\.paragraphs\.slice\(1\)/);
   assert.match(browser, /presentRouteSectionNarrativeV2\(gradientIntelligence, routeSections, section\)/);
-  assert.match(browser, /TERRAIN_INTELLIGENCE_V1_ENABLED && <section[\s\S]*?<SectionSubheading>Mapped terrain<\/SectionSubheading>/);
+  assert.match(browser, /TERRAIN_INTELLIGENCE_V1_ENABLED && !stationLabels && <section[\s\S]*?<SectionSubheading>Mapped terrain<\/SectionSubheading>/);
   assert.match(browser, /getTerrainSectionPresentation\(section, terrainEvidenceState\)/);
   assert.match(browser, /unknownLabel/);
 });

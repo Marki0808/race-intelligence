@@ -5,6 +5,8 @@ import type { FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { setPendingDiscoveredGpx } from "./discoveredGpxTransfer";
+import type { AidStationDiscoveryV1 } from "./aidStationDiscovery";
+import type { OfficialGpxCourseSelection } from "./officialGpxDiscovery";
 
 type Candidate = {
   gpxUrl: string;
@@ -39,7 +41,57 @@ type EventChoice = {
   supportingEvidence: string[];
 };
 
-type DiscoveryResponse = { status: string; candidates?: Candidate[]; archives?: ArchiveCandidate[]; events?: EventChoice[]; category?: string };
+type DiscoveryResponse = { status: string; candidates?: Candidate[]; archives?: ArchiveCandidate[]; events?: EventChoice[]; courseSelection?: unknown; category?: string };
+
+function readCourseSelection(value: unknown): OfficialGpxCourseSelection | null {
+  if (!value || typeof value !== "object") return null;
+  const selection = value as Partial<OfficialGpxCourseSelection>;
+  const identity = selection.identity;
+  if (!identity || typeof identity !== "object" || typeof identity.courseLabel !== "string" || !identity.courseLabel.trim() || identity.courseLabel.length > 160 ||
+    (identity.editionYear !== null && (!Number.isInteger(identity.editionYear) || identity.editionYear < 1900 || identity.editionYear > 3000)) ||
+    (identity.eventName !== null && (typeof identity.eventName !== "string" || identity.eventName.length > 160)) ||
+    !isSafeDisplayUrl(identity.sourcePageUrl) || !Array.isArray(identity.evidence) || identity.evidence.length > 4 ||
+    !identity.evidence.every((item) => typeof item === "string" && item.length <= 200)) return null;
+  const preselection = selection.preselection;
+  if (preselection == null) return { identity, preselection: null };
+  if (typeof preselection !== "object" || !isSafeDisplayUrl(preselection.resourceUrl) ||
+    (preselection.resourceType !== "gpx" && preselection.resourceType !== "zip-archive") ||
+    !Array.isArray(preselection.evidence) || preselection.evidence.length > 4 ||
+    !preselection.evidence.every((item) => typeof item === "string" && item.length <= 120)) return null;
+  return { identity, preselection: { ...preselection, courseIdentity: identity } };
+}
+
+function isAidStationDiscoveryV1(value: unknown): value is AidStationDiscoveryV1 {
+  if (!value || typeof value !== "object") return false;
+  const result = value as Partial<AidStationDiscoveryV1>;
+  return result.schemaVersion === 1 && (result.status === "available" || result.status === "unavailable") &&
+    Array.isArray(result.visits) && result.visits.length <= 500 && Array.isArray(result.reasonCodes) && result.reasonCodes.length <= 10 &&
+    Array.isArray(result.courseChoices) && result.courseChoices.length <= 20 &&
+    !!result.stationSegmentation && typeof result.stationSegmentation.available === "boolean" &&
+    !!result.gpxProvenance && typeof result.gpxProvenance.selectedResourceUrl === "string";
+}
+
+async function readGpxDownload(response: Response): Promise<{ text: string; stationEvidence: unknown } | null> {
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  if (contentType.includes("multipart/form-data")) {
+    const form = await response.formData();
+    const file = form.get("gpxText");
+    const stationText = form.get("aidStationDiscoveryV1");
+    if (!(file instanceof Blob) || typeof stationText !== "string") return null;
+    let stationEvidence: unknown = null;
+    try { stationEvidence = JSON.parse(stationText) as unknown; } catch { return null; }
+    return { text: await file.text(), stationEvidence };
+  }
+  // Accept the previous GPX-only response format during rolling deployments.
+  if (contentType.includes("application/gpx+xml")) return { text: await response.text(), stationEvidence: null };
+  if (contentType.includes("application/json")) {
+    const result = await response.json() as { status?: unknown; gpxText?: unknown; aidStationDiscoveryV1?: unknown };
+    return result.status === "success" && typeof result.gpxText === "string"
+      ? { text: result.gpxText, stationEvidence: result.aidStationDiscoveryV1 ?? null }
+      : null;
+  }
+  return null;
+}
 
 function isSafeDisplayUrl(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -63,6 +115,7 @@ export default function RaceGpxDiscovery() {
   const [selectedArchiveUrl, setSelectedArchiveUrl] = useState("");
   const [selectedArchiveFileId, setSelectedArchiveFileId] = useState("");
   const [selectedEventUrl, setSelectedEventUrl] = useState("");
+  const [courseSelection, setCourseSelection] = useState<OfficialGpxCourseSelection | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "no-results" | "unsupported" | "error" | "downloading" | "archive-selection" | "ready">("idle");
   const [message, setMessage] = useState("");
 
@@ -80,6 +133,7 @@ export default function RaceGpxDiscovery() {
     setSelectedArchiveUrl("");
     setSelectedArchiveFileId("");
     setSelectedEventUrl("");
+    setCourseSelection(null);
     setSubmittedUrl(url);
     setMessage("");
     setStatus("loading");
@@ -107,6 +161,14 @@ export default function RaceGpxDiscovery() {
         if (safeCandidates.length || safeArchives.length) {
           setCandidates(safeCandidates);
           setArchives(safeArchives);
+          const resolvedCourse = readCourseSelection(result.courseSelection);
+          const preselection = resolvedCourse?.preselection;
+          if (preselection?.resourceType === "gpx" && safeCandidates.some((candidate) => candidate.gpxUrl === preselection.resourceUrl)) {
+            setSelectedUrl(preselection.resourceUrl);
+          } else if (preselection?.resourceType === "zip-archive" && safeArchives.some((archive) => archive.archiveUrl === preselection.resourceUrl)) {
+            setSelectedArchiveUrl(preselection.resourceUrl);
+          }
+          setCourseSelection(resolvedCourse);
           setStatus("idle");
           return;
         }
@@ -198,23 +260,33 @@ export default function RaceGpxDiscovery() {
         setMessage("We found more than one valid GPX file in this archive. Choose the route you want to analyze.");
         return;
       }
-      if (!response.ok || !response.headers.get("content-type")?.toLowerCase().includes("application/gpx+xml")) {
+      if (!response.ok) {
         await showDownloadFailure(response);
         return;
       }
-      const text = await response.text();
+      const downloaded = await readGpxDownload(response);
+      const text = downloaded?.text ?? "";
       if (!text || new TextEncoder().encode(text).byteLength > 4 * 1024 * 1024) {
         setMessage("The selected GPX was empty or exceeded the supported download size. You can upload a GPX file instead.");
         setStatus("error");
         return;
       }
       const fallbackName = selected?.distanceLabel ? `Discovered route · ${selected.distanceLabel}` : "Discovered route";
-      openDiscoveredGpx(text, fallbackName);
+      openDiscoveredGpx(text, fallbackName, isAidStationDiscoveryV1(downloaded?.stationEvidence) ? downloaded.stationEvidence : null);
     } catch {
       setMessage("The selected route could not be retrieved safely. You can upload a GPX file instead.");
       setStatus("error");
     }
   }
+
+  const exactCoursePreselection = courseSelection?.preselection ?? null;
+  const exactCourseGpx = exactCoursePreselection?.resourceType === "gpx"
+    ? candidates.find((candidate) => candidate.gpxUrl === exactCoursePreselection.resourceUrl) ?? null
+    : null;
+  const exactCourseArchive = exactCoursePreselection?.resourceType === "zip-archive"
+    ? archives.find((archive) => archive.archiveUrl === exactCoursePreselection.resourceUrl) ?? null
+    : null;
+  const showDirectCourseConfirmation = !!(exactCourseGpx && selectedUrl === exactCourseGpx.gpxUrl || exactCourseArchive && selectedArchiveUrl === exactCourseArchive.archiveUrl);
 
   async function showDownloadFailure(response: Response) {
     let failure: { status?: string; category?: string } = {};
@@ -241,25 +313,26 @@ export default function RaceGpxDiscovery() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sourcePageUrl: submittedUrl, resourceType: "zip-entry", archiveUrl: archive.archiveUrl, archiveDigest: digest, entryId }),
       });
-      if (!response.ok || !response.headers.get("content-type")?.toLowerCase().includes("application/gpx+xml")) {
+      if (!response.ok) {
         await showDownloadFailure(response);
         return;
       }
-      const text = await response.text();
+      const downloaded = await readGpxDownload(response);
+      const text = downloaded?.text ?? "";
       if (!text || new TextEncoder().encode(text).byteLength > 4 * 1024 * 1024) {
         setMessage("The selected GPX was empty or exceeded the supported size. You can upload a GPX file instead.");
         setStatus("error");
         return;
       }
-      openDiscoveredGpx(text, archive.distanceLabel ? `Discovered route · ${archive.distanceLabel}` : "Discovered route from archive");
+      openDiscoveredGpx(text, archive.distanceLabel ? `Discovered route · ${archive.distanceLabel}` : "Discovered route from archive", isAidStationDiscoveryV1(downloaded?.stationEvidence) ? downloaded.stationEvidence : null);
     } catch {
       setMessage("The selected route could not be retrieved safely. You can upload a GPX file instead.");
       setStatus("error");
     }
   }
 
-  function openDiscoveredGpx(text: string, name: string) {
-    setPendingDiscoveredGpx({ text, name });
+  function openDiscoveredGpx(text: string, name: string, aidStationDiscoveryV1: AidStationDiscoveryV1 | null = null) {
+    setPendingDiscoveredGpx({ text, name, aidStationDiscoveryV1 });
     setStatus("ready");
     setMessage("GPX validated. Opening the existing route analysis…");
     router.push("/route");
@@ -334,9 +407,30 @@ export default function RaceGpxDiscovery() {
 
       {(candidates.length > 0 || archives.length > 0) && status !== "downloading" && status !== "ready" && status !== "archive-selection" && (
         <fieldset className="mt-4 space-y-3" disabled={busy}>
-          <legend className="text-sm font-semibold text-white">Choose a route resource</legend>
-          <p className="text-xs leading-5 text-amber-100/75">These links are not verified route files yet. Choose a course, then confirm before anything is downloaded.</p>
-          {candidates.map((candidate) => (
+          <legend className="text-sm font-semibold text-white">{showDirectCourseConfirmation ? "Confirm this course route" : "Choose a route resource"}</legend>
+          {courseSelection ? (
+            <p className="text-xs leading-5 text-amber-100/75" role="status">
+              This page identifies {courseSelection.identity.courseLabel}{courseSelection.identity.editionYear ? ` · ${courseSelection.identity.editionYear}` : ""}.
+              {courseSelection.preselection
+                ? " The only exact course match is preselected; confirm it to validate and analyze the linked file."
+                : " We couldn’t safely identify one matching file, so choose a route resource and confirm it."}
+            </p>
+          ) : (
+            <p className="text-xs leading-5 text-amber-100/75">These links are not verified route files yet. Choose a course, then confirm before anything is downloaded.</p>
+          )}
+          {showDirectCourseConfirmation && exactCourseGpx ? (
+            <div className="rounded-xl border border-[#a7c957]/35 bg-white/5 p-3 text-sm" data-testid="exact-course-resource">
+              <span className="block font-semibold text-white">{exactCourseGpx.displayLabel}</span>
+              <span className="mt-1 block break-all text-xs text-white/45">Source: {exactCourseGpx.sourcePageUrl}</span>
+              {exactCourseGpx.supportingEvidence.map((item, index) => <span key={`${index}-${item}`} className="mt-1 block break-words text-xs text-white/60">{item}</span>)}
+              <span className="mt-2 block text-xs leading-5 text-amber-100/75">This is an exact course-label match from the official page. The linked file will be validated only after you confirm.</span>
+            </div>
+          ) : showDirectCourseConfirmation && exactCourseArchive ? (
+            <div className="rounded-xl border border-amber-200/20 bg-amber-100/5 p-3 text-sm" data-testid="exact-course-resource">
+              <span className="block font-semibold text-white">ZIP archive · {exactCourseArchive.displayLabel}</span>
+              <span className="mt-1 block text-xs leading-5 text-amber-100/75">Exact course-label match from the official page. This is an archive, not a validated GPX. It will be inspected only after you confirm.</span>
+            </div>
+          ) : candidates.map((candidate) => (
             <label key={candidate.gpxUrl} className="block min-w-0 cursor-pointer rounded-xl border border-white/10 bg-white/5 p-3 text-sm">
               <span className="flex min-w-0 items-start gap-3">
                 <input type="radio" name="selected-gpx-candidate" value={candidate.gpxUrl} checked={selectedUrl === candidate.gpxUrl} onChange={() => { setSelectedUrl(candidate.gpxUrl); setSelectedArchiveUrl(""); }} className="mt-1 accent-[#a7c957]" />
@@ -348,7 +442,7 @@ export default function RaceGpxDiscovery() {
               </span>
             </label>
           ))}
-          {archives.map((archive) => (
+          {!showDirectCourseConfirmation && archives.map((archive) => (
             <label key={archive.archiveUrl} className="block min-w-0 cursor-pointer rounded-xl border border-amber-200/15 bg-amber-100/5 p-3 text-sm">
               <span className="flex min-w-0 items-start gap-3">
                 <input type="radio" name="selected-gpx-candidate" value={archive.archiveUrl} checked={selectedArchiveUrl === archive.archiveUrl} onChange={() => { setSelectedArchiveUrl(archive.archiveUrl); setSelectedUrl(""); }} className="mt-1 accent-[#a7c957]" />
@@ -380,7 +474,7 @@ export default function RaceGpxDiscovery() {
           <button type="button" onClick={handleAnalyzeArchiveFile} disabled={!selectedArchiveFileId} className="min-h-11 w-full rounded-full border border-[#a7c957]/70 px-5 py-2.5 text-sm font-semibold text-[#d5e8a2] disabled:cursor-not-allowed disabled:opacity-40">Analyze selected GPX</button>
         </fieldset>
       )}
-      <p className="mt-3 text-[11px] leading-5 text-white/40">Discovered routes are not bound to a race edition; we do not infer edition identity from a link. Analysis is labeled as GPX-derived. This service has per-process limits, not deployment-wide rate limiting.</p>
+      <p className="mt-3 text-[11px] leading-5 text-white/40">A page’s course or edition details do not by themselves prove that a linked file belongs to that edition. Analysis is labeled as GPX-derived. This service has per-process limits, not deployment-wide rate limiting.</p>
     </div>
   );
 }

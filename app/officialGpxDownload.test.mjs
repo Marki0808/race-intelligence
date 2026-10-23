@@ -300,15 +300,17 @@ test("archive download requires the confirmed current ZIP candidate and returns 
   assert.equal(requestedArchive, "");
 });
 
-test("download API streams only validated GPX and sanitizes failures", async () => {
+test("download API returns validated GPX with station metadata without JSON-escaping the GPX body", async () => {
   const handler = createRaceGpxDownloadPost(async () => ({ status: "success", text: validGpx }));
   const response = await handler(new Request("https://app.example/api/race-gpx-download", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ sourcePageUrl: "https://race.example/event", gpxUrl: "https://race.example/route.gpx" }),
   }));
   assert.equal(response.status, 200);
-  assert.match(response.headers.get("content-type"), /application\/gpx\+xml/);
-  assert.equal(await response.text(), validGpx);
+  assert.match(response.headers.get("content-type"), /multipart\/form-data/);
+  const body = await response.formData();
+  assert.equal(await body.get("gpxText").text(), validGpx);
+  assert.equal(body.get("aidStationDiscoveryV1"), "null");
 
   const failureHandler = createRaceGpxDownloadPost(async () => ({ status: "provider-failure", category: "unavailable" }));
   const failure = await failureHandler(new Request("https://app.example/api/race-gpx-download", {
@@ -345,6 +347,8 @@ test("download API returns only the selected GPX after archive digest revalidati
     body: JSON.stringify({ sourcePageUrl: "https://race.example/event", resourceType: "zip-entry", archiveUrl: "https://race.example/course.zip", archiveDigest: "a".repeat(64), entryId: "gpx-2" }),
   }));
   assert.equal(response.status, 200);
-  assert.match(response.headers.get("content-type"), /application\/gpx\+xml/);
-  assert.equal(await response.text(), validGpx);
+  assert.match(response.headers.get("content-type"), /multipart\/form-data/);
+  const body = await response.formData();
+  assert.equal(await body.get("gpxText").text(), validGpx);
+  assert.equal(body.get("aidStationDiscoveryV1"), "null");
 });

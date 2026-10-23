@@ -1,6 +1,7 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { request as httpsRequest, type RequestOptions } from "node:https";
+import { findUniqueCourseResourcePreselection, identifyOfficialRaceCourse, type CourseResourcePreselection, type OfficialRaceCourseIdentity } from "./officialRaceCourseIdentity.ts";
 
 export const OFFICIAL_GPX_DISCOVERY_LIMITS = {
   timeoutMs: 8_000,
@@ -45,6 +46,11 @@ export type OfficialGpxEventChoice = {
   supportingEvidence: string[];
 };
 
+export type OfficialGpxCourseSelection = {
+  identity: OfficialRaceCourseIdentity;
+  preselection: CourseResourcePreselection | null;
+};
+
 export type UnsupportedGpxResource = {
   sourcePageUrl: string;
   displayLabel: string;
@@ -54,7 +60,7 @@ export type UnsupportedGpxResource = {
 };
 
 export type OfficialGpxDiscoveryResult =
-  | { status: "success"; candidates: GpxDiscoveryCandidate[]; archives?: GpxArchiveCandidate[] }
+  | { status: "success"; candidates: GpxDiscoveryCandidate[]; archives?: GpxArchiveCandidate[]; courseSelection?: OfficialGpxCourseSelection }
   | { status: "event-selection-required"; events: OfficialGpxEventChoice[] }
   | { status: "unsupported-resources"; resources: UnsupportedGpxResource[] }
   | { status: "no-results"; candidates: [] }
@@ -546,12 +552,14 @@ function appendCardText(scopes: Array<{ text: string[]; isCard: boolean }>, valu
 
 const DISTANCE = /(?:^|[^a-z0-9])(\d{1,3}(?:[.,]\d{1,2})?\s*(?:km|k|mi|mile|miles))(?![a-z])/i;
 const ROUTE_NAV = /\b(gpx|tracks?|stazes?|stazama|trases?|trasama|routes?|courses?|parcours|recorridos|downloads?)\b/i;
+const STATION_NAV = /\b(aid\s*stations?|water\s*stations?|refreshments?|checkpoints?|regulations?|race\s*(?:info|information|guide|regulations?)|runner\s*guide|participant\s*guide|refuelling|feed\s*stations?|ravitaillement|verpflegung|versorgungspunkte|postas\s*de\s*avituallamiento)\b/i;
+const FAQ_NAV = /\b(?:faq|faqs|frequently\s+asked\s+questions)\b/i;
 const RACE_NAV = /\b(utrke|races?|events?)\b/i;
-const IRRELEVANT_NAV = /\b(account|login|sign[\s_-]?in|register|registration|prijava|partners?|sponsors?|advert|shop|store|news|media|faq|privacy|terms|contact|volunteers?|accommodation|hotel|travel|transport|destination|climate|weather|results?|schedule|program|photos|newsletter|cookies)\b/i;
+const IRRELEVANT_NAV = /\b(account|login|sign[\s_-]?in|register|registration|prijava|partners?|sponsors?|advert|shop|store|news|media|privacy|terms|contact|volunteers?|accommodation|hotel|travel|transport|destination|climate|weather|results?|schedule|program|photos|newsletter|cookies)\b/i;
 const DOWNLOAD = /\bdownload\b.{0,40}\b(?:gpx|track|route)\b|\b(?:gpx|track|route)\b.{0,40}\bdownload\b/i;
 const GPX_PATH = /\.gpx$/i;
 
-type QueuedPage = { url: URL; depth: number; priority: number; order: number };
+type QueuedPage = { url: URL; depth: number; priority: number; order: number; linkedFromUrl: string | null; linkEvidence: string[]; optionalStationOnly: boolean };
 
 function distanceIn(value: string): string | null {
   const matches = [...value.matchAll(new RegExp(DISTANCE.source, "gi"))]
@@ -723,18 +731,20 @@ function rootHtmlProblem(response: SafeHttpsResponse): OfficialGpxEventDetection
   return null;
 }
 
-function subpagePriority(link: HtmlLink, target: URL): number {
+function subpagePriority(link: HtmlLink, target: URL, allowCourseLinkedFaq = false): number {
   const label = `${link.text} ${link.title}`.trim();
   let decodedPath = target.pathname;
   try { decodedPath = decodeURIComponent(target.pathname); } catch { /* retain the safely parsed encoded path */ }
   const path = decodedPath.replace(/[-_]+/g, " ");
   const evidence = `${label} ${path}`;
+  if (FAQ_NAV.test(label + " " + link.ariaLabel + " " + path)) return allowCourseLinkedFaq ? 110 : 0;
   if (IRRELEVANT_NAV.test(evidence) || DOWNLOAD.test(label)) return 0;
 
   const routeLabel = ROUTE_NAV.test(label);
   const routePath = ROUTE_NAV.test(path);
   const gpxContext = /\bgpx\b/i.test(evidence);
   if (gpxContext) return 120;
+  if (STATION_NAV.test(`${label} ${link.ariaLabel} ${link.contextHeading ?? ""}`)) return 95;
   if (routeLabel) return 100;
   if (routePath) return 80;
 
@@ -823,7 +833,11 @@ export function createOfficialGpxDiscovery(
   limits: typeof OFFICIAL_GPX_DISCOVERY_LIMITS = OFFICIAL_GPX_DISCOVERY_LIMITS,
   onDiagnostic?: (diagnostic: OfficialGpxDiscoveryDiagnostic) => void,
 ) {
-  return async function discoverOfficialGpx(input: string): Promise<OfficialGpxDiscoveryResult> {
+  return async function discoverOfficialGpx(
+    input: string,
+    onAcceptedPage?: (page: { url: string; html: string; depth: number; linkedFromUrl: string | null; linkEvidence: string[] }) => void,
+    onOptionalStationPageUnavailable?: () => void,
+  ): Promise<OfficialGpxDiscoveryResult> {
     const firstUrl = validateOfficialPageUrl(input);
     if (!firstUrl) return { status: "invalid-url", candidates: [] };
     if (activeDiscoveries >= limits.maxConcurrentPerProcess) {
@@ -835,7 +849,7 @@ export function createOfficialGpxDiscovery(
     const candidates = new Map<string, GpxDiscoveryCandidate>();
     const archiveCandidates = new Map<string, GpxArchiveCandidate>();
     const visited = new Set<string>();
-    const queue: QueuedPage[] = [{ url: firstUrl, depth: 0, priority: Number.POSITIVE_INFINITY, order: 0 }];
+    const queue: QueuedPage[] = [{ url: firstUrl, depth: 0, priority: Number.POSITIVE_INFINITY, order: 0, linkedFromUrl: null, linkEvidence: [], optionalStationOnly: false }];
     let nextQueueOrder = 1;
     let responseBytes = 0;
     let failureStage: OfficialGpxDiscoveryDiagnostic["stage"] = "page-processing";
@@ -856,13 +870,14 @@ export function createOfficialGpxDiscovery(
       decisionReason: "root-fetch-failure",
     };
     let rootResponseReceived = false;
-    const enqueuePage = (url: URL, depth: number, priority: number) => {
+    let rootCourseIdentity: OfficialRaceCourseIdentity | null = null;
+    const enqueuePage = (url: URL, depth: number, priority: number, linkedFromUrl: string, linkEvidence: string[], optionalStationOnly: boolean) => {
       if (depth > limits.maxSubpageDepth || visited.has(url.href)) return;
       const existingIndex = queue.findIndex((item) => item.url.href === url.href);
       if (existingIndex >= 0) {
-        if (queue[existingIndex].priority < priority) queue[existingIndex] = { ...queue[existingIndex], priority };
+        if (queue[existingIndex].priority < priority) queue[existingIndex] = { ...queue[existingIndex], priority, linkedFromUrl, linkEvidence, optionalStationOnly: queue[existingIndex].optionalStationOnly && optionalStationOnly };
       } else {
-        queue.push({ url, depth, priority, order: nextQueueOrder++ });
+        queue.push({ url, depth, priority, order: nextQueueOrder++, linkedFromUrl, linkEvidence, optionalStationOnly });
       }
       queue.sort((left, right) => right.priority - left.priority || left.order - right.order);
       const available = Math.max(0, limits.maxPages - visited.size);
@@ -876,13 +891,22 @@ export function createOfficialGpxDiscovery(
         visited.add(pageUrl.href);
         failureDepth = currentPage.depth;
         if (queue.length > limits.maxPages - visited.size) queue.length = limits.maxPages - visited.size;
-        const fetched = await fetchPublicHttps(pageUrl.href, {
-          maxBytes: Math.min(limits.maxResponseBytes, limits.maxTotalResponseBytes - responseBytes),
-          timeoutMs: limits.timeoutMs - (Date.now() - started),
-          maxRedirects: limits.maxRedirects,
-          accept: "text/html",
-          sameOriginRedirects: true,
-        }, dependencies, (stage) => { failureStage = stage; });
+        let fetched: SafeHttpsResponse & { finalUrl: URL; bytesRead: number };
+        try {
+          fetched = await fetchPublicHttps(pageUrl.href, {
+            maxBytes: Math.min(limits.maxResponseBytes, limits.maxTotalResponseBytes - responseBytes),
+            timeoutMs: limits.timeoutMs - (Date.now() - started),
+            maxRedirects: limits.maxRedirects,
+            accept: "text/html",
+            sameOriginRedirects: true,
+          }, dependencies, (stage) => { failureStage = stage; });
+        } catch (error) {
+          if (currentPage.optionalStationOnly) {
+            try { onOptionalStationPageUnavailable?.(); } catch { /* optional station diagnostics cannot affect discovery */ }
+            continue;
+          }
+          throw error;
+        }
         failureStage = "html-validation";
         if (currentPage.depth === 0) {
           rootResponseReceived = true;
@@ -895,9 +919,29 @@ export function createOfficialGpxDiscovery(
             throw new InvalidResponseError();
           }
         }
-        const { html, sourceUrl } = validateHtmlResponse(fetched);
+        let validatedPage: { html: string; sourceUrl: URL };
+        try {
+          validatedPage = validateHtmlResponse(fetched);
+        } catch (error) {
+          if (currentPage.optionalStationOnly) {
+            try { onOptionalStationPageUnavailable?.(); } catch { /* optional station diagnostics cannot affect discovery */ }
+            continue;
+          }
+          throw error;
+        }
+        const { html, sourceUrl } = validatedPage;
         failureStage = "page-processing";
         responseBytes += fetched.bytesRead;
+        if (currentPage.depth === 0) rootCourseIdentity = identifyOfficialRaceCourse(firstUrl.href, html);
+        try {
+          onAcceptedPage?.({
+            url: publicSourceUrl(sourceUrl),
+            html,
+            depth: currentPage.depth,
+            linkedFromUrl: currentPage.linkedFromUrl,
+            linkEvidence: currentPage.linkEvidence,
+          });
+        } catch { /* optional extraction capture must never affect GPX discovery */ }
         const parsedAnchors = parseAnchorLinks(html);
         const links = parsedAnchors.links;
         if (currentPage.depth === 0) {
@@ -985,8 +1029,15 @@ export function createOfficialGpxDiscovery(
             };
             archiveCandidates.set(target.href, resource);
           } else if (!gpxLink && target.origin === firstUrl.origin && currentPage.depth < limits.maxSubpageDepth) {
-            const priority = subpagePriority(link, target);
-            if (priority > 0) enqueuePage(target, currentPage.depth + 1, priority);
+            const allowCourseLinkedFaq = currentPage.depth === 0 && rootCourseIdentity !== null;
+            const priority = subpagePriority(link, target, allowCourseLinkedFaq);
+            if (priority > 0) {
+              const directLabel = `${link.text} ${link.title} ${link.ariaLabel}`;
+              const linkLabel = `${directLabel} ${link.contextHeading ?? ""}`;
+              const routeEvidence = ROUTE_NAV.test(directLabel) || ROUTE_NAV.test(target.pathname);
+              const optionalStationOnly = (STATION_NAV.test(linkLabel) || allowCourseLinkedFaq && FAQ_NAV.test(directLabel + " " + target.pathname)) && !routeEvidence && !/\bgpx\b/i.test(directLabel);
+              enqueuePage(target, currentPage.depth + 1, priority, publicSourceUrl(sourceUrl), [link.text, link.title, link.contextHeading ?? ""].filter(Boolean).slice(0, 4).map((value) => value.slice(0, 160)), optionalStationOnly);
+            }
           }
           if (candidates.size + archiveCandidates.size >= limits.maxCandidates) break;
         }
@@ -1024,7 +1075,21 @@ export function createOfficialGpxDiscovery(
       }
       const results = [...candidates.values()].map((candidate) => ({ ...candidate, ambiguity: candidates.size + archiveCandidates.size > 1 ? "multiple-candidates" as const : null }));
       const archives = [...archiveCandidates.values()].map((archive) => ({ ...archive, ambiguity: candidates.size + archiveCandidates.size > 1 ? "multiple-candidates" as const : null }));
-      if (results.length || archives.length) return { status: "success", candidates: results, ...(archives.length ? { archives } : {}) };
+      if (results.length || archives.length) {
+        const courseResources = [
+          ...results.map((candidate) => ({ url: candidate.gpxUrl, sourcePageUrl: candidate.sourcePageUrl, distanceLabel: candidate.distanceLabel, supportingEvidence: candidate.supportingEvidence, linkText: candidate.linkText })),
+          ...archives.map((archive) => ({ url: archive.archiveUrl, sourcePageUrl: archive.sourcePageUrl, distanceLabel: archive.distanceLabel, supportingEvidence: archive.supportingEvidence, linkText: archive.linkText })),
+        ];
+        const preselection = rootCourseIdentity
+          ? findUniqueCourseResourcePreselection(rootCourseIdentity, firstUrl.href, courseResources)
+          : null;
+        return {
+          status: "success",
+          candidates: results,
+          ...(archives.length ? { archives } : {}),
+          ...(rootCourseIdentity ? { courseSelection: { identity: rootCourseIdentity, preselection } } : {}),
+        };
+      }
       if (eventDetection.decisionReason === "root-fetch-failure") eventDetection.decisionReason = "no-supported-gpx-after-crawl";
       onDiagnostic?.({ stage: "page-processing", reason: "no-results", pagesAttempted: visited.size, subpageDepth: failureDepth, candidatesFound: 0, aggregateBytesAccepted: responseBytes, eventDetection });
       return { status: "no-results", candidates: [] };

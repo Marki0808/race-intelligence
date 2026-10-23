@@ -26,7 +26,7 @@ export default function RouteMode() {
   const [persistenceScope, setPersistenceScope] = useState<"local" | "shared">("local");
   const [sharedCache, setSharedCache] = useState<SharedRouteCache | null>(null);
 
-  const analyzeText = useCallback(async (text: string, fallbackName: string) => {
+  const analyzeText = useCallback(async (text: string, fallbackName: string, aidStationDiscoveryV1?: RouteAnalysisData["aidStationDiscoveryV1"]) => {
     setAnalysis(null);
     setRouteFingerprint(null);
     setPersistenceScope("local");
@@ -59,10 +59,10 @@ export default function RouteMode() {
         setRouteFingerprint(fingerprint);
         setPersistenceScope(shared.persistenceScope);
         setSharedCache(shared.cache);
-        setAnalysis(routeAnalysis);
+        setAnalysis({ ...routeAnalysis, aidStationDiscoveryV1: aidStationDiscoveryV1 ?? null });
       } catch {
         // Fingerprinting and persistence are optimizations; retain the existing local analysis path.
-        setAnalysis({ ...analyzeGpxRoute(parsed), name: displayName });
+        setAnalysis({ ...analyzeGpxRoute(parsed), name: displayName, aidStationDiscoveryV1: aidStationDiscoveryV1 ?? null });
       }
     } catch (caught) {
       setError(
@@ -79,7 +79,7 @@ export default function RouteMode() {
     const pending = consumePendingDiscoveredGpx();
     if (pending) {
       queueMicrotask(() => {
-        void analyzeText(pending.text, pending.name);
+        void analyzeText(pending.text, pending.name, pending.aidStationDiscoveryV1);
       });
     }
   }, [analyzeText]);

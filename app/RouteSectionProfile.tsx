@@ -9,7 +9,7 @@ import { createRouteSectionProfileLayout } from "./routeSectionProfilePresentati
 const EDGE = { left: 62, right: 16, top: 16, bottom: 38 };
 
 /** Component-local view of actual GPX samples on the full-route kilometre scale. */
-export default function RouteSectionProfile({ section, routePoints }: { section: RouteSection; routePoints: readonly GpxRoutePointData[] }) {
+export default function RouteSectionProfile({ section, routePoints, sectionKind = "Route Section" }: { section: RouteSection; routePoints: readonly GpxRoutePointData[]; sectionKind?: "Route Section" | "Aid Station Section" }) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const gesture = useRef<{ pointerId: number; x: number; y: number; moved: boolean; held: boolean } | null>(null);
   const timer = useRef<number | null>(null);
@@ -45,7 +45,7 @@ export default function RouteSectionProfile({ section, routePoints }: { section:
   const totalRouteDistanceM = Math.max(...routePoints.map((point) => point.distanceM));
   const sampleStart = samples[0];
   const sampleEnd = samples.at(-1)!;
-  const accessible = `Route Section profile from ${formatKm(startM)} to ${formatKm(endM)} kilometres on the full route scale. Elevation ranges from ${Math.round(Math.min(...elevations))} to ${Math.round(Math.max(...elevations))} metres. ${samples.length} actual GPX samples from track component ${section.segmentIndex + 1}.`;
+  const accessible = `${sectionKind} profile from ${formatKm(startM)} to ${formatKm(endM)} kilometres on the full route scale. Elevation ranges from ${Math.round(Math.min(...elevations))} to ${Math.round(Math.max(...elevations))} metres. ${samples.length} actual GPX samples from track component ${section.segmentIndex + 1}.`;
   const inspect = (clientX: number, clientY: number) => {
     const box = svgRef.current?.getBoundingClientRect();
     if (!box || box.width <= 0) return;

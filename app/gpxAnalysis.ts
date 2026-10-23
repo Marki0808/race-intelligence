@@ -7,6 +7,7 @@ import { analyzeRouteDynamics, type RouteDynamicsResult } from "./routeDynamics.
 import { buildRouteSections, type RouteSection } from "./routeSectionEngine.ts";
 import { createRouteKeyMoments } from "./routeKeyMoments.ts";
 import { buildGradientIntelligenceV1, type GradientIntelligenceV1 } from "./gradientIntelligence.ts";
+import type { AidStationDiscoveryV1 } from "./aidStationDiscovery.ts";
 
 export type GpxAnalysisErrorCode =
   | "invalid-gpx"
@@ -69,6 +70,8 @@ export type RouteAnalysisData = {
   routeSections: RouteSection[];
   /** Optional, separately versioned characterization over the existing smoothed dynamics. */
   gradientIntelligence?: GradientIntelligenceV1;
+  /** Optional Race Mode discovery metadata; never included in shared route-analysis caches. */
+  aidStationDiscoveryV1?: AidStationDiscoveryV1 | null;
   keyMoments: KeyMomentData[];
   courseCharacter: CourseCharacterData;
 };

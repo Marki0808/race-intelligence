@@ -149,6 +149,41 @@ test("keeps multiple distances ambiguous and never chooses a winner", async () =
   assert.deepEqual(result.candidates.map(({ distanceLabel, ambiguity }) => [distanceLabel, ambiguity]), [["25 km", "multiple-candidates"], ["50 km", "multiple-candidates"]]);
 });
 
+test("course-specific URL preselects one exact course resource while event-level URLs keep the course selector", async () => {
+  const courseUrl = "https://race.example/hr/races/110K";
+  const payload = { query: { race: "110K" }, props: { pageProps: { event: { name: "Example Trail", begin: "2027-04-03" } } } };
+  const html = `<title>110 km | Example Trail</title><h1>110K course</h1><script id="__NEXT_DATA__">${JSON.stringify(payload)}</script>
+    <article><h2>110K</h2><a href="https://files.example/course_110k_2027.gpx">Download 110K GPX</a></article>
+    <article><h2>50K</h2><a href="https://files.example/course_50k_2027.gpx">Download 50K GPX</a></article>`;
+  const pages = new Map([[courseUrl, page(html, courseUrl)]]);
+  const { run } = discovery(pages);
+  const result = await run(courseUrl);
+  assert.equal(result.status, "success");
+  assert.deepEqual(result.candidates.map((candidate) => candidate.distanceLabel), ["110K", "50K"]);
+  assert.equal(result.courseSelection.identity.courseLabel, "110K");
+  assert.equal(result.courseSelection.identity.editionYear, 2027);
+  assert.equal(result.courseSelection.preselection.resourceUrl, "https://files.example/course_110k_2027.gpx");
+  assert.equal(result.courseSelection.preselection.resourceType, "gpx");
+
+  const eventUrl = "https://race.example/event";
+  const eventResult = await (await discovery(new Map([[eventUrl, page(html, eventUrl)]]))).run(eventUrl);
+  assert.equal(eventResult.status, "success");
+  assert.equal("courseSelection" in eventResult, false, "event-level URLs must retain manual course selection");
+});
+
+test("course-specific discovery refuses multiple editions, variants, and approximate-distance candidates", async () => {
+  const courseUrl = "https://race.example/courses/50K";
+  const payload = { query: { course: "50K" }, props: { pageProps: { event: { name: "Example Trail", begin: "2027-04-03" } } } };
+  const structured = `<h1>50K course</h1><script id="__NEXT_DATA__">${JSON.stringify(payload)}</script>`;
+  const variants = page(`${structured}<a href="https://files.example/route_50k_2027.gpx">50K GPX 2027</a><a href="https://files.example/route_50k_2026.gpx">50K GPX 2026</a>`, courseUrl);
+  const multiple = await (await discovery(new Map([[courseUrl, variants]]))).run(courseUrl);
+  assert.equal(multiple.courseSelection.preselection, null);
+
+  const approximate = page(`${structured}<a href="https://files.example/route_51k_2027.gpx">51 km GPX 2027</a>`, courseUrl);
+  const mismatch = await (await discovery(new Map([[courseUrl, approximate]]))).run(courseUrl);
+  assert.equal(mismatch.courseSelection.preselection, null);
+});
+
 test("extracts five course distances from associated headings and excludes the GPX index navigation link", async () => {
   const html = [
     '<nav><a href="/courses/gpx-tracks">GPX tracks</a></nav>',

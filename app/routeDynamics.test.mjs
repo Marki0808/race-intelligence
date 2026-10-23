@@ -495,7 +495,8 @@ test("Route Sections contain the only course segmentation presentation", () => {
   const source = readFileSync(new URL("./RouteAnalysisView.tsx", import.meta.url), "utf8");
   const browserSource = readFileSync(new URL("./RouteSectionBrowser.tsx", import.meta.url), "utf8");
   assert.equal((browserSource.match(/>Route Sections<\/h2>/g) ?? []).length, 1);
-  assert.match(source, /<RouteSectionBrowser[\s\S]*?sections=\{displayedSections\}/);
+  assert.match(source, /<RouteSectionBrowser[\s\S]*?sections=\{activeSections\}/);
+  assert.match(source, /buildAidStationSections\(analysis\.aidStationDiscoveryV1,/);
   assert.doesNotMatch(source, /title="Terrain Evidence"|<h[1-6][^>]*>Terrain Evidence<\/h[1-6]>/);
 });
 

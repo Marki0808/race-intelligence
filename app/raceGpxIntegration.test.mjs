@@ -51,10 +51,16 @@ test("supported-race registry lookup remains independent from official-page disc
   assert.match(discoveryUi, /const \[status, setStatus\] = useState/);
 });
 
-test("candidate UI requires explicit radio selection and confirmation even for one candidate", () => {
+test("an exact course resource is preselected and shown with confirmation, while ambiguous resources require selection", () => {
   assert.match(discoveryUi, /const \[selectedUrl, setSelectedUrl\] = useState\(""\)/);
+  assert.match(discoveryUi, /findUniqueCourseResourcePreselection|courseSelection\.preselection/);
+  assert.match(discoveryUi, /const showDirectCourseConfirmation =/);
+  assert.match(discoveryUi, /data-testid="exact-course-resource"/);
+  assert.match(discoveryUi, /This is an exact course-label match from the official page\. The linked file will be validated only after you confirm\./);
+  assert.match(discoveryUi, /Confirm this course route/);
   assert.match(discoveryUi, /type="radio"/);
   assert.match(discoveryUi, /checked=\{selectedUrl === candidate\.gpxUrl\}/);
+  assert.match(discoveryUi, /!showDirectCourseConfirmation && archives\.map/);
   assert.match(discoveryUi, /Confirm selection and analyze GPX/);
   assert.match(discoveryUi, /disabled=\{\(!selectedUrl && !selectedArchiveUrl\) \|\| busy\}/);
   assert.match(discoveryUi, /link-evidence-only/);
@@ -102,12 +108,13 @@ test("no-results and failures offer the existing manual-upload route", () => {
 
 test("confirmed GPX enters the existing RouteMode parser and analysis path in memory", () => {
   assert.match(discoveryUi, /\/api\/race-gpx-download/);
-  assert.match(discoveryUi, /openDiscoveredGpx\(text, fallbackName\)/);
-  assert.match(discoveryUi, /setPendingDiscoveredGpx\(\{ text, name \}\)/);
+  assert.match(discoveryUi, /openDiscoveredGpx\(text, fallbackName, isAidStationDiscoveryV1\(downloaded\?\.stationEvidence\)/);
+  assert.match(discoveryUi, /setPendingDiscoveredGpx\(\{ text, name, aidStationDiscoveryV1 \}\)/);
   assert.match(discoveryUi, /router\.push\("\/route"\)/);
   assert.match(transfer, /consumePendingDiscoveredGpx/);
   assert.match(routeMode, /consumePendingDiscoveredGpx\(\)/);
   assert.match(routeMode, /parseGpxText\(text\)/);
+  assert.match(routeMode, /pending\.aidStationDiscoveryV1/);
   assert.match(routeMode, /analyzeGpxRoute\(parsed\)/);
   assert.match(routeMode, /RouteAnalysisView/);
 });
@@ -124,7 +131,7 @@ test("download endpoint revalidates page link evidence and bounds body and GPX r
 });
 
 test("discovered route stays GPX-derived without assigning race-edition provenance", () => {
-  assert.match(discoveryUi, /not bound to a race edition/);
+  assert.match(discoveryUi, /do not by themselves prove that a linked file belongs to that edition/);
   assert.match(routeMode, /Route Mode · GPX-derived/);
   assert.doesNotMatch(downloadModule, /raceRegistry|raceEdition|editionId/);
 });

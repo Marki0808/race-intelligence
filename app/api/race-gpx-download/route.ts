@@ -66,13 +66,12 @@ export function createRaceGpxDownloadPost(download = downloadDiscoveredGpx) {
       });
     }
     if (result.status !== "success") return failureResponse(result);
-    return new Response(result.text, {
+    const multipartBody = new FormData();
+    multipartBody.set("gpxText", new Blob([result.text], { type: "application/gpx+xml; charset=utf-8" }), "selected-route.gpx");
+    multipartBody.set("aidStationDiscoveryV1", JSON.stringify(result.aidStationDiscoveryV1 ?? null));
+    return new Response(multipartBody, {
       status: 200,
-      headers: {
-        "Content-Type": "application/gpx+xml; charset=utf-8",
-        "Cache-Control": "no-store",
-        "X-Content-Type-Options": "nosniff",
-      },
+      headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
     });
   };
 }
