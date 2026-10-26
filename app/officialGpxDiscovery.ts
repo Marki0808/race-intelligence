@@ -97,6 +97,7 @@ export type OfficialGpxEventDetectionDiagnostic = {
   sameOriginAnchors: number;
   eventLinkProspects: number;
   meaningfulHeadingCount: number;
+  organizerCourseChoicesFound: number;
   qualifyingLabelsBySource: {
     sharedHeading: number;
     anchorText: number;
@@ -119,6 +120,7 @@ export type OfficialGpxEventDetectionDiagnostic = {
     | "root-response-size-limit"
     | "gpx-candidate-precedence"
     | "explicit-gpx-index-precedence"
+    | "higher-priority-route-page-precedence"
     | "no-event-link-prospects"
     | "no-meaningful-headings"
     | "fewer-than-two-distinct-event-choices"
@@ -597,13 +599,14 @@ function fileNameFromUrl(url: URL): string | null {
 }
 
 function isGpxIndexLink(url: URL, link: HtmlLink, sourceUrl: URL): boolean {
-  if (url.origin !== sourceUrl.origin || GPX_PATH.test(url.pathname) || !DOWNLOAD.test(`${link.text} ${link.title}`)) return false;
+  if (url.origin !== sourceUrl.origin || GPX_PATH.test(url.pathname)) return false;
   let leaf = url.pathname.split("/").filter(Boolean).at(-1) ?? "";
   try { leaf = decodeURIComponent(leaf); } catch { /* Keep the safely parsed path segment. */ }
-  // An explicit GPX-download label on a same-origin index path is navigation
-  // evidence. Keep it in the bounded HTML crawl so the actual file links can
-  // be discovered and selected individually.
-  return /^(?:gpx|gpx[-_ ]?(?:tracks?|courses?|routes?)|tracks?|routes?|courses?|downloads?)$/i.test(leaf);
+  const indexPath = /^(?:gpx|gpx[-_ ]?(?:tracks?|courses?|routes?)|tracks?|routes?|courses?|downloads?)$/i.test(leaf);
+  const indexLabel = `${link.text} ${link.title} ${link.ariaLabel}`;
+  // Generic GPX index labels and explicit GPX-download labels on recognized
+  // index paths are traversal evidence, never downloadable-file evidence.
+  return indexPath && (/\bgpx\b/i.test(`${indexLabel} ${url.pathname}`) || DOWNLOAD.test(indexLabel));
 }
 
 function isGpxEvidence(url: URL, link: HtmlLink, sourceUrl: URL): boolean {
@@ -1010,6 +1013,7 @@ export function createOfficialGpxDiscovery(
       sameOriginAnchors: 0,
       eventLinkProspects: 0,
       meaningfulHeadingCount: 0,
+      organizerCourseChoicesFound: 0,
       qualifyingLabelsBySource: emptyQualifyingLabelsBySource(),
       finalDeduplicatedEventChoices: 0,
       gpxCandidatePrecedenceSuppressed: false,
@@ -1099,9 +1103,13 @@ export function createOfficialGpxDiscovery(
             count + (sanitizeWebUrl(link.href, sourceUrl, true) ? 1 : 0), 0));
         }
         const candidatesBeforePage = candidates.size;
-        const routeIndexEvidence = links.some((link) => {
+        const higherPriorityRoutePageEvidence = links.some((link) => {
           const target = sanitizeWebUrl(link.href, pageUrl, true);
           return target !== null && !isGpxEvidence(target, link, pageUrl) && subpagePriority(link, target, pageUrl) >= 80;
+        });
+        const explicitGpxIndexEvidence = links.some((link) => {
+          const target = sanitizeWebUrl(link.href, pageUrl, true);
+          return target !== null && isGpxIndexLink(target, link, pageUrl);
         });
         for (const link of links) {
           const target = sanitizeWebUrl(link.href, pageUrl, false);
@@ -1197,7 +1205,11 @@ export function createOfficialGpxDiscovery(
         }
         if (currentPage.depth === 0) {
           const linkedCourses = organizerCourseChoices(links, sourceUrl);
-          if (candidates.size === 0 && archiveCandidates.size === 0 && !routeIndexEvidence && !rootCourseIdentity && linkedCourses.length >= 2) {
+          eventDetection.organizerCourseChoicesFound = boundedDiagnosticCount(linkedCourses.length);
+          // A homepage with multiple evidence-backed course links needs an
+          // explicit distance choice before following any shared route index.
+          // Starting a new discovery from the selected course prevents mixing.
+          if (candidates.size === 0 && archiveCandidates.size === 0 && !rootCourseIdentity && linkedCourses.length >= 2) {
             return { status: "course-selection-required", courses: linkedCourses };
           }
           const eventScan = organizerEventChoices(links, sourceUrl, parsedAnchors.headingElements, parsedAnchors.meaningfulHeadingElements);
@@ -1207,11 +1219,13 @@ export function createOfficialGpxDiscovery(
           eventDetection.finalDeduplicatedEventChoices = eventScan.choices.length;
           eventDetection.structure = eventScan.structure;
           eventDetection.gpxCandidatePrecedenceSuppressed = candidates.size > 0;
-          eventDetection.explicitGpxIndexPrecedenceSuppressed = candidates.size === 0 && routeIndexEvidence;
+          eventDetection.explicitGpxIndexPrecedenceSuppressed = candidates.size === 0 && explicitGpxIndexEvidence;
           if (candidates.size > 0) {
             eventDetection.decisionReason = "gpx-candidate-precedence";
-          } else if (routeIndexEvidence) {
-            eventDetection.decisionReason = "explicit-gpx-index-precedence";
+          } else if (higherPriorityRoutePageEvidence) {
+            eventDetection.decisionReason = explicitGpxIndexEvidence
+              ? "explicit-gpx-index-precedence"
+              : "higher-priority-route-page-precedence";
           } else if (eventScan.choices.length >= 2) {
             return { status: "event-selection-required", events: eventScan.choices };
           } else if (eventScan.eventLinkProspects === 0) {

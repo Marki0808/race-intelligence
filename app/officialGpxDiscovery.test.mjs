@@ -84,6 +84,7 @@ function eventDiagnostic(overrides = {}) {
     sameOriginAnchors: 0,
     eventLinkProspects: 0,
     meaningfulHeadingCount: 0,
+    organizerCourseChoicesFound: 0,
     qualifyingLabelsBySource: {
       sharedHeading: 0,
       anchorText: 0,
@@ -203,6 +204,43 @@ test("organizer homepages return explicit same-origin course choices before any 
   assert.ok(result.courses.every(({ supportingEvidence }) => supportingEvidence.some((item) => item.startsWith("matching course distance in link and same-origin destination:"))));
   assert.equal(calls.filter((call) => call.type === "request").length, 1, "course links are presented, not crawled or mixed automatically");
   assert.equal(result.courses.some(({ url }) => url.includes("results")), false);
+});
+
+test("multiple explicit course choices take precedence over a competing GPX index link", async () => {
+  const rootUrl = "https://organizer.example/";
+  const courses = ["11 km", "17 km", "35 km", "64 km", "108 km"];
+  const html = [
+    '<nav><a href="/race/tracks">Download track GPX 2026</a></nav>',
+    ...courses.map((distance) => {
+      const number = Number.parseInt(distance, 10);
+      return `<li><a href="/razdalje/obala-${number >= 64 ? "ultra-" : ""}trail-${number}-km/">Obala ${number >= 64 ? "Ultra " : ""}Trail ${distance}</a></li>`;
+    }),
+  ].join("");
+  const indexUrl = "https://organizer.example/race/tracks";
+  const { run, calls } = discovery(new Map([[rootUrl, page(html, rootUrl)], [indexUrl, page("<main>Course downloads</main>", indexUrl)]]));
+
+  const result = await run(rootUrl);
+  assert.equal(result.status, "course-selection-required");
+  assert.deepEqual(result.courses.map(({ distanceLabel }) => distanceLabel), courses);
+  assert.equal(calls.filter((call) => call.type === "request").length, 1, "the shared index is not fetched before the user scopes discovery to a course");
+  assert.equal(result.courses.some(({ url }) => url === indexUrl), false);
+});
+
+test("unsuccessful discovery diagnostics count accepted course choices without retaining labels", async () => {
+  const rootUrl = "https://organizer.example/";
+  const indexUrl = "https://organizer.example/race/tracks";
+  const diagnostics = [];
+  const pages = new Map([
+    [rootUrl, page('<a href="/race/tracks">Download track GPX 2026</a><a href="/razdalje/forest-trail-64-km/">Forest Trail 64 km</a>', rootUrl)],
+    [indexUrl, page("<main>Downloads</main>", indexUrl)],
+  ]);
+  const { run } = discovery(pages, { onDiagnostic: (diagnostic) => diagnostics.push(diagnostic) });
+
+  assert.deepEqual(await run(rootUrl), { status: "no-results", candidates: [] });
+  assert.equal(diagnostics[0].eventDetection.organizerCourseChoicesFound, 1);
+  assert.equal(diagnostics[0].eventDetection.explicitGpxIndexPrecedenceSuppressed, true);
+  assert.equal(diagnostics[0].eventDetection.decisionReason, "explicit-gpx-index-precedence");
+  assert.equal(JSON.stringify(diagnostics).includes("Forest Trail"), false);
 });
 
 test("explicit course selection restarts scoped discovery with course and edition identity and no cross-course GPX mixing", async () => {
@@ -579,6 +617,7 @@ test("no-results diagnostics identify missing meaningful headings without record
     sameOriginAnchors: 2,
     eventLinkProspects: 2,
     meaningfulHeadingCount: 0,
+    organizerCourseChoicesFound: 0,
     qualifyingLabelsBySource: {
       sharedHeading: 0,
       anchorText: 0,
@@ -1187,7 +1226,7 @@ test("aggregate HTML byte limit rejects a crawl above two megabytes and reports 
     aggregateBytesAccepted: 1_400_000,
     eventDetection: eventDiagnostic({
       rootResponseStatus: 200, rootContentType: "text/html", rootHtmlBytesAccepted: 700_000,
-      parsedAnchors: 1, sameOriginAnchors: 1, explicitGpxIndexPrecedenceSuppressed: true,
+      parsedAnchors: 1, sameOriginAnchors: 1, explicitGpxIndexPrecedenceSuppressed: false,
       decisionReason: "provider-failure-during-crawl",
     }),
   }]);
