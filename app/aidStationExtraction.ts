@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { parseGpxText } from "./gpxAnalysis.ts";
+import { officialCourseLabelsMatch } from "./officialRaceCourseIdentity.ts";
 
 /** Offline, source-preserving aid-station extraction. This module is not wired to Race Mode. */
 export const STATION_EVIDENCE_SCHEMA_VERSION = 1 as const;
@@ -62,7 +63,7 @@ export const stationVisitEvidenceV1Schema = z.object({
     componentIndex: z.number().int().nonnegative().optional(),
     distanceKm: z.number().finite().nonnegative().optional(),
     offsetM: z.number().finite().nonnegative().optional(),
-    method: z.enum(["coordinate-projection", "source-distance"]).optional(),
+    method: z.enum(["coordinate-projection", "source-distance", "route-endpoint"]).optional(),
     reason: z.enum(["not-aligned", "course-binding-unverified", "course-identity-mismatch", "source-distance-not-cumulative", "route-distance-mismatch", "coordinate-off-route", "coordinate-match-ambiguous", "source-position-out-of-range"]).optional(),
   }).strict(),
   ambiguities: z.array(z.string().max(120)).max(12),
@@ -97,6 +98,8 @@ export type StationExtractionOptions = {
   selectedGpxUrl?: string | null;
   expectedCourseLabel?: string | null;
   expectedEditionYear?: number | null;
+  /** Set only for a server-validated, distance-specific official course page. */
+  validatedCourseScope?: boolean;
 };
 
 const MAX_HTML_BYTES = 2_000_000;
@@ -484,12 +487,48 @@ function stationContextRoles(headings: string[]): StationRole[] {
   if (/\b(aid stations?|feeding stations?|refreshment points?)\b/.test(text)) roles.push("aid-station");
   return roles;
 }
+function endpointHeadingRole(text: string): "start" | "finish" | null {
+  const heading = text.trim().toLocaleLowerCase().replace(/[.:]+$/, "").trim();
+  if (/^(?:race )?start(?: line| location| point)?$/.test(heading)) return "start";
+  if (/^(?:race )?finish(?: line| location| point)?$/.test(heading)) return "finish";
+  return null;
+}
+function isStationRole(role: StationRole): boolean {
+  return role === "aid-station" || role === "water-only" || role === "checkpoint";
+}
 function extractHtmlListOrProse(block: HtmlBlock, sourceUrl: string, options: StationExtractionOptions, eventName: string | null, year: number | null, order: number, selectedGpxUrl: string | null): StationVisitEvidenceV1[] {
   const text = block.text; const contextRoles = stationContextRoles(block.headings);
   const localHeading = block.headings.at(-1) ?? "";
   const headingRoles = rolesFromExplicitText(localHeading);
-  const hasExplicitRole = rolesFromExplicitText(text).length > 0 || contextRoles.length > 0 || headingRoles.length > 0;
-  if (!hasExplicitRole) return [];
+  const headingEndpoint = block.kind === "prose" ? endpointHeadingRole(localHeading) : null;
+  const textualRoles = rolesFromExplicitText(text);
+  const stationEvidence = [...contextRoles, ...headingRoles, ...textualRoles].some(isStationRole);
+  if (!stationEvidence && headingEndpoint) {
+    // Start/finish cards often name the endpoint without a kilometer, but may also
+    // state 0 km or the course finish marker. Only a simple exact-heading value is
+    // accepted; race schedules and time statements are not endpoint evidence.
+    if (!text || /\b(?:at|on)\s+\d{1,2}:\d{2}\b/i.test(text)) return [];
+    const position = /\d/.test(text) ? extractDistance(text, "cumulative") : null;
+    const expectedKm = headingEndpoint === "start" ? 0 : options.selectedCourseDistanceKm ?? courseFromHeadings(block.headings).km;
+    if (/\d/.test(text) && (!position || expectedKm == null || Math.abs(position.normalizedKm - expectedKm) > Math.max(0.05, expectedKm * 0.001))) return [];
+    const extractedName = extractName(text);
+    const name = !extractedName || /^\d+(?:[.,]\d+)?\s*(?:km|kilomet(?:er|re)s?|mi|miles?)$/i.test(extractedName)
+      ? position ? (headingEndpoint === "start" ? "Start" : "Finish") : null
+      : extractedName;
+    if (!name || /^(?:information|details|see map)$/i.test(name)) return [];
+    const role = headingEndpoint;
+    const format = "html-prose" as const;
+    return [buildVisit({
+      visitId: `${sourceUrl}#${block.locator}-${role}-endpoint`,
+      source: { url: sourceUrl, format, locator: { kind: "html-prose", path: block.locator }, excerpt: `${localHeading} | ${text}`.slice(0, 400) },
+      context: toContext(options, null, options.selectedCourseDistanceKm ?? null, year, eventName, selectedGpxUrl),
+      sourceOrder: order, uid: null, name, roles: [role], sequenceRole: role, classification: "explicit-role",
+      sourcePosition: position, sourceIntervalToNext: null, coordinates: null, sourceAttributes: {}, ambiguities: ["position-from-gpx-endpoint"],
+    })];
+  }
+  // A generic mention of “start” plus a race distance is a race schedule, not a
+  // station visit. Free-form records need explicit aid/water/checkpoint evidence.
+  if (!stationEvidence) return [];
   if ([...text.matchAll(/\b\d{1,3}(?:[.,]\s*\d{1,2})?\s*(?:km|kilomet(?:er|re)s?|mi|miles?)\b/gi)].length > 1) return [];
   let distance = extractDistance(text, /\b(next|interval|between stations)\b/i.test(text) ? "interval" : "unknown");
   let parsed = parseRolesAndName(text, contextRoles);
@@ -550,7 +589,14 @@ function wordOrNumericCount(value: string): number | null {
 }
 
 function stationCountFromBlock(block: HtmlBlock, sourceUrl: string, options: StationExtractionOptions, eventName: string | null, year: number | null): StationCountEvidence | null {
-  const scopedCourse = selectedCourseMention(`${block.text} ${block.headings.join(" ")}`, options);
+  const scopeText = `${block.text} ${block.headings.join(" ")}`;
+  let scopedCourse = selectedCourseMention(scopeText, options);
+  // A count statement on the already validated, distance-specific official course
+  // page is scoped by that page even when the sentence itself says only “the course”.
+  if (!scopedCourse && options.validatedCourseScope && options.selectedCourseDistanceKm != null &&
+    !/\b\d{1,3}(?:[.,]\d+)?\s*(?:km|kilomet(?:er|re)s?|mi|miles?)\b/i.test(scopeText)) {
+    scopedCourse = { label: options.selectedCourseLabel ?? `${options.selectedCourseDistanceKm} km`, km: options.selectedCourseDistanceKm };
+  }
   if (!scopedCourse || !/\b(?:aid stations?|on-course aid stations?|water stations?|refreshment points?)\b/i.test(`${block.text} ${block.headings.join(" ")}`)) return null;
   const match = /\b(?:has|have|includes?|are|is|:)?\s*(\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:on[- ]course\s+)?(?:aid stations?|water stations?|refreshment points?)\b/i.exec(block.text);
   const count = match ? wordOrNumericCount(match[1]) : null;
@@ -673,8 +719,26 @@ function extractHtmlStationEvidenceInternal(html: string, sourceUrl: string, opt
     if (!selected.length && choices.length) return emptyResult("html", "rejected", ["course-identity-conflict"]);
   }
   if (selected.length > MAX_VISITS) return result("html", selected.slice(0, MAX_VISITS), choices, ["incomplete-source"]);
+  const starts = selected.filter((visit) => visit.sequenceRole === "start");
+  const finishes = selected.filter((visit) => visit.sequenceRole === "finish");
+  const intermediates = selected.filter((visit) => visit.sequenceRole === "intermediate-candidate");
+  const nonEndpoints = selected.filter((visit) => visit.sequenceRole !== "start" && visit.sequenceRole !== "finish" && visit.sequenceRole !== "intermediate-candidate");
+  const sequenceIssues: StationExtractionIssue[] = [];
+  if (starts.length > 1 || finishes.length > 1 || nonEndpoints.length) sequenceIssues.push("incomplete-source");
+  // Endpoint cards are often placed before the station table. Their exact endpoint
+  // roles are authoritative; intermediate order remains the source order and is
+  // still checked for contradictory kilometers below.
+  const sequence = [
+    ...(starts.length === 1 ? starts : []),
+    ...intermediates,
+    ...(finishes.length === 1 ? finishes : []),
+    ...nonEndpoints,
+    ...(starts.length > 1 ? starts : []),
+    ...(finishes.length > 1 ? finishes : []),
+  ].map((visit, index) => ({ ...visit, sourceOrder: index }));
   let priorKm: number | null = null;
-  const hasOrderingConflict = selected.some((visit) => {
+  const hasOrderingConflict = sequence.some((visit) => {
+    if (visit.sequenceRole === "start" || visit.sequenceRole === "finish") return false;
     const km = visit.sourcePosition?.semantics === "cumulative" ? visit.sourcePosition.normalizedKm : null;
     if (km == null) return false;
     const conflict = priorKm != null && km <= priorKm + 0.001;
@@ -687,25 +751,27 @@ function extractHtmlStationEvidenceInternal(html: string, sourceUrl: string, opt
   }))];
   const declaredCount = scopedDeclaredCounts.length === 1 ? scopedDeclaredCounts[0] : null;
   const countConflict = scopedDeclaredCounts.length > 1;
-  const dedicatedList = !hasOrderingConflict && selected.length > 0 && selected.every((visit) =>
+  const countableVisits = sequence.filter((visit) => visit.sequenceRole === "intermediate-candidate");
+  const dedicatedList = !hasOrderingConflict && countableVisits.length > 0 && countableVisits.every((visit) =>
     visit.context.courseLabel != null && visit.context.courseDistanceKm != null &&
     visit.sourcePosition?.semantics === "cumulative" && visit.roles.some((role) => ["aid-station", "water-only", "checkpoint"].includes(role)),
-  ) && selected.every((visit) => visit.source.format === "html-table" || visit.source.format === "html-list") &&
+  ) && countableVisits.every((visit) => visit.source.format === "html-table" || visit.source.format === "html-list") &&
     !/\b(?:some|selected|sample|partial|incomplete|provisional)\b/i.test(blocks.map((block) => block.headings.join(" ")).join(" "));
-  const declaredMatches = declaredCount != null && declaredCount === selected.length && !hasOrderingConflict && !countConflict;
+  const declaredMatches = declaredCount != null && declaredCount === countableVisits.length && !hasOrderingConflict && !countConflict;
   const complete = declaredMatches || (declaredCount == null && !countConflict && dedicatedList);
   const blockCounts = [...new Set(countEvidenceByBlock.map((evidence) => evidence.declaredCount))];
   const countEvidence = blockCounts.length === 1 ? countEvidenceByBlock[0] : undefined;
   const effectiveDeclaredCount = declaredCount ?? countEvidence?.declaredCount ?? null;
   const countsConflict = countConflict || blockCounts.length > 1 || (declaredCount != null && countEvidence != null && declaredCount !== countEvidence.declaredCount);
-  const countMatches = effectiveDeclaredCount != null && effectiveDeclaredCount === selected.length && !hasOrderingConflict && !countsConflict;
+  const countMatches = effectiveDeclaredCount != null && effectiveDeclaredCount === countableVisits.length && !hasOrderingConflict && !countsConflict;
   const finalComplete = complete || countMatches;
   const completeness: StationExtractionResult["completeness"] = {
-    status: countsConflict || (effectiveDeclaredCount != null && effectiveDeclaredCount < selected.length) ? "conflicting" : finalComplete ? "complete" : hasOrderingConflict || effectiveDeclaredCount != null ? "partial" : "unknown",
-    declaredCount: effectiveDeclaredCount, extractedCount: selected.length,
+    status: countsConflict || (effectiveDeclaredCount != null && effectiveDeclaredCount < countableVisits.length) ? "conflicting" : finalComplete ? "complete" : hasOrderingConflict || effectiveDeclaredCount != null ? "partial" : "unknown",
+    declaredCount: effectiveDeclaredCount, extractedCount: sequence.length,
     ...(countMatches ? { basis: "explicit-count" as const } : declaredMatches ? { basis: "explicit-count" as const } : complete ? { basis: "dedicated-course-list" as const } : {}),
   };
-  const extraction = result("html", selected, choices, [
+  const extraction = result("html", sequence, choices, [
+    ...sequenceIssues,
     ...(hasOrderingConflict ? ["out-of-order-visits" as const] : []),
     ...(countsConflict ? ["conflicting-counts" as const] : []),
   ], completeness);
@@ -767,14 +833,29 @@ export function alignStationEvidenceToGpx(visits: readonly StationVisitEvidenceV
   const validBindingUrl = normalizedOptionalHttpsUrl(binding.selectedGpxUrl, binding.selectedGpxUrl) === binding.selectedGpxUrl;
   const globallyBound = binding.validatedCourse && binding.editionValidated && validBindingUrl && binding.bindingEvidenceIds.length > 0 && binding.bindingEvidenceIds.length <= 32 && binding.bindingEvidenceIds.every((id) => typeof id === "string" && id.length > 0 && id.length <= 160);
   const issues: string[] = [];
-  const aligned = visits.map((visit) => {
+  const aligned = visits.map((visit, visitIndex) => {
     if (!globallyBound) { issues.push("course-binding-unverified"); return { ...visit, position: { confidence: "unresolved" as const, reason: "course-binding-unverified" as const } }; }
     const identityConflict = (visit.context.eventName && binding.eventName && visit.context.eventName.toLocaleLowerCase() !== binding.eventName.toLocaleLowerCase())
       || (visit.context.editionYear != null && binding.editionYear != null && visit.context.editionYear !== binding.editionYear)
-      || (visit.context.courseLabel && binding.courseLabel && visit.context.courseLabel.toLocaleLowerCase() !== binding.courseLabel.toLocaleLowerCase())
+      || (visit.context.courseLabel && binding.courseLabel && !officialCourseLabelsMatch(visit.context.courseLabel, binding.courseLabel))
       || (visit.context.courseId && binding.courseId && visit.context.courseId.toLocaleLowerCase() !== binding.courseId.toLocaleLowerCase())
       || (visit.context.selectedGpxUrl && visit.context.selectedGpxUrl !== binding.selectedGpxUrl);
     if (identityConflict) { issues.push("course-identity-conflict"); return { ...visit, position: { confidence: "unresolved" as const, reason: "course-identity-mismatch" as const } }; }
+    const sourceEndpointPositionMatches = (expectedKm: number) => visit.sourcePosition?.semantics !== "cumulative" ||
+      Math.abs(visit.sourcePosition.normalizedKm - expectedKm) <= Math.max(0.05, expectedKm * 0.001);
+    const isRouteStart = visitIndex === 0 && visit.sequenceRole === "start" && visit.roles.includes("start") && !visit.coordinates &&
+      (!visit.sourcePosition || sourceEndpointPositionMatches(0));
+    const isRouteFinish = visitIndex === visits.length - 1 && visit.sequenceRole === "finish" && visit.roles.includes("finish") && !visit.coordinates &&
+      (!visit.sourcePosition || binding.selectedCourseDistanceKm != null && sourceEndpointPositionMatches(binding.selectedCourseDistanceKm));
+    if (isRouteStart || isRouteFinish) {
+      const componentIndex = isRouteStart ? 0 : Math.max(0, parsed.segments.length - 1);
+      return { ...visit, position: {
+        confidence: "verified" as const,
+        componentIndex,
+        distanceKm: isRouteStart ? 0 : totalKm,
+        method: "route-endpoint" as const,
+      } };
+    }
     if (visit.coordinates) {
       const matches = projectToEdges(visit.coordinates, edges); const best = matches[0]; const second = matches.find((m) => m.componentIndex !== best?.componentIndex || Math.abs(m.distanceKm - (best?.distanceKm ?? 0)) > 0.2);
       if (!best || best.offsetM > COORDINATE_MATCH_TOLERANCE_M) { issues.push("coordinate-off-route"); return { ...visit, position: { confidence: "unresolved" as const, reason: "coordinate-off-route" as const } }; }

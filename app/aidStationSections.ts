@@ -6,7 +6,7 @@ import { routeSectionSelectionKey } from "./routeSectionSelection.ts";
 
 export type AidStationSectionLabels = { from: string; to: string };
 export type AidStationSectionsResult =
-  | { available: true; sections: RouteSection[]; labels: ReadonlyMap<string, AidStationSectionLabels> }
+  | { available: true; sections: RouteSection[]; labels: ReadonlyMap<string, AidStationSectionLabels>; positionMode: "verified" | "official-kilometer-approximate" }
   | { available: false; reason: string; sections: []; labels: ReadonlyMap<string, AidStationSectionLabels> };
 
 const ENDPOINT_TOLERANCE_M = 5;
@@ -20,17 +20,39 @@ export function buildAidStationSections(
 ): AidStationSectionsResult {
   const unavailable = (reason: string): AidStationSectionsResult => ({ available: false, reason, sections: [], labels: new Map() });
   if (!discovery || discovery.status !== "available" || !discovery.stationSegmentation.available || discovery.completeness.status !== "complete") return unavailable("station-segmentation-unavailable");
-  if (discovery.gpxProvenance.bindingStatus !== "verified") return unavailable("gpx-binding-unverified");
+  const positionMode = discovery.stationSegmentation.positionMode ??
+    (discovery.gpxProvenance.bindingStatus === "verified" ? "verified" : null);
+  if (positionMode === "verified" && discovery.gpxProvenance.bindingStatus !== "verified") return unavailable("gpx-binding-unverified");
+  if (positionMode === "official-kilometer-approximate" && discovery.gpxProvenance.bindingStatus !== "approximate") return unavailable("gpx-binding-unverified");
+  if (!positionMode) return unavailable("gpx-binding-unverified");
   const visits = discovery.visits;
   if (visits.length < 2 || visits[0].sequenceRole !== "start" || visits.at(-1)?.sequenceRole !== "finish") return unavailable("start-or-finish-unavailable");
   const intermediates = visits.slice(1, -1);
   if (discovery.completeness.extractedCount !== visits.length) return unavailable("visit-count-mismatch");
   if (discovery.completeness.declaredCount != null && discovery.completeness.declaredCount !== intermediates.length) return unavailable("station-count-mismatch");
+  const approximateModeIsSupported = positionMode === "official-kilometer-approximate" &&
+    discovery.completeness.declaredCount === intermediates.length &&
+    discovery.selectedContext.eventName != null && discovery.selectedContext.editionYear != null &&
+    discovery.selectedContext.courseDistanceKm != null &&
+    Math.abs(discovery.selectedContext.courseDistanceKm - analysis.metrics.distanceKm) <= Math.max(2, discovery.selectedContext.courseDistanceKm * 0.05) &&
+    !discovery.reasonCodes.some((reason) => ["course-identity-conflict", "cross-source-identity-conflict", "route-distance-mismatch", "source-position-out-of-range", "source-distance-not-cumulative", "station-count-conflict"].includes(reason)) &&
+    visits.every((visit, index) => {
+      if (index === 0 || index === visits.length - 1) return visit.position.confidence === "verified" && visit.position.method === "route-endpoint";
+      return visit.position.confidence === "approximate" && visit.position.method === "source-distance" &&
+        visit.position.distanceKm != null && Number.isFinite(visit.position.distanceKm) &&
+        visit.sourcePosition?.semantics === "cumulative" && visit.sourcePosition.qualifier === "exact" &&
+        Math.abs(visit.sourcePosition.normalizedKm - visit.position.distanceKm) <= 0.001 && visit.roles.includes("aid-station") &&
+        visit.context.eventName === discovery.selectedContext.eventName && visit.context.editionYear === discovery.selectedContext.editionYear &&
+        visit.context.courseDistanceKm === discovery.selectedContext.courseDistanceKm;
+    });
+  const expectedPositionConfidence = positionMode === "verified" ? "verified" : null;
+  if (positionMode === "official-kilometer-approximate" && !approximateModeIsSupported) return unavailable("official-kilometer-evidence-unverified");
+  if (positionMode === "verified" && visits.some((visit) => visit.position.confidence !== expectedPositionConfidence)) return unavailable("visit-position-or-role-unverified");
   if (visits.some((visit, index) => {
     const endpointRoleValid = index === 0 ? visit.sequenceRole === "start" : index === visits.length - 1 ? visit.sequenceRole === "finish" : visit.sequenceRole === "intermediate-candidate";
     const position = visit.position;
     const stationRoleValid = index === 0 || index === visits.length - 1 || visit.roles.some((role) => ["aid-station", "water-only", "checkpoint"].includes(role));
-    return !endpointRoleValid || !stationRoleValid || !visit.name?.trim() || position.confidence !== "verified" ||
+    return !endpointRoleValid || !stationRoleValid || !visit.name?.trim() || position.confidence === "unresolved" ||
       !Number.isFinite(position.distanceKm) || position.componentIndex == null;
   })) return unavailable("visit-position-or-role-unverified");
 
@@ -124,7 +146,7 @@ export function buildAidStationSections(
   }
   const sectionDistance = sections.reduce((sum, section) => sum + section.distanceKm, 0);
   if (Math.abs(sectionDistance - routeDistanceKm) > MAX_COVERAGE_ERROR_KM + sections.length * 0.005) return unavailable("section-distance-reconciliation-failed");
-  return { available: true, sections, labels };
+  return { available: true, sections, labels, positionMode };
 }
 
 function smoothedProfileBetween(points: readonly ResampledRoutePoint[], startM: number, endM: number) {

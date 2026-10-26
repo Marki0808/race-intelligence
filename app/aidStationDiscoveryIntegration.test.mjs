@@ -5,6 +5,8 @@ import { extractHtmlStationEvidence } from "./aidStationExtraction.ts";
 import { createOfficialGpxDiscovery, OFFICIAL_GPX_DISCOVERY_LIMITS } from "./officialGpxDiscovery.ts";
 import { createOfficialGpxDownloadFlow } from "./officialGpxDownload.ts";
 import { createRaceGpxDownloadPost } from "./api/race-gpx-download/route.ts";
+import { analyzeGpxRoute } from "./gpxAnalysis.ts";
+import { buildAidStationSections } from "./aidStationSections.ts";
 
 const PUBLIC = [{ address: "93.184.216.34", family: 4 }];
 const rootUrl = "https://race.example/course";
@@ -70,6 +72,25 @@ function htmlStationTable(year = 2027) {
   </table>`;
 }
 
+function obala64KmCourseHtml() {
+  const names = ["Boršt", "Puče", "Šmarje", "Malija Stadium", "Strunjan"];
+  const distances = [17, 28, 40, 51, 59];
+  return `<title>Obala Ultra Trail 64 km - 2026</title>
+    <h1>Obala Ultra Trail 64 km</h1><h2>64 km course</h2>
+    <h3>Start</h3><p>Hrastovlje</p><h3>Finish</h3><p>Izola</p>
+    <h3>Aid stations</h3><table><tbody>
+      <tr><th>Aid Station</th>${names.map((name) => `<td>${name}</td>`).join("")}</tr>
+      <tr><th>Distance</th>${distances.map((km) => `<td>${km} km</td>`).join("")}</tr>
+    </tbody></table><p>There are five aid stations on this course.</p>`;
+}
+
+function obala64KmGpx() {
+  const trackpoints = Array.from({ length: 651 }, (_, index) =>
+    `<trkpt lat="45" lon="${(13 + index * 0.00125).toFixed(7)}"><ele>${Math.round(100 + 35 * Math.sin(index / 19))}</ele></trkpt>`,
+  ).join("");
+  return `<?xml version="1.0"?><gpx version="1.1" creator="offline-obala-fixture"><trk><name>Selected 64 km route</name><trkseg>${trackpoints}</trkseg></trk></gpx>`;
+}
+
 test("selected GPX flow captures exact Next.js station payload, validates the GPX link, and transfers verified visits", async () => {
   const discovery = makeDiscovery(new Map([[rootUrl, response(nextDataHtml())]]));
   const flow = createOfficialGpxDownloadFlow(discovery, async (url) => {
@@ -118,6 +139,77 @@ test("transposed official station table corroborates only its matching structure
   assert.equal(result.visits[1].supportingEvidence?.[0].format, "html-table");
   assert.equal(result.visits[1].supportingEvidence?.[0].locator.kind, "html-table-column");
   assert.equal(result.stationSegmentation.available, true);
+});
+
+test("Obala-shaped 64 km course table plus same-page count binds official kilometers as approximate sections", () => {
+  const sourceUrl = "https://race.example/en/distances/coastal-ultra-64-km/";
+  const resourceUrl = "https://race.example/wp-content/uploads/coastal-ultra-2026-64-km.gpx";
+  const courseIdentity = {
+    courseLabel: "64 km", editionYear: 2026, eventName: "Obala Ultra Trail",
+    sourcePageUrl: sourceUrl, evidence: ["exact course URL and title", "selected official 2026 GPX resource"],
+  };
+  const gpx = obala64KmGpx();
+  const result = buildAidStationDiscoveryV1([
+    { url: sourceUrl, html: obala64KmCourseHtml(), depth: 0, linkedFromUrl: null, linkEvidence: [] },
+  ], { resourceType: "gpx", sourcePageUrl: sourceUrl, resourceUrl, distanceLabel: "64 km", courseIdentity }, gpx);
+
+  assert.equal(result.status, "available", JSON.stringify(result));
+  assert.deepEqual(result.selectedContext, { eventName: "Obala Ultra Trail", editionYear: 2026, courseLabel: "64 km", courseDistanceKm: 64 });
+  assert.equal(result.gpxProvenance.selectedResourceUrl, resourceUrl);
+  assert.equal(result.gpxProvenance.bindingStatus, "approximate", JSON.stringify({ binding: result.gpxProvenance, reasons: result.reasonCodes, visits: result.visits.map(({ name, context, position, sequenceRole }) => ({ name, context, position, sequenceRole })) }));
+  assert.deepEqual(result.visits.map((visit) => visit.name), ["Hrastovlje", "Boršt", "Puče", "Šmarje", "Malija Stadium", "Strunjan", "Izola"]);
+  assert.deepEqual(result.visits.map((visit) => visit.sequenceRole), ["start", ...Array(5).fill("intermediate-candidate"), "finish"]);
+  assert.deepEqual(result.visits.slice(1, -1).map((visit) => visit.sourcePosition.normalizedKm), [17, 28, 40, 51, 59]);
+  assert.ok(result.visits.slice(1, -1).every((visit) => visit.roles.includes("aid-station") && visit.position.confidence === "approximate"));
+  assert.ok(result.visits.slice(1, -1).every((visit) => visit.position.method === "source-distance"));
+  assert.deepEqual(result.visits.filter((visit) => visit.sequenceRole !== "intermediate-candidate").map((visit) => visit.position.method), ["route-endpoint", "route-endpoint"]);
+  assert.equal(result.completeness.status, "complete");
+  assert.equal(result.completeness.declaredCount, 5);
+  assert.equal(result.completeness.countEvidence.declaredCount, 5);
+  assert.equal(result.completeness.countEvidence.source.url, sourceUrl);
+  assert.equal(result.reasonCodes.includes("course-identity-conflict"), false);
+  assert.equal(result.stationSegmentation.available, true, JSON.stringify(result.stationSegmentation));
+  assert.equal(result.stationSegmentation.positionMode, "official-kilometer-approximate");
+  assert.ok(result.reasonCodes.includes("source-distance-discrepancy") || result.reasonCodes.length === 0);
+  assert.ok(result.visits.slice(1, -1).every((visit) => visit.source.url === sourceUrl));
+  const analysis = analyzeGpxRoute({ segments: [[...Array.from({ length: 651 }, (_, index) => ({
+    latitude: 45, longitude: 13 + index * 0.00125, elevationM: 100 + 35 * Math.sin(index / 19),
+  }))]], name: "Selected 64 km route" });
+  const sections = buildAidStationSections(result, analysis);
+  assert.equal(sections.available, true, JSON.stringify(sections));
+  assert.equal(sections.positionMode, "official-kilometer-approximate");
+  assert.equal(sections.sections.length, 6);
+  assert.deepEqual(sections.labels.get(`0:${sections.sections[0].id}`), { from: "Hrastovlje", to: "Boršt" });
+  assert.deepEqual(sections.labels.get(`0:${sections.sections.at(-1).id}`), { from: "Strunjan", to: "Izola" });
+});
+
+test("course-scoped FAQ start schedules are not extracted as aid stations and cannot replace selected course identity", () => {
+  const courseUrl = "https://race.example/en/distances/coastal-ultra-64-km/";
+  const faqUrl = "https://race.example/en/more-information/";
+  const faq = `<title>FAQ - Obala Ultra - Trail</title><h1>FAQ - Obala Ultra - Trail</h1>
+    <h2>When and where do the races start?</h2><ul>
+      <li>11 km Izola San Simon – 07.11.2026 at 12:00</li><li>17 km Korte – 07.11.2026 at 10:00</li>
+      <li>35 km Izola – 07.11.2026 at 08:00</li><li>64 km Hrastovlje – 07.11.2026 at 06:00</li>
+      <li>108 km Dekani – 07.11.2026 at 00:00</li></ul>`;
+  const parsed = extractHtmlStationEvidence(faq, faqUrl, {
+    selectedCourseLabel: "64 km", selectedCourseDistanceKm: 64, eventName: "Obala Ultra Trail", editionYear: 2026,
+  });
+  assert.deepEqual(parsed.visits, []);
+  assert.equal(parsed.countEvidence, undefined);
+
+  const result = buildAidStationDiscoveryV1([
+    { url: courseUrl, html: obala64KmCourseHtml(), depth: 0, linkedFromUrl: null, linkEvidence: [] },
+    { url: faqUrl, html: faq, depth: 1, linkedFromUrl: courseUrl, linkEvidence: ["FAQ"] },
+  ], {
+    resourceType: "gpx", sourcePageUrl: courseUrl, resourceUrl: "https://race.example/coastal-ultra-2026-64-km.gpx", distanceLabel: "64 km",
+    courseIdentity: { courseLabel: "64 km", editionYear: 2026, eventName: "Obala Ultra Trail", sourcePageUrl: courseUrl, evidence: ["validated selected course page", "official GPX resource year"] },
+  }, obala64KmGpx());
+  assert.equal(result.selectedContext.eventName, "Obala Ultra Trail");
+  assert.equal(result.selectedContext.editionYear, 2026);
+  assert.equal(result.visits.length, 7);
+  assert.equal(result.visits.some((visit) => ["Izola San Simon", "Korte", "Dekani"].includes(visit.name)), false);
+  assert.equal(result.completeness.declaredCount, 5);
+  assert.equal(result.stationSegmentation.available, true, JSON.stringify(result.stationSegmentation));
 });
 
 test("linked same-origin station page corroborates only the selected structured course and edition", async () => {

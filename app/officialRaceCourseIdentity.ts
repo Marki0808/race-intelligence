@@ -174,8 +174,15 @@ export function findUniqueCourseResourcePreselection(
     return null;
   }
   const resourceType = selected.url.toLowerCase().split(/[?#]/, 1)[0].endsWith(".zip") ? "zip-archive" : "gpx";
+  const boundIdentity = identity.editionYear == null && candidateYear != null
+    ? {
+        ...identity,
+        editionYear: candidateYear,
+        evidence: [...identity.evidence, `selected official resource identifies edition ${candidateYear}`].slice(0, 8),
+      }
+    : identity;
   return {
-    courseIdentity: identity,
+    courseIdentity: boundIdentity,
     resourceUrl: selected.url,
     resourceType,
     evidence: ["exact course-label match", ...(identity.editionYear != null && candidateYear === identity.editionYear ? [`edition ${identity.editionYear} match`] : []), "single matching official resource"],

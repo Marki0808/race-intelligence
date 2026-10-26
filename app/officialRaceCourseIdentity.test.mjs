@@ -73,3 +73,14 @@ test("requires edition evidence for a candidate found on a different page and re
   assert.equal(findUniqueCourseResourcePreselection(identity, url, [linked]), null);
   assert.equal(findUniqueCourseResourcePreselection(identity, url, [resource("https://files.example/route_110k_2026.gpx", "110K", "2026")]), null);
 });
+
+test("binds an unknown page edition only to the single exact-course official resource year", () => {
+  const identity = { ...identifyOfficialRaceCourse(url, html), editionYear: null };
+  const selected = resource("https://race.example/uploads/trail_110k_2026.gpx", "110K", "2026");
+  const resolved = findUniqueCourseResourcePreselection(identity, url, [selected]);
+  assert.equal(resolved?.courseIdentity.editionYear, 2026);
+  assert.ok(resolved?.courseIdentity.evidence.some((item) => item.includes("edition 2026")));
+  assert.equal(findUniqueCourseResourcePreselection(identity, url, [
+    selected, resource("https://race.example/uploads/trail_110k_2025.gpx", "110K", "2025"),
+  ]), null, "multiple editions still require explicit user selection");
+});

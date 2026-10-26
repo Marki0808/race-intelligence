@@ -325,7 +325,7 @@ test("heading evidence keeps aid, checkpoint, water-only, start and finish roles
     <h2>Water-only points</h2><h3>Spring</h3><p>10 km</p>
     <h2>Aid stations</h2><h3>Village Station</h3><p>15 km</p>
     <h2>Finish</h2><p>20 km</p>`;
-  const result = extractHtmlStationEvidence(html, sourceUrl);
+  const result = extractHtmlStationEvidence(html, sourceUrl, { selectedCourseLabel: "20 km", selectedCourseDistanceKm: 20 });
   assert.deepEqual(result.visits.map((visit) => [visit.name, visit.sequenceRole, visit.roles]), [
     ["Start", "start", ["start"]], ["Timing Gate", "intermediate-candidate", ["checkpoint"]],
     ["Spring", "intermediate-candidate", ["water-only"]], ["Village Station", "intermediate-candidate", ["aid-station"]],

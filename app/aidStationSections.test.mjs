@@ -54,6 +54,39 @@ test("complete verified nine-visit sequence creates eight ordered full-route aid
   assert.equal(result.labels.get(`0:${repeated[1].id}`).from, "Shared");
 });
 
+test("official cumulative kilometers enable a clearly approximate mode only with exact count, identity, order, and route compatibility", () => {
+  const analysis = analysisFor();
+  const evidence = discoveryFor(analysis, {
+    gpxProvenance: { bindingStatus: "approximate" },
+    selectedContext: { eventName: "Test Ultra", editionYear: 2027, courseLabel: "6.30 km", courseDistanceKm: analysis.metrics.distanceKm },
+    reasonCodes: [],
+    stationSegmentation: { available: true, reasonCodes: [], positionMode: "official-kilometer-approximate" },
+  });
+  evidence.visits = evidence.visits.map((visit, index) => ({
+    ...visit,
+    context: { eventName: "Test Ultra", editionYear: 2027, courseLabel: "6.30 km", courseDistanceKm: analysis.metrics.distanceKm },
+    ...(index > 0 && index < evidence.visits.length - 1 ? {
+      sourcePosition: { value: visit.position.distanceKm, unit: "km", normalizedKm: visit.position.distanceKm, qualifier: "exact", semantics: "cumulative" },
+      position: { confidence: "approximate", componentIndex: visit.position.componentIndex, distanceKm: visit.position.distanceKm, method: "source-distance" },
+    } : {
+      position: { confidence: "verified", componentIndex: 0, distanceKm: index === 0 ? 0 : analysis.metrics.distanceKm, method: "route-endpoint" },
+    }),
+  }));
+  const result = buildAidStationSections(evidence, analysis);
+  assert.equal(result.available, true);
+  assert.equal(result.positionMode, "official-kilometer-approximate");
+  assert.equal(result.sections.length, 8);
+
+  const wrongCount = structuredClone(evidence);
+  wrongCount.completeness.declaredCount = 6;
+  assert.equal(buildAidStationSections(wrongCount, analysis).available, false);
+  const routeMismatch = structuredClone(evidence);
+  routeMismatch.selectedContext.courseDistanceKm = analysis.metrics.distanceKm * 1.2;
+  assert.equal(buildAidStationSections(routeMismatch, analysis).available, false);
+  const disconnected = analysisFor({ components: 2 });
+  assert.equal(buildAidStationSections(evidence, disconnected).available, false);
+});
+
 test("sub-metre verified start and finish projection offsets close against the exact analyzed GPX endpoints", () => {
   const analysis = analysisFor();
   const evidence = discoveryFor(analysis);

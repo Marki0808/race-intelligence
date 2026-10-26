@@ -38,6 +38,7 @@ const reasonSchema = z.enum([
   "source-completeness-unverified",
   "cross-source-station-match-ambiguous",
   "cross-source-identity-conflict",
+  "approximate-positioning-unverified",
 ]);
 
 export const aidStationDiscoveryV1Schema = z.object({
@@ -79,7 +80,11 @@ export const aidStationDiscoveryV1Schema = z.object({
   }).strict(),
   ambiguities: z.array(z.string().max(120)).max(32),
   reasonCodes: z.array(reasonSchema).max(10),
-  stationSegmentation: z.object({ available: z.boolean(), reasonCodes: z.array(reasonSchema).max(8) }).strict(),
+  stationSegmentation: z.object({
+    available: z.boolean(),
+    reasonCodes: z.array(reasonSchema).max(8),
+    positionMode: z.enum(["verified", "official-kilometer-approximate"]).optional(),
+  }).strict(),
 }).strict();
 
 export type AidStationDiscoveryV1 = z.infer<typeof aidStationDiscoveryV1Schema>;
@@ -135,7 +140,13 @@ function linkedFaqIdentityConflicts(
   if (sourceIdentity.eventId && selectedIdentity.eventId && sourceIdentity.eventId !== selectedIdentity.eventId) return true;
   const sourceName = normalizedEventNameEvidence(sourceIdentity.eventName);
   const selectedName = normalizedEventNameEvidence(selectedIdentity.eventName);
-  return Boolean(sourceName && selectedName && sourceName !== selectedName);
+  if (!sourceName || !selectedName || sourceName === selectedName) return false;
+  // FAQ document titles often omit course/sponsor words from the selected title.
+  // A meaningful-token subset is compatible; any distinct named event token is not.
+  const generic = new Set(["faq", "faqs", "frequently", "asked", "questions", "race", "races", "event", "trail", "ultra", "course", "powered", "by", "the", "and"]);
+  const sourceTokens = sourceName.split(/\s+/).filter((token) => !generic.has(token));
+  const selectedTokens = new Set(selectedName.split(/\s+/).filter((token) => !generic.has(token)));
+  return sourceTokens.some((token) => !selectedTokens.has(token));
 }
 
 function normalizedStationName(value: string | null): string | null {
@@ -226,6 +237,12 @@ function mergeCorroboratedSources(
         .sort((a, b) => evidenceKm == null
           ? Math.abs(a.visit.sourceOrder - evidenceVisit.sourceOrder) - Math.abs(b.visit.sourceOrder - evidenceVisit.sourceOrder)
           : Math.abs((a.km ?? evidenceKm) - evidenceKm) - Math.abs((b.km ?? evidenceKm) - evidenceKm));
+      if (evidenceKm == null && candidates.length > 1) {
+        // Source order is not enough to identify one of several visits to the same
+        // place. Keep the evidence unattached instead of choosing the nearest row.
+        issues.push("cross-source-station-match-ambiguous");
+        continue;
+      }
       const best = candidates[0];
       const bestScore = best && (evidenceKm == null ? Math.abs(best.visit.sourceOrder - evidenceVisit.sourceOrder) : Math.abs((best.km ?? evidenceKm) - evidenceKm));
       const nextScore = candidates[1] && (evidenceKm == null ? Math.abs(candidates[1].visit.sourceOrder - evidenceVisit.sourceOrder) : Math.abs((candidates[1].km ?? evidenceKm) - evidenceKm));
@@ -250,16 +267,21 @@ function mergeCorroboratedSources(
     }
   }
   const hasEndpoints = visits.length >= 2 && visits[0].sequenceRole === "start" && visits.at(-1)?.sequenceRole === "finish";
-  const countSources = sources.filter((source) => source.countEvidence &&
-    normalizedUrl(source.page.url) !== normalizedUrl(chosen.page.url) &&
-    expectedIdentityMatches &&
-    courseSourceUrls.has(normalizedUrl(source.page.linkedFromUrl ?? "") ?? "") &&
-    source.page.linkEvidence.some((text) => /\b(?:aid|water|refreshment|faq|faqs)\b/i.test(text)) &&
-    visits.length > 0 && compatibleCountContext(visits[0], source.countEvidence!, selectedIdentity));
+  const countSources = sources.filter((source) => {
+    if (!source.countEvidence || !expectedIdentityMatches || !visits.length ||
+      !compatibleCountContext(visits[0], source.countEvidence, selectedIdentity)) return false;
+    const sameSelectedCoursePage = normalizedUrl(source.page.url) === normalizedUrl(selectedCoursePageUrl);
+    const linkedOfficial = courseSourceUrls.has(normalizedUrl(source.page.linkedFromUrl ?? "") ?? "") &&
+      source.page.linkEvidence.some((text) => /\b(?:aid|water|refreshment|faq|faqs)\b/i.test(text));
+    return sameSelectedCoursePage || linkedOfficial;
+  });
   const uniqueCounts = [...new Set(countSources.map((source) => source.countEvidence!.declaredCount))];
-  const linkedCountConflict = sources.some((source) => source.issues.includes("conflicting-counts") &&
-    courseSourceUrls.has(normalizedUrl(source.page.linkedFromUrl ?? "") ?? "") &&
-    source.page.linkEvidence.some((text) => /\b(?:aid|water|refreshment|faq|faqs)\b/i.test(text)));
+  const linkedCountConflict = sources.some((source) => {
+    if (!source.issues.includes("conflicting-counts")) return false;
+    if (normalizedUrl(source.page.url) === normalizedUrl(selectedCoursePageUrl)) return true;
+    return courseSourceUrls.has(normalizedUrl(source.page.linkedFromUrl ?? "") ?? "") &&
+      source.page.linkEvidence.some((text) => /\b(?:aid|water|refreshment|faq|faqs)\b/i.test(text));
+  });
   const countSource = uniqueCounts.length === 1 ? countSources[0] : undefined;
   const countEvidence = countSource?.countEvidence;
   const intermediate = visits.slice(1, -1);
@@ -361,7 +383,27 @@ export function buildAidStationDiscoveryV1(
     const selectedCoursePageUrl = normalizedUrl(resource.courseIdentity?.sourcePageUrl ?? "") ?? sourceUrl;
     const selectedPage = pages.find((page) => normalizedUrl(page.url) === selectedCoursePageUrl)
       ?? pages.find((page) => normalizedUrl(page.url) === sourceUrl);
-    const selectedIdentity = selectedPage ? inspectStationDocumentIdentity(selectedPage.html, sourceUrl) : null;
+    const inspectedSelectedIdentity = selectedPage ? inspectStationDocumentIdentity(selectedPage.html, sourceUrl) : null;
+    // This identity comes from the server's secure, exact-course resource preselection;
+    // it can fill gaps in generic HTML titles without trusting a client-supplied identity.
+    const trustedCourseIdentity = resource.courseIdentity &&
+      normalizedUrl(resource.courseIdentity.sourcePageUrl) === selectedCoursePageUrl
+      ? resource.courseIdentity
+      : undefined;
+    const selectedIdentity = inspectedSelectedIdentity ? {
+      ...inspectedSelectedIdentity,
+      eventName: trustedCourseIdentity?.eventName ?? inspectedSelectedIdentity.eventName,
+      editionYear: trustedCourseIdentity?.editionYear ?? inspectedSelectedIdentity.editionYear,
+      courseLabel: trustedCourseIdentity?.courseLabel ?? inspectedSelectedIdentity.courseLabel,
+      courseDistanceKm: distanceFromLabel(trustedCourseIdentity?.courseLabel ?? null) ?? inspectedSelectedIdentity.courseDistanceKm,
+    } : trustedCourseIdentity ? {
+      eventName: trustedCourseIdentity.eventName,
+      eventId: null,
+      editionYear: trustedCourseIdentity.editionYear,
+      courseLabel: trustedCourseIdentity.courseLabel,
+      courseDistanceKm: distanceFromLabel(trustedCourseIdentity.courseLabel),
+      gpxUrl: null,
+    } : null;
     const courseDistanceKm = distanceFromLabel(resource.distanceLabel);
     const parsedSources: Array<{ page: CapturedStationPage; visits: StationVisitEvidenceV1[]; issues: StationExtractionIssue[]; completeness: AidStationDiscoveryV1["completeness"]; format: "next-data" | "html"; countEvidence?: NonNullable<StationExtractionResult["countEvidence"]> }> = [];
     let selectionRequired = false;
@@ -392,17 +434,19 @@ export function buildAidStationDiscoveryV1(
         normalizedUrl(page.linkedFromUrl ?? "") === selectedCoursePageUrl &&
         page.linkEvidence.some((text) => /\b(?:faq|faqs|frequently asked questions)\b/i.test(text));
       const faqIdentity = linkedFaqFromSelectedCourse ? inspectStationDocumentIdentity(page.html, pageUrl) : null;
+      const pageIsSelectedCourse = pageUrl === selectedCoursePageUrl && Boolean(trustedCourseIdentity);
       const canInheritCourseEdition = linkedFaqFromSelectedCourse && selectedIdentity?.editionYear != null &&
         Boolean(selectedIdentity.eventName) && !linkedFaqIdentityConflicts(faqIdentity!, selectedIdentity!);
       if (linkedFaqFromSelectedCourse && !canInheritCourseEdition && faqIdentity && linkedFaqIdentityConflicts(faqIdentity, selectedIdentity!)) identityConflict = true;
       const html = extractHtmlStationEvidence(page.html, pageUrl, {
-        selectedCourseLabel: resource.distanceLabel,
-        selectedCourseDistanceKm: courseDistanceKm ?? undefined,
-        ...(canInheritCourseEdition ? {
-          eventName: selectedIdentity!.eventName,
-          editionYear: selectedIdentity!.editionYear,
-          expectedEditionYear: selectedIdentity!.editionYear,
+        selectedCourseLabel: trustedCourseIdentity?.courseLabel ?? resource.distanceLabel,
+        selectedCourseDistanceKm: distanceFromLabel(trustedCourseIdentity?.courseLabel ?? null) ?? courseDistanceKm ?? undefined,
+        ...((canInheritCourseEdition || pageIsSelectedCourse) ? {
+          eventName: selectedIdentity?.eventName ?? trustedCourseIdentity?.eventName ?? null,
+          editionYear: selectedIdentity?.editionYear ?? trustedCourseIdentity?.editionYear ?? null,
+          expectedEditionYear: selectedIdentity?.editionYear ?? trustedCourseIdentity?.editionYear ?? undefined,
         } : {}),
+        ...(pageIsSelectedCourse ? { validatedCourseScope: true } : {}),
       });
       if (html.status === "course-selection-required") selectionRequired = true;
       for (const choice of html.courseChoices) courseChoices.set(`${choice.label.toLocaleLowerCase()}|${choice.distanceKm ?? ""}`, choice);
@@ -477,7 +521,7 @@ export function buildAidStationDiscoveryV1(
       alignmentIssues.push(...alignment.issues);
       const confidences = aligned.map((visit) => visit.position.confidence);
       bindingStatus = confidences.every((confidence) => confidence === "verified") ? "verified"
-        : confidences.every((confidence) => confidence === "approximate") ? "approximate"
+        : confidences.every((confidence) => confidence !== "unresolved") ? "approximate"
           : "partial";
     } else {
       const reason = linkedIdentityConflict || !identityMatches ? "course-identity-mismatch" as const : "course-binding-unverified" as const;
@@ -496,11 +540,23 @@ export function buildAidStationDiscoveryV1(
       ? "partial" as const
       : merged.completeness.status;
     const segmentationReasons: z.infer<typeof reasonSchema>[] = [];
+    const verifiedPositionMode = aligned.length >= 2 && aligned.every((visit) => visit.position.confidence === "verified");
+    const approximateKilometerPositionMode = aligned.length >= 3 &&
+      aligned[0].sequenceRole === "start" && aligned[0].position.confidence === "verified" && aligned[0].position.method === "route-endpoint" &&
+      aligned.at(-1)?.sequenceRole === "finish" && aligned.at(-1)?.position.confidence === "verified" && aligned.at(-1)?.position.method === "route-endpoint" &&
+      aligned.slice(1, -1).every((visit) => visit.sequenceRole === "intermediate-candidate" &&
+        visit.position.confidence === "approximate" && visit.position.method === "source-distance" &&
+        visit.sourcePosition?.semantics === "cumulative" && visit.sourcePosition.qualifier === "exact" &&
+        visit.sourcePosition.normalizedKm === visit.position.distanceKm &&
+        visit.roles.some((role) => ["aid-station", "water-only", "checkpoint"].includes(role))) &&
+      new Set(aligned.map((visit) => visit.position.componentIndex)).size === 1 &&
+      !alignmentIssues.some((issue) => ["route-distance-mismatch", "source-position-out-of-range", "source-distance-not-cumulative", "course-identity-mismatch"].includes(issue));
     if (optionalSourceUnavailable) segmentationReasons.push("optional-source-unavailable");
     if (merged.completeness.status !== "complete") segmentationReasons.push("source-completeness-unverified");
     if (aligned.length < 2 || aligned[0]?.sequenceRole !== "start" || aligned.at(-1)?.sequenceRole !== "finish") segmentationReasons.push("start-or-finish-unavailable");
     if (aligned.some((visit) => visit.sequenceRole === "intermediate-candidate" && !visit.roles.some((role) => ["aid-station", "water-only", "checkpoint"].includes(role)))) segmentationReasons.push("station-roles-unconfirmed");
     if (aligned.some((visit) => visit.position.confidence === "unresolved" || visit.position.distanceKm == null || visit.position.componentIndex == null)) segmentationReasons.push("visits-not-positioned");
+    if (!verifiedPositionMode && !approximateKilometerPositionMode) segmentationReasons.push("approximate-positioning-unverified");
     for (let index = 1; index < aligned.length; index++) {
       const previous = aligned[index - 1]; const current = aligned[index];
       if ((current.position.componentIndex != null && previous.position.componentIndex != null && current.position.componentIndex < previous.position.componentIndex) ||
@@ -543,7 +599,11 @@ export function buildAidStationDiscoveryV1(
       },
       ambiguities: [...new Set([...aligned.flatMap((visit) => visit.ambiguities), ...alignmentIssues])].slice(0, 32),
       reasonCodes,
-      stationSegmentation: { available: segmentationAvailable, reasonCodes: segmentationReasons.slice(0, 8) },
+      stationSegmentation: {
+        available: segmentationAvailable,
+        reasonCodes: segmentationReasons.slice(0, 8),
+        ...(segmentationAvailable ? { positionMode: verifiedPositionMode ? "verified" as const : "official-kilometer-approximate" as const } : {}),
+      },
     };
     return aidStationDiscoveryV1Schema.parse(result);
   } catch {
