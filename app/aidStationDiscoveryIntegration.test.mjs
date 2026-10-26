@@ -79,14 +79,15 @@ function obala64KmCourseHtml() {
   return `<title>Obala Ultra Trail 64 km - 2026</title>
     <h1>Obala Ultra Trail 64 km</h1><h2>Course Time Limits</h2>
     <h3>Start</h3><p>Hrastovlje</p><h3>Date</h3><p>November 7, 2026</p><h3>Finish</h3><p>Izola</p>
-    <table><tbody>
+    <div class="et_pb_code_inner"><p><table id="tablepress-17" class="tablepress tablepress-id-17"><thead>
       <tr><th>AID STATION</th>${names.map((name) => `<td>${name}</td>`).join("")}</tr>
+    </thead><tbody>
       ${propertyRow("Distance", distances.map((km) => `${km} km`))}
       ${propertyRow("Elevation gain", ["355 m", "634 m", "1001 m", "1266 m", "1476 m"])}
       ${propertyRow("Distance to next aid station", ["11 km", "12 km", "11 km", "8 km", "5 km"])}
       ${propertyRow("Elevation to next aid station", ["279 m", "367 m", "265 m", "210 m", "110 m"])}
       ${propertyRow("Cut-off time", ["3:45", "6:30", "9:00", "11:45", "13:45"])}
-    </tbody></table><h2>Information</h2>
+    </tbody></table></p></div><h2>Information</h2>
     <p>There are 5 aid stations on the course. Runners will have access to water, energy drinks and light food.</p>
     <p>At the finish, participants will receive drinks, light refreshments and a hot meal.</p>`;
 }
@@ -167,6 +168,7 @@ test("Obala-shaped 64 km course table plus same-page count binds official kilome
   assert.deepEqual(result.visits.map((visit) => visit.name), ["Hrastovlje", "Boršt", "Puče", "Šmarje", "Malija Stadium", "Strunjan", "Izola"]);
   assert.deepEqual(result.visits.map((visit) => visit.sequenceRole), ["start", ...Array(5).fill("intermediate-candidate"), "finish"]);
   assert.deepEqual(result.visits.slice(1, -1).map((visit) => visit.sourcePosition.normalizedKm), [17, 28, 40, 51, 59]);
+  assert.ok(result.visits.slice(1, -1).every((visit, index) => visit.source.locator.path === "table[0]" && visit.source.locator.column === index + 1 && visit.source.excerpt.includes(visit.name)));
   assert.ok(result.visits.slice(1, -1).every((visit) => visit.roles.includes("aid-station") && visit.position.confidence === "approximate"));
   assert.ok(result.visits.slice(1, -1).every((visit) => visit.position.method === "source-distance"));
   assert.deepEqual(result.visits.filter((visit) => visit.sequenceRole !== "intermediate-candidate").map((visit) => visit.position.method), ["route-endpoint", "route-endpoint"]);

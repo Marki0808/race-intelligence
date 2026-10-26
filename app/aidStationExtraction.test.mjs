@@ -114,6 +114,23 @@ test("transposed station tables pair each name with its same-column cumulative d
   });
 });
 
+test("nested Divi-style paragraph code modules expose a native transposed table exactly once", () => {
+  const html = `<h1>Coastal Ultra 64 km</h1><h2>Course time limits</h2>
+    <div class="et_pb_code_inner"><p><table id="tablepress-17" class="tablepress tablepress-id-17">
+      <thead><tr><th>AID STATION</th><th>Boršt</th><th>Puče</th><th>Šmarje</th><th>Malija Stadium</th><th>Strunjan</th></tr></thead>
+      <tbody><tr><th>Distance</th><td>17 km</td><td>28 km</td><td>40 km</td><td>51 km</td><td>59 km</td></tr></tbody>
+    </table></p></div>`;
+  const result = extractHtmlStationEvidence(html, sourceUrl, { selectedCourseLabel: "64 km", selectedCourseDistanceKm: 64 });
+  assert.deepEqual(result.visits.map((visit) => [visit.name, visit.sourcePosition.normalizedKm]), [
+    ["Boršt", 17], ["Puče", 28], ["Šmarje", 40], ["Malija Stadium", 51], ["Strunjan", 59],
+  ]);
+  assert.equal(result.htmlTableDiagnostics.htmlTablesEncountered, 1);
+  assert.equal(result.htmlTableDiagnostics.transposedTableCandidates, 1);
+  assert.equal(result.htmlTableDiagnostics.tableStationVisitsEmitted, 5);
+  assert.ok(result.visits.every((visit, index) => visit.source.format === "html-table" && visit.source.url === sourceUrl &&
+    visit.source.locator.path === "table[0]" && visit.source.locator.column === index + 1 && visit.source.excerpt.includes(visit.name)));
+});
+
 test("transposed station table rejects absent, ambiguous, misaligned, duplicate, and invalid distance columns", () => {
   const base = transposedAidTable();
   assert.equal(extractHtmlStationEvidence(base.replace(/<tr><th>Distance<\/th>[\s\S]*?<\/tr>/, ""), sourceUrl).visits.length, 0);

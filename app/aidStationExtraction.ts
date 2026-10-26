@@ -385,11 +385,28 @@ export function extractNextDataStationEvidence(html: string, sourceUrl: string, 
 type HtmlBlock = { kind: "table" | "list" | "prose"; node: HtmlNode; text: string; locator: string; headings: string[] };
 function collectHtmlBlocks(root: HtmlNode): HtmlBlock[] {
   const blocks: HtmlBlock[] = []; const headingStack: Array<{ level: number; text: string }> = []; let tableNo = 0; let listNo = 0; let paragraphNo = 0;
+  const addTable = (node: HtmlNode, headings: string[]): void => {
+    blocks.push({ kind: "table", node, text: nodeText(node), locator: `table[${tableNo++}]`, headings });
+  };
+  // The lightweight parser deliberately preserves source nesting instead of applying
+  // browser HTML recovery. Some CMS code modules place a native table inside a <p>.
+  // Keep that paragraph as a prose block, but also surface descendant tables exactly
+  // once so the table adapter can process their row/column structure.
+  const addNestedTables = (node: HtmlNode, headings: string[]): void => {
+    for (const child of node.children) {
+      if (typeof child === "string") continue;
+      if (child.tag === "table") {
+        addTable(child, headings);
+        continue;
+      }
+      addNestedTables(child, headings);
+    }
+  };
   const visit = (node: HtmlNode): void => {
     if (/^h[1-6]$/.test(node.tag)) { const level = Number(node.tag[1]); while (headingStack.length && headingStack.at(-1)!.level >= level) headingStack.pop(); const text = nodeText(node); if (text) headingStack.push({ level, text }); return; }
-    if (node.tag === "table") { blocks.push({ kind: "table", node, text: nodeText(node), locator: `table[${tableNo++}]`, headings: headingStack.map((h) => h.text) }); return; }
-    if (node.tag === "li") { blocks.push({ kind: "list", node, text: nodeText(node), locator: `list-item[${listNo++}]`, headings: headingStack.map((h) => h.text) }); return; }
-    if (node.tag === "p") { blocks.push({ kind: "prose", node, text: nodeText(node), locator: `paragraph[${paragraphNo++}]`, headings: headingStack.map((h) => h.text) }); return; }
+    if (node.tag === "table") { addTable(node, headingStack.map((h) => h.text)); return; }
+    if (node.tag === "li") { blocks.push({ kind: "list", node, text: nodeText(node), locator: `list-item[${listNo++}]`, headings: headingStack.map((h) => h.text) }); addNestedTables(node, headingStack.map((h) => h.text)); return; }
+    if (node.tag === "p") { blocks.push({ kind: "prose", node, text: nodeText(node), locator: `paragraph[${paragraphNo++}]`, headings: headingStack.map((h) => h.text) }); addNestedTables(node, headingStack.map((h) => h.text)); return; }
     for (const child of node.children) if (typeof child !== "string") visit(child);
   };
   visit(root); return blocks;
