@@ -66,30 +66,35 @@ test("keeps user selection for multiple editions or route variants of the same c
   assert.equal(findUniqueCourseResourcePreselection(identity, url, [current, resource("https://files.example/route-revision.gpx", "110K", "")]), null);
 });
 
-test("requires edition evidence for a candidate found on a different page and rejects edition mismatch", () => {
+test("requires explicit matching event-edition evidence for a candidate found on a different page", () => {
   const identity = identifyOfficialRaceCourse(url, html);
   assert.ok(identity);
   const linked = { ...resource("https://files.example/route_110k.gpx", "110K", ""), sourcePageUrl: "https://race.example/gpx-tracks" };
   assert.equal(findUniqueCourseResourcePreselection(identity, url, [linked]), null);
-  assert.equal(findUniqueCourseResourcePreselection(identity, url, [resource("https://files.example/route_110k_2026.gpx", "110K", "2026")]), null);
+  assert.equal(findUniqueCourseResourcePreselection(identity, url, [{
+    ...linked,
+    linkText: "2026 race edition GPX",
+  }]), null, "explicitly conflicting edition metadata on another page is rejected");
 });
 
-test("binds an unknown page edition only to the single exact-course official resource year", () => {
+test("does not infer event edition from a GPX filename year", () => {
   const identity = { ...identifyOfficialRaceCourse(url, html), editionYear: null };
   const selected = resource("https://race.example/uploads/trail_110k_2026.gpx", "110K", "2026");
   const resolved = findUniqueCourseResourcePreselection(identity, url, [selected]);
-  assert.equal(resolved?.courseIdentity.editionYear, 2026);
-  assert.ok(resolved?.courseIdentity.evidence.some((item) => item.includes("edition 2026")));
+  assert.equal(resolved?.courseIdentity.editionYear, null);
+  assert.equal(resolved?.courseIdentity.evidence.some((item) => item.includes("edition 2026")), false);
   assert.equal(findUniqueCourseResourcePreselection(identity, url, [
     selected, resource("https://race.example/uploads/trail_110k_2025.gpx", "110K", "2025"),
   ]), null, "multiple editions still require explicit user selection");
 });
 
-test("uses an explicitly labeled official course date to bind the selected GPX edition", () => {
+test("extracts an explicitly labeled date across layout wrappers and keeps event edition separate from GPX version", () => {
   const courseUrl = "https://race.example/en/distances/coastal-ultra-64-km/";
   const courseHtml = `<title>Coastal Ultra Trail 64 km</title>
     <h1>Coastal Ultra Trail 64 km</h1>
-    <section><h4>Date</h4><p>November 7, 2026</p></section>`;
+    <section><div class="field-label"><h4><span>Date</span>:</h4></div>
+      <div class="field-value"><div class="description"><p>November 7, 2026</p></div></div>
+      <h4>Distance</h4><p>64 km</p></section>`;
   const identity = identifyOfficialRaceCourse(courseUrl, courseHtml);
   assert.equal(identity?.editionYear, 2026);
   assert.ok(identity?.evidence.some((item) => item.includes("labeled official course date")));
@@ -102,10 +107,20 @@ test("uses an explicitly labeled official course date to bind the selected GPX e
     linkText: "GPX file download",
   };
   assert.equal(findUniqueCourseResourcePreselection(identity, courseUrl, [selected])?.courseIdentity.editionYear, 2026);
-  assert.equal(findUniqueCourseResourcePreselection(identity, courseUrl, [{
+  const olderRouteVersion = findUniqueCourseResourcePreselection(identity, courseUrl, [{
     ...selected,
     url: "https://race.example/uploads/coastal-ultra-2025-64-km.gpx",
-  }]), null, "the official course date must agree with resource year evidence");
+  }]);
+  assert.equal(olderRouteVersion?.courseIdentity.editionYear, 2026, "the selected course page may reuse a GPX route version from an earlier year");
+  assert.ok(olderRouteVersion?.evidence.includes("direct link from selected official course page"));
+  assert.equal(olderRouteVersion?.evidence.some((item) => item.includes("2025")), false, "filename year is not promoted to event-edition evidence");
+
+  assert.equal(findUniqueCourseResourcePreselection(identity, courseUrl, [{
+    ...selected,
+    linkText: "GPX for race edition 2025",
+  }]), null, "explicitly conflicting event-edition evidence remains rejected");
+  assert.equal(findUniqueCourseResourcePreselection(identity, courseUrl, [{ ...selected, distanceLabel: "65 km" }]), null, "course distance mismatch remains rejected");
+  assert.equal(findUniqueCourseResourcePreselection(identity, courseUrl, [selected, { ...selected, url: "https://race.example/uploads/coastal-ultra-revision-64-km.gpx" }]), null, "multiple same-course resources remain a user choice");
 });
 
 test("conflicting explicit course-date and page-edition evidence fails closed", () => {

@@ -88,9 +88,16 @@ function explicitHtmlDateYears(html: string): number[] {
     const year = yearFromExplicitDateValue(match[2]);
     if (year != null) years.add(year);
   }
-  const labeledDate = /<(h[1-6]|dt|th|strong|b)\b[^>]*>\s*(?:event\s+)?date\s*<\/\1\s*>\s*<(p|dd|td|div|span)\b[^>]*>([\s\S]{0,240}?)<\/\2\s*>/gi;
-  for (const match of html.matchAll(labeledDate)) {
-    const year = yearFromExplicitDateValue(match[3]);
+  // Course pages often put the label and value in separate layout wrappers
+  // (for example, a heading in one Divi column and a paragraph in another).
+  // Read only a bounded field region and stop at the next semantic label so a
+  // nearby schedule or cutoff date cannot become the event edition.
+  const labels = [...html.matchAll(/<(h[1-6]|dt|th|strong|b)\b[^>]*>([\s\S]{0,180}?)<\/\1\s*>/gi)];
+  for (const match of labels.filter((item) => /^(?:event\s+)?date\s*:?$/i.test(textContent(item[2])))) {
+    const valueStart = (match.index ?? 0) + match[0].length;
+    const nextLabel = labels.find((candidate) => (candidate.index ?? 0) > (match.index ?? 0));
+    const valueEnd = Math.min(valueStart + 900, nextLabel?.index ?? html.length);
+    const year = yearFromExplicitDateValue(html.slice(valueStart, valueEnd));
     if (year != null) years.add(year);
   }
   return [...years];
@@ -176,11 +183,16 @@ export function identifyOfficialRaceCourse(inputUrl: string, html: string): Offi
   };
 }
 
-function editionYears(resource: Resource): number[] {
-  const evidence = [resource.url, resource.linkText, resource.distanceLabel ?? "", ...resource.supportingEvidence].join(" ");
-  // Filenames commonly delimit years with underscores, which are word characters
-  // and therefore do not satisfy \b on either side.
-  return [...new Set([...evidence.matchAll(/(?:^|[^\d])(20\d{2})(?!\d)/g)].map((match) => Number(match[1])))];
+function explicitEditionYears(resource: Resource): number[] {
+  // A file/path year describes a route artifact/version, not necessarily the
+  // event edition. Only explicitly labeled edition/event metadata can conflict
+  // with the event date established by the selected course page.
+  const evidence = [resource.linkText, ...resource.supportingEvidence]
+    .filter((item) => !/^filename:/i.test(item))
+    .join(" ");
+  const years = [...evidence.matchAll(/\b(?:edition|event|race)\s*(?:year)?\s*[:#-]?\s*(20\d{2})\b|\b(20\d{2})\s+(?:edition|event|race)\b/gi)]
+    .map((match) => Number(match[1] ?? match[2]));
+  return [...new Set(years)];
 }
 
 /** Preselects only one exact course-labeled resource with no unlabeled variant or edition conflict. */
@@ -199,28 +211,25 @@ export function findUniqueCourseResourcePreselection(
   const targetUrl = new URL(rootUrl);
   const sourceUrl = new URL(selected.sourcePageUrl);
   if (sourceUrl.origin !== targetUrl.origin) return null;
-  const candidateYears = editionYears(selected);
+  const candidateYears = explicitEditionYears(selected);
   if (candidateYears.length > 1) return null;
   const candidateYear = candidateYears[0] ?? null;
+  const linkedFromExactCoursePage = sourceUrl.href === targetUrl.href;
   if (identity.editionYear != null) {
     if (candidateYear != null && candidateYear !== identity.editionYear) return null;
-    // A resource found on another page needs its own explicit edition evidence.
-    if (candidateYear == null && sourceUrl.href !== targetUrl.href) return null;
-  } else if (sourceUrl.href !== targetUrl.href) {
+    // A unique exact-course resource directly linked by the selected official
+    // course page remains bound even when its filename reflects an older route
+    // revision. A resource found elsewhere needs explicit matching edition
+    // metadata; a filename year alone cannot establish the event edition.
+    if (!linkedFromExactCoursePage && candidateYear !== identity.editionYear) return null;
+  } else if (!linkedFromExactCoursePage) {
     return null;
   }
   const resourceType = selected.url.toLowerCase().split(/[?#]/, 1)[0].endsWith(".zip") ? "zip-archive" : "gpx";
-  const boundIdentity = identity.editionYear == null && candidateYear != null
-    ? {
-        ...identity,
-        editionYear: candidateYear,
-        evidence: [...identity.evidence, `selected official resource identifies edition ${candidateYear}`].slice(0, 8),
-      }
-    : identity;
   return {
-    courseIdentity: boundIdentity,
+    courseIdentity: identity,
     resourceUrl: selected.url,
     resourceType,
-    evidence: ["exact course-label match", ...(identity.editionYear != null && candidateYear === identity.editionYear ? [`edition ${identity.editionYear} match`] : []), "single matching official resource"],
+    evidence: ["exact course-label match", ...(candidateYear != null ? [`explicit edition ${candidateYear} match`] : []), ...(linkedFromExactCoursePage ? ["direct link from selected official course page"] : []), "single matching official resource"],
   };
 }

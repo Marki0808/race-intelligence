@@ -78,7 +78,7 @@ function obala64KmCourseHtml() {
   const propertyRow = (label, values) => `<tr><th>${label}</th>${values.map((value) => `<td>${value}</td>`).join("")}</tr>`;
   return `<title>Obala Ultra Trail 64 km - 2026</title>
     <h1>Obala Ultra Trail 64 km</h1><h2>Course Time Limits</h2>
-    <h3>Start</h3><p>Hrastovlje</p><h3>Date</h3><p>November 7, 2026</p><h3>Finish</h3><p>Izola</p>
+    <h3>Start</h3><p>Hrastovlje</p><div class="field-label"><h4><span>Date</span>:</h4></div><div class="field-value"><div><p>November 7, 2026</p></div></div><h3>Finish</h3><p>Izola</p>
     <div class="et_pb_code_inner"><p><table id="tablepress-17" class="tablepress tablepress-id-17"><thead>
       <tr><th>AID STATION</th>${names.map((name) => `<td>${name}</td>`).join("")}</tr>
     </thead><tbody>
@@ -190,6 +190,31 @@ test("Obala-shaped 64 km course table plus same-page count binds official kilome
   assert.equal(sections.sections.length, 6);
   assert.deepEqual(sections.labels.get(`0:${sections.sections[0].id}`), { from: "Hrastovlje", to: "Boršt" });
   assert.deepEqual(sections.labels.get(`0:${sections.sections.at(-1).id}`), { from: "Strunjan", to: "Izola" });
+});
+
+test("Race Mode binds the selected course date to a unique official GPX link despite an older route filename year", async () => {
+  const sourceUrl = "https://race.example/en/distances/coastal-ultra-trail-64-km/";
+  const resourceUrl = "https://race.example/wp-content/uploads/coastal-ultra-trail-2025-64-km.gpx";
+  const sourceHtml = obala64KmCourseHtml()
+    .replace("<title>Obala Ultra Trail 64 km - 2026</title>", "<title>Coastal Ultra Trail 64 km</title>")
+    .replace("<h1>Obala Ultra Trail 64 km</h1>", "<h1>Coastal Ultra Trail 64 km</h1>");
+  const htmlWithSelectedResource = `${sourceHtml}<a href="/wp-content/uploads/coastal-ultra-trail-2025-64-km.gpx">GPX file download</a>`;
+  const discovery = makeDiscovery(new Map([[sourceUrl, response(htmlWithSelectedResource)]]));
+  const flow = createOfficialGpxDownloadFlow(discovery, async (url) => {
+    assert.equal(url, resourceUrl);
+    return { status: "success", text: obala64KmGpx() };
+  });
+
+  const result = await flow(sourceUrl, resourceUrl);
+  assert.equal(result.status, "success");
+  assert.equal(result.aidStationDiscoveryV1.selectedContext.eventName, "Coastal Ultra Trail 64 km");
+  assert.equal(result.aidStationDiscoveryV1.selectedContext.editionYear, 2026);
+  assert.equal(result.aidStationDiscoveryV1.selectedContext.courseDistanceKm, 64);
+  assert.equal(result.aidStationDiscoveryV1.gpxProvenance.bindingStatus, "approximate");
+  assert.deepEqual(result.aidStationDiscoveryV1.visits.slice(1, -1).map((visit) => visit.sourcePosition.normalizedKm), [17, 28, 40, 51, 59]);
+  assert.equal(result.aidStationDiscoveryV1.completeness.status, "complete");
+  assert.equal(result.aidStationDiscoveryV1.completeness.declaredCount, 5);
+  assert.equal(result.aidStationDiscoveryV1.stationSegmentation.available, true, JSON.stringify(result.aidStationDiscoveryV1.stationSegmentation));
 });
 
 test("course-scoped FAQ start schedules are not extracted as aid stations and cannot replace selected course identity", () => {
