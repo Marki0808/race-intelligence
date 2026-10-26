@@ -1,5 +1,6 @@
 import { parseGpxText } from "./gpxAnalysis.ts";
 import { buildAidStationDiscoveryV1, type AidStationDiscoveryV1, type CapturedStationPage } from "./aidStationDiscovery.ts";
+import type { HtmlTableParserDiagnostics } from "./aidStationExtraction.ts";
 import { inspectGpxArchive, OFFICIAL_GPX_ARCHIVE_LIMITS, type ExtractedGpxFile } from "./officialGpxArchive.ts";
 import {
   createOfficialGpxDiscovery,
@@ -23,6 +24,7 @@ export type OfficialGpxDownloadResult =
   | { status: "archive-inspection-success"; archiveDigest: string; files: ExtractedGpxFile[] }
   | { status: "unsafe-destination" | "invalid-url" | "candidate-not-found" | "archive-changed" | "invalid-gpx" | "invalid-archive" | "unsafe-archive" | "archive-too-large" | "no-gpx-in-archive" }
   | { status: "provider-failure"; category: "timeout" | "unavailable" | "invalid-response" | "busy"; reason?: "response-too-large" | "html-response" | "unsupported-response" };
+export type AidStationParserDiagnosticHandler = (diagnostics: HtmlTableParserDiagnostics) => void;
 
 type SafeFetcher = (
   input: string,
@@ -135,7 +137,7 @@ export function createOfficialGpxDownloadFlow(
   download: (gpxUrl: string) => Promise<OfficialGpxDownloadResult> = createOfficialGpxDownloader(),
   downloadArchive: (archiveUrl: string) => Promise<OfficialGpxDownloadResult> = createOfficialGpxArchiveDownloader(),
 ) {
-  return async function downloadDiscoveredGpx(sourcePageUrl: string, candidateUrl: string, resourceType: "gpx" | "zip" | "zip-entry" = "gpx", archiveDigest?: string, entryId?: string): Promise<OfficialGpxDownloadResult> {
+  return async function downloadDiscoveredGpx(sourcePageUrl: string, candidateUrl: string, resourceType: "gpx" | "zip" | "zip-entry" = "gpx", archiveDigest?: string, entryId?: string, onAidStationParserDiagnostic?: AidStationParserDiagnosticHandler): Promise<OfficialGpxDownloadResult> {
     if (sourcePageUrl.length > 2_048 || candidateUrl.length > 2_048 || !validateOfficialPageUrl(sourcePageUrl) || !validateOfficialPageUrl(candidateUrl)) {
       return { status: "invalid-url" };
     }
@@ -176,7 +178,7 @@ export function createOfficialGpxDownloadFlow(
           ...(selectedCourseIdentity ? { courseIdentity: selectedCourseIdentity } : {}),
           entryId,
           archiveDigest,
-        }, selectedFile.text, stationSourceUnavailable) } : {}),
+        }, selectedFile.text, stationSourceUnavailable, onAidStationParserDiagnostic) } : {}),
       };
     }
     if (!result.candidates.some((candidate) => candidate.gpxUrl === candidateUrl)) {
@@ -194,7 +196,7 @@ export function createOfficialGpxDownloadFlow(
         resourceUrl: candidate.gpxUrl,
         distanceLabel: candidate.distanceLabel,
         ...(selectedCourseIdentity ? { courseIdentity: selectedCourseIdentity } : {}),
-      }, downloaded.text, stationSourceUnavailable) } : {}),
+      }, downloaded.text, stationSourceUnavailable, onAidStationParserDiagnostic) } : {}),
     };
   };
 }

@@ -75,6 +75,44 @@ export const stationVisitEvidenceV1Schema = z.object({
 export type StationVisitEvidenceV1 = z.infer<typeof stationVisitEvidenceV1Schema>;
 export type StationRole = z.infer<typeof stationRoleSchema>;
 export type StationExtractionIssue = "malformed-source" | "course-selection-required" | "course-identity-conflict" | "selected-gpx-mismatch" | "no-station-evidence" | "incomplete-source" | "out-of-order-visits" | "duplicate-source-position" | "source-distance-discrepancy" | "conflicting-counts";
+export const HTML_TABLE_REJECTION_REASONS = [
+  "row-count-out-of-range", "column-count-out-of-range", "ragged-columns",
+  "station-name-row-missing", "station-name-row-ambiguous", "distance-row-missing",
+  "distance-row-ambiguous", "name-distance-row-overlap", "empty-column",
+  "post-finish-entry", "invalid-distance", "position-out-of-course",
+  "duplicate-distance", "invalid-station-name",
+] as const;
+export type HtmlTableRejectionReason = typeof HTML_TABLE_REJECTION_REASONS[number];
+export type HtmlTableParserDiagnostics = {
+  htmlTablesEncountered: number;
+  transposedTableCandidates: number;
+  stationNameRowsRecognized: number;
+  distanceRowsRecognized: number;
+  candidatesRejected: number;
+  rejectionCounts: Record<HtmlTableRejectionReason, number>;
+  tableStationVisitsEmitted: number;
+};
+const MAX_DIAGNOSTIC_COUNT = 1_000;
+export function emptyHtmlTableParserDiagnostics(): HtmlTableParserDiagnostics {
+  return {
+    htmlTablesEncountered: 0, transposedTableCandidates: 0, stationNameRowsRecognized: 0,
+    distanceRowsRecognized: 0, candidatesRejected: 0,
+    rejectionCounts: Object.fromEntries(HTML_TABLE_REJECTION_REASONS.map((reason) => [reason, 0])) as Record<HtmlTableRejectionReason, number>,
+    tableStationVisitsEmitted: 0,
+  };
+}
+function incrementDiagnostic(value: number): number { return Math.min(MAX_DIAGNOSTIC_COUNT, value + 1); }
+export function mergeHtmlTableParserDiagnostics(target: HtmlTableParserDiagnostics, source: HtmlTableParserDiagnostics): void {
+  target.htmlTablesEncountered = Math.min(MAX_DIAGNOSTIC_COUNT, target.htmlTablesEncountered + source.htmlTablesEncountered);
+  target.transposedTableCandidates = Math.min(MAX_DIAGNOSTIC_COUNT, target.transposedTableCandidates + source.transposedTableCandidates);
+  target.stationNameRowsRecognized = Math.min(MAX_DIAGNOSTIC_COUNT, target.stationNameRowsRecognized + source.stationNameRowsRecognized);
+  target.distanceRowsRecognized = Math.min(MAX_DIAGNOSTIC_COUNT, target.distanceRowsRecognized + source.distanceRowsRecognized);
+  target.candidatesRejected = Math.min(MAX_DIAGNOSTIC_COUNT, target.candidatesRejected + source.candidatesRejected);
+  target.tableStationVisitsEmitted = Math.min(MAX_DIAGNOSTIC_COUNT, target.tableStationVisitsEmitted + source.tableStationVisitsEmitted);
+  for (const reason of HTML_TABLE_REJECTION_REASONS) {
+    target.rejectionCounts[reason] = Math.min(MAX_DIAGNOSTIC_COUNT, target.rejectionCounts[reason] + source.rejectionCounts[reason]);
+  }
+}
 export type StationExtractionResult = {
   status: "success" | "course-selection-required" | "rejected" | "no-evidence";
   format: "next-data" | "html";
@@ -83,6 +121,8 @@ export type StationExtractionResult = {
   completeness: { status: "unknown" | "complete" | "partial" | "conflicting"; declaredCount: number | null; extractedCount: number; basis?: "explicit-count" | "dedicated-course-list" | "course-points-corroborated" };
   countEvidence?: StationCountEvidence;
   issues: StationExtractionIssue[];
+  /** Internal parser diagnostics; never included in AidStationDiscoveryV1 API output. */
+  htmlTableDiagnostics: HtmlTableParserDiagnostics;
 };
 export type StationCountEvidence = {
   declaredCount: number;
@@ -107,7 +147,7 @@ const MAX_VISITS = 500;
 const MAX_TREE_NODES = 50_000;
 const VALID_URL = /^https:\/\//i;
 const emptyResult = (format: StationExtractionResult["format"], status: StationExtractionResult["status"], issues: StationExtractionIssue[] = []): StationExtractionResult => ({
-  status, format, visits: [], courseChoices: [], completeness: { status: issues.includes("course-identity-conflict") || issues.includes("selected-gpx-mismatch") ? "conflicting" : issues.includes("incomplete-source") ? "partial" : "unknown", declaredCount: null, extractedCount: 0 }, issues,
+  status, format, visits: [], courseChoices: [], completeness: { status: issues.includes("course-identity-conflict") || issues.includes("selected-gpx-mismatch") ? "conflicting" : issues.includes("incomplete-source") ? "partial" : "unknown", declaredCount: null, extractedCount: 0 }, issues, htmlTableDiagnostics: emptyHtmlTableParserDiagnostics(),
 });
 
 function validSourceUrl(url: string): boolean { return url.length <= 2_000 && VALID_URL.test(url) && (() => { try { return new URL(url).username === "" && new URL(url).password === ""; } catch { return false; } })(); }
@@ -145,7 +185,7 @@ function result(format: StationExtractionResult["format"], visits: StationVisitE
     }
     previous = { index: i, km: pos.normalizedKm };
   }
-  return { status: ordered.length ? "success" : issues.includes("course-selection-required") ? "course-selection-required" : issues.includes("course-identity-conflict") || issues.includes("selected-gpx-mismatch") ? "rejected" : "no-evidence", format, visits: ordered, courseChoices: choices, completeness: completeness ?? { status: issues.includes("course-identity-conflict") || issues.includes("selected-gpx-mismatch") ? "conflicting" : issues.includes("incomplete-source") || issues.includes("out-of-order-visits") ? "partial" : "unknown", declaredCount: null, extractedCount: ordered.length }, issues };
+  return { status: ordered.length ? "success" : issues.includes("course-selection-required") ? "course-selection-required" : issues.includes("course-identity-conflict") || issues.includes("selected-gpx-mismatch") ? "rejected" : "no-evidence", format, visits: ordered, courseChoices: choices, completeness: completeness ?? { status: issues.includes("course-identity-conflict") || issues.includes("selected-gpx-mismatch") ? "conflicting" : issues.includes("incomplete-source") || issues.includes("out-of-order-visits") ? "partial" : "unknown", declaredCount: null, extractedCount: ordered.length }, issues, htmlTableDiagnostics: emptyHtmlTableParserDiagnostics() };
 }
 
 function rolesFromExplicitText(text: string): StationRole[] {
@@ -382,12 +422,22 @@ function tableRows(table: HtmlNode): string[][] {
 function normalizedTableRowLabel(value: string): string {
   return value.toLocaleLowerCase().replace(/[\s:：]+/g, " ").replace(/[()\[\]]/g, "").trim();
 }
-function extractTransposedHtmlTable(block: HtmlBlock, sourceUrl: string, options: StationExtractionOptions, eventName: string | null, year: number | null, rows: string[][]): StationVisitEvidenceV1[] {
-  if (rows.length < 2 || rows.length > 40) return [];
+function extractTransposedHtmlTable(block: HtmlBlock, sourceUrl: string, options: StationExtractionOptions, eventName: string | null, year: number | null, rows: string[][], diagnostics: HtmlTableParserDiagnostics): StationVisitEvidenceV1[] {
+  const headingText = block.headings.join(" ");
+  const hasStationContext = /\b(?:aid stations?|aid points?|stations?|water[- ]only points?|water stations?|checkpoints?|control points?|timing points?|refreshment points?)\b/i.test(headingText) ||
+    rows.some((row) => /^(?:aid stations?|aid points?|stations?|station names?|water stations?|water[- ]only points?|checkpoints?|control points?|timing points?)$/i.test(normalizedTableRowLabel(row[0] ?? "")));
+  if (!hasStationContext) return [];
+  diagnostics.transposedTableCandidates = incrementDiagnostic(diagnostics.transposedTableCandidates);
+  const reject = (reason: HtmlTableRejectionReason): StationVisitEvidenceV1[] => {
+    diagnostics.candidatesRejected = incrementDiagnostic(diagnostics.candidatesRejected);
+    diagnostics.rejectionCounts[reason] = incrementDiagnostic(diagnostics.rejectionCounts[reason]);
+    return [];
+  };
+  if (rows.length < 2 || rows.length > 40) return reject("row-count-out-of-range");
   const width = rows[0]?.length ?? 0;
   // Column alignment is the evidence: a ragged table cannot safely pair names and distances.
-  if (width < 2 || width > MAX_VISITS + 1 || rows.some((row) => row.length !== width)) return [];
-  const headingText = block.headings.join(" ");
+  if (width < 2 || width > MAX_VISITS + 1) return reject("column-count-out-of-range");
+  if (rows.some((row) => row.length !== width)) return reject("ragged-columns");
   const stationNameRows = rows.flatMap((row, index) => {
     const label = normalizedTableRowLabel(row[0] ?? "");
     const aidRow = /^(?:aid stations?|aid points?)$/.test(label);
@@ -398,7 +448,9 @@ function extractTransposedHtmlTable(block: HtmlBlock, sourceUrl: string, options
       ? [{ index, roles: aidRow || genericStationRow ? ["aid-station" as const] : waterRow ? ["water-only" as const] : ["checkpoint" as const] }]
       : [];
   });
-  if (stationNameRows.length !== 1) return [];
+  diagnostics.stationNameRowsRecognized = Math.min(MAX_DIAGNOSTIC_COUNT, diagnostics.stationNameRowsRecognized + stationNameRows.length);
+  if (stationNameRows.length === 0) return reject("station-name-row-missing");
+  if (stationNameRows.length !== 1) return reject("station-name-row-ambiguous");
   const distanceRows = rows.flatMap((row, index) => {
     const label = normalizedTableRowLabel(row[0] ?? "");
     if (/\b(?:to next|next|between|interval|remaining)\b/.test(label)) return [];
@@ -406,10 +458,12 @@ function extractTransposedHtmlTable(block: HtmlBlock, sourceUrl: string, options
       ? [{ index, label }]
       : [];
   });
-  if (distanceRows.length !== 1) return [];
+  diagnostics.distanceRowsRecognized = Math.min(MAX_DIAGNOSTIC_COUNT, diagnostics.distanceRowsRecognized + distanceRows.length);
+  if (distanceRows.length === 0) return reject("distance-row-missing");
+  if (distanceRows.length !== 1) return reject("distance-row-ambiguous");
   const nameRow = stationNameRows[0];
   const distanceRow = distanceRows[0];
-  if (nameRow.index === distanceRow.index) return [];
+  if (nameRow.index === distanceRow.index) return reject("name-distance-row-overlap");
   const contextCourse = courseFromHeadings(block.headings);
   const courseLabel = contextCourse.label ?? options.selectedCourseLabel ?? options.expectedCourseLabel ?? null;
   const courseKm = contextCourse.km ?? options.selectedCourseDistanceKm ?? null;
@@ -420,25 +474,26 @@ function extractTransposedHtmlTable(block: HtmlBlock, sourceUrl: string, options
   for (let column = 1; column < width; column++) {
     const rawName = cleanText(rows[nameRow.index][column], 200);
     const rawDistance = cleanText(rows[distanceRow.index][column], 100);
-    if (!rawName || !rawDistance) return [];
+    if (!rawName || !rawDistance) return reject("empty-column");
     const nameRoles = rolesFromExplicitText(rawName);
     const isStart = nameRoles.includes("start") || /^start(?:ing)?(?:\s|$)/i.test(rawName);
     const isFinish = nameRoles.includes("finish") || /^finish(?:\s|$)/i.test(rawName);
     const postFinish = /\b(?:after|post)[- ]finish\b|\bfinish(?:-line)? refreshments\b/i.test(rawName);
-    if (postFinish) return [];
+    if (postFinish) return reject("post-finish-entry");
     const distanceText = /\b(?:km|kilomet(?:er|re)s?|mi|miles?|m)\b/i.test(rawDistance)
       ? rawDistance
       : inferredUnit ? `${rawDistance} ${inferredUnit}` : rawDistance;
     const position = extractDistance(distanceText, "cumulative");
-    if (!position || position.qualifier === "range" || position.qualifier === "at-least") return [];
+    if (!position || position.qualifier === "range" || position.qualifier === "at-least") return reject("invalid-distance");
     const km = position.normalizedKm;
-    if ((!isStart && km <= 0) || (courseKm != null && (km > courseKm + 0.001 || (!isFinish && km >= courseKm - 0.001))) || [...seenPositions].some((prior) => Math.abs(prior - km) <= 0.001)) return [];
+    if ((!isStart && km <= 0) || (courseKm != null && (km > courseKm + 0.001 || (!isFinish && km >= courseKm - 0.001)))) return reject("position-out-of-course");
+    if ([...seenPositions].some((prior) => Math.abs(prior - km) <= 0.001)) return reject("duplicate-distance");
     seenPositions.add(km);
     // An aid-station table may include explicit start/finish columns; never label those as aid visits.
     const roles = isStart ? ["start" as const] : isFinish ? ["finish" as const] : [...new Set([...nameRow.roles, ...nameRoles])];
     const excerpt = `${rows[nameRow.index][0]}: ${rawName} | ${distanceLabel}: ${rawDistance}`.slice(0, 400);
     const name = extractName(rawName) ?? (isStart || isFinish ? rawName : null);
-    if (!name) return [];
+    if (!name) return reject("invalid-station-name");
     visits.push(buildVisit({
       visitId: `${sourceUrl}#${block.locator}-column-${column}`,
       source: { url: sourceUrl, format: "html-table", locator: { kind: "html-table-column", path: block.locator, row: nameRow.index, column }, excerpt },
@@ -451,7 +506,7 @@ function extractTransposedHtmlTable(block: HtmlBlock, sourceUrl: string, options
   }
   return visits;
 }
-function extractHtmlTable(block: HtmlBlock, sourceUrl: string, options: StationExtractionOptions, eventName: string | null, year: number | null): StationVisitEvidenceV1[] {
+function extractHtmlTable(block: HtmlBlock, sourceUrl: string, options: StationExtractionOptions, eventName: string | null, year: number | null, diagnostics: HtmlTableParserDiagnostics): StationVisitEvidenceV1[] {
   const rows = tableRows(block.node); if (rows.length < 2) return [];
   const header = rows[0].map((s) => s.toLocaleLowerCase());
   const nameIdx = header.findIndex((h) => /\b(name|location|station|aid point|place)\b/.test(h));
@@ -461,7 +516,7 @@ function extractHtmlTable(block: HtmlBlock, sourceUrl: string, options: StationE
   const courseLabel = contextCourse.label ?? options.selectedCourseLabel ?? options.expectedCourseLabel ?? null;
   const courseKm = contextCourse.km ?? options.selectedCourseDistanceKm ?? null;
   if (nameIdx < 0 || distanceIdx < 0 || !/(?:station|aid|checkpoint|water)/i.test(`${block.headings.join(" ")} ${header.join(" ")}`)) {
-    return extractTransposedHtmlTable(block, sourceUrl, options, eventName, year, rows);
+    return extractTransposedHtmlTable(block, sourceUrl, options, eventName, year, rows, diagnostics);
   }
   const hDistance = header[distanceIdx]; const semantics: "cumulative" | "interval" | "unknown" = /\b(from start|course km|mile marker|cumulative|distance along)\b/.test(hDistance) || /^(?:km|kilomet(?:er|re)s?|mile|miles|mileage)$/i.test(hDistance.trim()) ? "cumulative" : /\b(next|interval|between|to next)\b/.test(hDistance) ? "interval" : "unknown";
   return rows.slice(1).flatMap((row, rowIndex) => {
@@ -692,9 +747,15 @@ function extractHtmlStationEvidenceInternal(html: string, sourceUrl: string, opt
   const year = effectiveEdition(options, meta.year ?? pageIdentity.editionYear); if (year === -1) return emptyResult("html", "rejected", ["course-identity-conflict"]);
   if (options.expectedEventName && eventName && options.expectedEventName.toLocaleLowerCase() !== eventName.toLocaleLowerCase()) return emptyResult("html", "rejected", ["course-identity-conflict"]);
   const blocks = collectHtmlBlocks(root); const visits: StationVisitEvidenceV1[] = [];
+  const htmlTableDiagnostics = emptyHtmlTableParserDiagnostics();
   const countEvidenceByBlock = blocks.map((block) => stationCountFromBlock(block, sourceUrl, options, eventName, year)).filter((item): item is StationCountEvidence => item !== null);
   blocks.forEach((block, i) => {
-    if (block.kind === "table") visits.push(...extractHtmlTable(block, sourceUrl, options, eventName, year));
+    if (block.kind === "table") {
+      htmlTableDiagnostics.htmlTablesEncountered = incrementDiagnostic(htmlTableDiagnostics.htmlTablesEncountered);
+      const tableVisits = extractHtmlTable(block, sourceUrl, options, eventName, year, htmlTableDiagnostics);
+      htmlTableDiagnostics.tableStationVisitsEmitted = Math.min(MAX_DIAGNOSTIC_COUNT, htmlTableDiagnostics.tableStationVisitsEmitted + tableVisits.length);
+      visits.push(...tableVisits);
+    }
     else {
       visits.push(...extractHtmlListOrProse(block, sourceUrl, options, eventName, year, i, selectedGpxUrl));
       visits.push(...namedRoleEvidenceFromBlock(block, sourceUrl, options, eventName, year, i, selectedGpxUrl));
@@ -775,7 +836,7 @@ function extractHtmlStationEvidenceInternal(html: string, sourceUrl: string, opt
     ...(hasOrderingConflict ? ["out-of-order-visits" as const] : []),
     ...(countsConflict ? ["conflicting-counts" as const] : []),
   ], completeness);
-  return { ...extraction, ...(countEvidence && !countsConflict ? { countEvidence } : {}) };
+  return { ...extraction, htmlTableDiagnostics, ...(countEvidence && !countsConflict ? { countEvidence } : {}) };
 }
 export function extractHtmlStationEvidence(html: string, sourceUrl: string, options: StationExtractionOptions = {}): StationExtractionResult {
   try { return extractHtmlStationEvidenceInternal(html, sourceUrl, options); } catch { return emptyResult("html", "rejected", ["malformed-source"]); }

@@ -75,13 +75,20 @@ function htmlStationTable(year = 2027) {
 function obala64KmCourseHtml() {
   const names = ["Boršt", "Puče", "Šmarje", "Malija Stadium", "Strunjan"];
   const distances = [17, 28, 40, 51, 59];
+  const propertyRow = (label, values) => `<tr><th>${label}</th>${values.map((value) => `<td>${value}</td>`).join("")}</tr>`;
   return `<title>Obala Ultra Trail 64 km - 2026</title>
-    <h1>Obala Ultra Trail 64 km</h1><h2>64 km course</h2>
-    <h3>Start</h3><p>Hrastovlje</p><h3>Finish</h3><p>Izola</p>
-    <h3>Aid stations</h3><table><tbody>
-      <tr><th>Aid Station</th>${names.map((name) => `<td>${name}</td>`).join("")}</tr>
-      <tr><th>Distance</th>${distances.map((km) => `<td>${km} km</td>`).join("")}</tr>
-    </tbody></table><p>There are five aid stations on this course.</p>`;
+    <h1>Obala Ultra Trail 64 km</h1><h2>Course Time Limits</h2>
+    <h3>Start</h3><p>Hrastovlje</p><h3>Date</h3><p>November 7, 2026</p><h3>Finish</h3><p>Izola</p>
+    <table><tbody>
+      <tr><th>AID STATION</th>${names.map((name) => `<td>${name}</td>`).join("")}</tr>
+      ${propertyRow("Distance", distances.map((km) => `${km} km`))}
+      ${propertyRow("Elevation gain", ["355 m", "634 m", "1001 m", "1266 m", "1476 m"])}
+      ${propertyRow("Distance to next aid station", ["11 km", "12 km", "11 km", "8 km", "5 km"])}
+      ${propertyRow("Elevation to next aid station", ["279 m", "367 m", "265 m", "210 m", "110 m"])}
+      ${propertyRow("Cut-off time", ["3:45", "6:30", "9:00", "11:45", "13:45"])}
+    </tbody></table><h2>Information</h2>
+    <p>There are 5 aid stations on the course. Runners will have access to water, energy drinks and light food.</p>
+    <p>At the finish, participants will receive drinks, light refreshments and a hot meal.</p>`;
 }
 
 function obala64KmGpx() {
@@ -430,6 +437,52 @@ test("download API transfers the versioned station result beside the unchanged G
   const form = await response.formData();
   assert.equal(await form.get("gpxText").text(), validGpx);
   assert.deepEqual(JSON.parse(form.get("aidStationDiscoveryV1")), stationEvidence);
+});
+
+test("successful GPX download reports incomplete transposed-table parsing through the private diagnostic callback", async () => {
+  const courseHtml = `<h1>Coastal Ultra 64 km</h1><h2>64 km course</h2><h3>Aid stations</h3>
+    <table><tr><th>AID STATION</th><td>Private Station Name</td></tr><tr><th>Cut-off time</th><td>4 hours</td></tr></table>
+    <a href="/course.gpx">Download GPX</a>`;
+  const flow = createOfficialGpxDownloadFlow(makeDiscovery(new Map([[rootUrl, response(courseHtml)]])), async () => ({ status: "success", text: validGpx }));
+  const diagnostics = [];
+  const result = await flow(rootUrl, gpxUrl, "gpx", undefined, undefined, (entry) => diagnostics.push(entry));
+  assert.equal(result.status, "success", "station parsing must not block a valid GPX download");
+  assert.equal(result.aidStationDiscoveryV1.stationSegmentation.available, false);
+  assert.equal(result.aidStationDiscoveryV1.visits.length, 0);
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0].htmlTablesEncountered, 1);
+  assert.equal(diagnostics[0].transposedTableCandidates, 1);
+  assert.equal(diagnostics[0].stationNameRowsRecognized, 1);
+  assert.equal(diagnostics[0].distanceRowsRecognized, 0);
+  assert.equal(diagnostics[0].candidatesRejected, 1);
+  assert.equal(diagnostics[0].rejectionCounts["distance-row-missing"], 1);
+  assert.equal(diagnostics[0].tableStationVisitsEmitted, 0);
+  assert.equal(JSON.stringify(diagnostics).includes("Private Station Name"), false);
+  assert.equal(JSON.stringify(result.aidStationDiscoveryV1).includes("htmlTablesEncountered"), false, "parser counters must not enter the public aid-station response");
+});
+
+test("Race GPX download route logs bounded parser counters without adding them to its public response", async () => {
+  const diagnostic = {
+    htmlTablesEncountered: 1, transposedTableCandidates: 1, stationNameRowsRecognized: 1,
+    distanceRowsRecognized: 0, candidatesRejected: 1,
+    rejectionCounts: { "row-count-out-of-range": 0, "column-count-out-of-range": 0, "ragged-columns": 0, "station-name-row-missing": 0, "station-name-row-ambiguous": 0, "distance-row-missing": 1, "distance-row-ambiguous": 0, "name-distance-row-overlap": 0, "empty-column": 0, "post-finish-entry": 0, "invalid-distance": 0, "position-out-of-course": 0, "duplicate-distance": 0, "invalid-station-name": 0 },
+    tableStationVisitsEmitted: 0,
+  };
+  const logged = [];
+  const post = createRaceGpxDownloadPost(async (_source, _url, _type, _digest, _entry, onDiagnostic) => {
+    onDiagnostic(diagnostic);
+    return { status: "success", text: validGpx };
+  }, (entry) => logged.push(entry));
+  const response = await post(new Request("https://app.example/api/race-gpx-download", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sourcePageUrl: rootUrl, gpxUrl }),
+  }));
+  assert.equal(response.status, 200);
+  assert.equal(logged.length, 1);
+  assert.match(logged[0].requestId, /^[0-9a-f-]{36}$/i);
+  assert.equal(logged[0].candidatesRejected, 1);
+  const form = await response.formData();
+  assert.deepEqual([...form.keys()].sort(), ["aidStationDiscoveryV1", "gpxText"]);
+  assert.equal([...form.values()].some((value) => typeof value === "string" && value.includes("rejectionCounts")), false);
 });
 
 test("course points plus a matching FAQ count infer only the unconfirmed aid-station roles and retain evidence", () => {

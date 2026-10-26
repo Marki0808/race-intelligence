@@ -3,10 +3,13 @@ import {
   alignStationEvidenceToGpx,
   extractHtmlStationEvidence,
   extractNextDataStationEvidence,
+  emptyHtmlTableParserDiagnostics,
+  mergeHtmlTableParserDiagnostics,
   inspectStationDocumentIdentity,
   stationVisitEvidenceV1Schema,
   type StationExtractionIssue,
   type StationExtractionResult,
+  type HtmlTableParserDiagnostics,
   type StationVisitEvidenceV1,
 } from "./aidStationExtraction.ts";
 import { officialCourseLabelsMatch, type OfficialRaceCourseIdentity } from "./officialRaceCourseIdentity.ts";
@@ -374,8 +377,11 @@ export function buildAidStationDiscoveryV1(
   resource: SelectedStationResource,
   gpxText: string,
   optionalSourceUnavailable = false,
+  onHtmlTableDiagnostics?: (diagnostics: HtmlTableParserDiagnostics) => void,
 ): AidStationDiscoveryV1 {
   const fallbackReason = "no-station-evidence";
+  const htmlTableDiagnostics = emptyHtmlTableParserDiagnostics();
+  let incompleteDiscovery = false;
   try {
     const resourceUrl = normalizedUrl(resource.resourceUrl);
     const sourceUrl = normalizedUrl(resource.sourcePageUrl);
@@ -448,6 +454,7 @@ export function buildAidStationDiscoveryV1(
         } : {}),
         ...(pageIsSelectedCourse ? { validatedCourseScope: true } : {}),
       });
+      mergeHtmlTableParserDiagnostics(htmlTableDiagnostics, html.htmlTableDiagnostics);
       if (html.status === "course-selection-required") selectionRequired = true;
       for (const choice of html.courseChoices) courseChoices.set(`${choice.label.toLocaleLowerCase()}|${choice.distanceKm ?? ""}`, choice);
       if (html.status === "rejected" && html.issues.includes("course-identity-conflict")) identityConflict = true;
@@ -458,6 +465,7 @@ export function buildAidStationDiscoveryV1(
     }
     if (!parsedSources.some((source) => source.visits.length > 0)) {
       const reason = selectedGpxMismatch ? "selected-gpx-mismatch" : identityConflict ? "course-identity-conflict" : selectionRequired ? "course-selection-required" : malformedSource ? "malformed-source" : incompleteSource ? "incomplete-source" : optionalSourceUnavailable ? "optional-source-unavailable" : fallbackReason;
+      incompleteDiscovery = true;
       return initialResult(resource, reason, [...pages], [...courseChoices.values()]);
     }
 
@@ -605,8 +613,17 @@ export function buildAidStationDiscoveryV1(
         ...(segmentationAvailable ? { positionMode: verifiedPositionMode ? "verified" as const : "official-kilometer-approximate" as const } : {}),
       },
     };
-    return aidStationDiscoveryV1Schema.parse(result);
+    const validatedResult = aidStationDiscoveryV1Schema.parse(result);
+    incompleteDiscovery = validatedResult.completeness.status !== "complete" || !validatedResult.stationSegmentation.available;
+    return validatedResult;
   } catch {
+    incompleteDiscovery = true;
     return initialResult(resource, "malformed-source", [...pages]);
+  } finally {
+    // Emit only for incomplete station discovery, even when GPX download succeeded.
+    // This includes zero-table/zero-candidate cases and exposes only bounded counters.
+    if (onHtmlTableDiagnostics && incompleteDiscovery) {
+      try { onHtmlTableDiagnostics({ ...htmlTableDiagnostics, rejectionCounts: { ...htmlTableDiagnostics.rejectionCounts } }); } catch { /* diagnostics must not affect discovery */ }
+    }
   }
 }

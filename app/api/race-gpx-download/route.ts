@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { downloadDiscoveredGpx, type OfficialGpxDownloadResult } from "../../officialGpxDownload.ts";
+import type { HtmlTableParserDiagnostics } from "../../aidStationExtraction.ts";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -16,7 +18,12 @@ function failureResponse(result: Exclude<OfficialGpxDownloadResult, { status: "s
   });
 }
 
-export function createRaceGpxDownloadPost(download = downloadDiscoveredGpx) {
+export function createRaceGpxDownloadPost(
+  download = downloadDiscoveredGpx,
+  logParserDiagnostic: (diagnostic: HtmlTableParserDiagnostics & { requestId: string }) => void = (diagnostic) => {
+    console.info("[aid-station-discovery] HTML table parser", diagnostic);
+  },
+) {
   return async function POST(request: Request) {
     const contentLength = Number(request.headers.get("content-length") ?? 0);
     if (contentLength > MAX_REQUEST_BYTES) return Response.json({ status: "invalid-request" }, { status: 413 });
@@ -58,7 +65,17 @@ export function createRaceGpxDownloadPost(download = downloadDiscoveredGpx) {
       return Response.json({ status: "invalid-request" }, { status: 400 });
     }
 
-    const result = await download(body.sourcePageUrl, resourceUrl, resourceType, archiveDigest as string | undefined, entryId as string | undefined);
+    const requestId = randomUUID();
+    const result = await download(
+      body.sourcePageUrl,
+      resourceUrl,
+      resourceType,
+      archiveDigest as string | undefined,
+      entryId as string | undefined,
+      (diagnostics) => {
+        try { logParserDiagnostic({ requestId, ...diagnostics }); } catch { /* diagnostics cannot affect the download response */ }
+      },
+    );
     if (result.status === "archive-choices") {
       return Response.json({ status: result.status, archiveDigest: result.archiveDigest, files: result.files }, {
         status: 200,

@@ -71,10 +71,37 @@ function textContent(value: string): string {
     .replace(/\s+/g, " ").trim().slice(0, 300);
 }
 
-function pageSignals(html: string): { labels: Array<{ label: string; source: string }>; eventName: string | null; editionYear: number | null } {
+function yearFromExplicitDateValue(value: string): number | null {
+  const text = textContent(value);
+  const hasDateShape = /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?[,]?\s+20\d{2}\b/i.test(text) ||
+    /\b\d{1,2}[./-]\d{1,2}[./-]20\d{2}\b/.test(text) ||
+    /\b20\d{2}-\d{2}-\d{2}(?:[T\s]|$)/.test(text);
+  if (!hasDateShape) return null;
+  const years = [...new Set(text.match(/\b20\d{2}\b/g)?.map(Number) ?? [])];
+  return years.length === 1 ? years[0] : null;
+}
+
+/** Reads edition years only from machine-readable dates or an explicitly labeled Date field. */
+function explicitHtmlDateYears(html: string): number[] {
+  const years = new Set<number>();
+  for (const match of html.matchAll(/<time\b[^>]*\bdatetime\s*=\s*(["'])(.*?)\1[^>]*>/gi)) {
+    const year = yearFromExplicitDateValue(match[2]);
+    if (year != null) years.add(year);
+  }
+  const labeledDate = /<(h[1-6]|dt|th|strong|b)\b[^>]*>\s*(?:event\s+)?date\s*<\/\1\s*>\s*<(p|dd|td|div|span)\b[^>]*>([\s\S]{0,240}?)<\/\2\s*>/gi;
+  for (const match of html.matchAll(labeledDate)) {
+    const year = yearFromExplicitDateValue(match[3]);
+    if (year != null) years.add(year);
+  }
+  return [...years];
+}
+
+function pageSignals(html: string): { labels: Array<{ label: string; source: string }>; eventName: string | null; editionYear: number | null; editionEvidence: string | null; editionConflict: boolean } {
   const labels: Array<{ label: string; source: string }> = [];
   let eventName: string | null = null;
   let editionYear: number | null = null;
+  let editionEvidence: string | null = null;
+  let editionConflict = false;
   const nextData = /<script\b(?=[^>]*\bid\s*=\s*(["'])__NEXT_DATA__\1)[^>]*>([\s\S]*?)<\/script\s*>/i.exec(html);
   if (nextData) {
     try {
@@ -107,7 +134,15 @@ function pageSignals(html: string): { labels: Array<{ label: string; source: str
       }
     }
   }
-  return { labels, eventName, editionYear };
+  const dateYears = explicitHtmlDateYears(html);
+  if (dateYears.length > 1 || (dateYears.length === 1 && editionYear != null && dateYears[0] !== editionYear)) {
+    editionConflict = true;
+    editionYear = null;
+  } else if (editionYear == null && dateYears.length === 1) {
+    editionYear = dateYears[0];
+    editionEvidence = `labeled official course date: ${editionYear}`;
+  }
+  return { labels, eventName, editionYear, editionEvidence, editionConflict };
 }
 
 /** Requires a distance-specific race/course path and an exact matching page label. */
@@ -127,6 +162,7 @@ export function identifyOfficialRaceCourse(inputUrl: string, html: string): Offi
   const expectedKey = distanceKey(expectedLabel);
   if (!expectedKey) return null;
   const signals = pageSignals(html);
+  if (signals.editionConflict) return null;
   const corroborating = signals.labels.find(({ label }) => officialCourseLabelsMatch(label, expectedLabel));
   if (!corroborating) return null;
   // Keep a stable course token instead of carrying an entire page title into matching.
@@ -136,7 +172,7 @@ export function identifyOfficialRaceCourse(inputUrl: string, html: string): Offi
     editionYear: signals.editionYear,
     eventName: signals.eventName,
     sourcePageUrl: url.href,
-    evidence: [exactPathLabel ? `course URL path: ${pathLabel}` : `course URL path confirms distance: ${courseLabel}`, `${corroborating.source} confirms course label: ${courseLabel}`],
+    evidence: [exactPathLabel ? `course URL path: ${pathLabel}` : `course URL path confirms distance: ${courseLabel}`, `${corroborating.source} confirms course label: ${courseLabel}`, ...(signals.editionEvidence ? [signals.editionEvidence] : [])],
   };
 }
 

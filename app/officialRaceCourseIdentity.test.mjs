@@ -84,3 +84,34 @@ test("binds an unknown page edition only to the single exact-course official res
     selected, resource("https://race.example/uploads/trail_110k_2025.gpx", "110K", "2025"),
   ]), null, "multiple editions still require explicit user selection");
 });
+
+test("uses an explicitly labeled official course date to bind the selected GPX edition", () => {
+  const courseUrl = "https://race.example/en/distances/coastal-ultra-64-km/";
+  const courseHtml = `<title>Coastal Ultra Trail 64 km</title>
+    <h1>Coastal Ultra Trail 64 km</h1>
+    <section><h4>Date</h4><p>November 7, 2026</p></section>`;
+  const identity = identifyOfficialRaceCourse(courseUrl, courseHtml);
+  assert.equal(identity?.editionYear, 2026);
+  assert.ok(identity?.evidence.some((item) => item.includes("labeled official course date")));
+
+  const selected = {
+    url: "https://race.example/uploads/coastal-ultra-2026-64-km.gpx",
+    sourcePageUrl: courseUrl,
+    distanceLabel: "64 km",
+    supportingEvidence: ["official download link"],
+    linkText: "GPX file download",
+  };
+  assert.equal(findUniqueCourseResourcePreselection(identity, courseUrl, [selected])?.courseIdentity.editionYear, 2026);
+  assert.equal(findUniqueCourseResourcePreselection(identity, courseUrl, [{
+    ...selected,
+    url: "https://race.example/uploads/coastal-ultra-2025-64-km.gpx",
+  }]), null, "the official course date must agree with resource year evidence");
+});
+
+test("conflicting explicit course-date and page-edition evidence fails closed", () => {
+  const courseUrl = "https://race.example/en/distances/coastal-ultra-64-km/";
+  const conflictingHtml = `<title>Coastal Ultra Trail 64 km - 2025</title>
+    <h1>Coastal Ultra Trail 64 km</h1>
+    <section><h4>Date</h4><p>November 7, 2026</p></section>`;
+  assert.equal(identifyOfficialRaceCourse(courseUrl, conflictingHtml), null);
+});

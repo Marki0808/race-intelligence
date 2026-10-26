@@ -99,6 +99,19 @@ test("transposed station tables pair each name with its same-column cumulative d
   }));
   assert.equal(result.completeness.status, "complete");
   assert.equal(result.completeness.extractedCount, 5);
+  assert.deepEqual(result.htmlTableDiagnostics, {
+    htmlTablesEncountered: 1,
+    transposedTableCandidates: 1,
+    stationNameRowsRecognized: 1,
+    distanceRowsRecognized: 1,
+    candidatesRejected: 0,
+    rejectionCounts: Object.fromEntries([
+      "row-count-out-of-range", "column-count-out-of-range", "ragged-columns", "station-name-row-missing",
+      "station-name-row-ambiguous", "distance-row-missing", "distance-row-ambiguous", "name-distance-row-overlap",
+      "empty-column", "post-finish-entry", "invalid-distance", "position-out-of-course", "duplicate-distance", "invalid-station-name",
+    ].map((reason) => [reason, 0])),
+    tableStationVisitsEmitted: 5,
+  });
 });
 
 test("transposed station table rejects absent, ambiguous, misaligned, duplicate, and invalid distance columns", () => {
@@ -116,7 +129,40 @@ test("transposed tables require station context and an explicit distance propert
   </table>`;
   const stationWithoutDistance = `<h2>64 km course</h2><table><tr><th>Aid Station</th><td>North Gate</td></tr><tr><th>Cut-off</th><td>4:00</td></tr></table>`;
   assert.equal(extractHtmlStationEvidence(unrelated, sourceUrl).visits.length, 0);
+  assert.equal(extractHtmlStationEvidence(unrelated, sourceUrl).htmlTableDiagnostics.transposedTableCandidates, 0, "unrelated tables are not counted as station candidates");
   assert.equal(extractHtmlStationEvidence(stationWithoutDistance, sourceUrl).visits.length, 0);
+});
+
+test("transposed table diagnostics identify fixed rejection categories without retaining source text", () => {
+  const missingDistance = transposedAidTable().replace(/<tr><th>Distance<\/th>[\s\S]*?<\/tr>/, "");
+  const missing = extractHtmlStationEvidence(missingDistance, sourceUrl);
+  assert.deepEqual({
+    tables: missing.htmlTableDiagnostics.htmlTablesEncountered,
+    candidates: missing.htmlTableDiagnostics.transposedTableCandidates,
+    nameRows: missing.htmlTableDiagnostics.stationNameRowsRecognized,
+    distanceRows: missing.htmlTableDiagnostics.distanceRowsRecognized,
+    rejected: missing.htmlTableDiagnostics.candidatesRejected,
+    reason: missing.htmlTableDiagnostics.rejectionCounts["distance-row-missing"],
+    emitted: missing.htmlTableDiagnostics.tableStationVisitsEmitted,
+  }, { tables: 1, candidates: 1, nameRows: 1, distanceRows: 0, rejected: 1, reason: 1, emitted: 0 });
+
+  const ragged = extractHtmlStationEvidence(transposedAidTable().replace("<td>59 km</td>", ""), sourceUrl);
+  assert.equal(ragged.htmlTableDiagnostics.rejectionCounts["ragged-columns"], 1);
+  assert.equal(ragged.htmlTableDiagnostics.candidatesRejected, 1);
+  assert.equal(ragged.htmlTableDiagnostics.tableStationVisitsEmitted, 0);
+
+  const serialized = JSON.stringify(missing.htmlTableDiagnostics);
+  for (const unsafe of ["Boršt", "race.example", "AID STATION", "59 km"]) assert.equal(serialized.includes(unsafe), false);
+});
+
+test("HTML table diagnostic counters and fixed rejection counts cap at 1000", () => {
+  const html = `<h2>Course facts</h2>${"<table><tr><td>Aid Station</td></tr><tr><td>Distance</td></tr></table>".repeat(1_005)}`;
+  const diagnostics = extractHtmlStationEvidence(html, sourceUrl).htmlTableDiagnostics;
+  assert.equal(diagnostics.htmlTablesEncountered, 1_000);
+  assert.equal(diagnostics.transposedTableCandidates, 1_000);
+  assert.equal(diagnostics.candidatesRejected, 1_000);
+  assert.equal(diagnostics.rejectionCounts["column-count-out-of-range"], 1_000);
+  assert.ok(Object.values(diagnostics).filter((value) => typeof value === "number").every((value) => value <= 1_000));
 });
 
 test("transposed tables keep start, finish, and checkpoints distinct and exclude post-finish services", () => {
