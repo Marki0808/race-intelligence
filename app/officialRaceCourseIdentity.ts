@@ -22,8 +22,9 @@ type Resource = {
   linkText: string;
 };
 
-const COURSE_PATH_PARENT = /^(?:race|races|course|courses|distance|distances)$/i;
+const COURSE_PATH_PARENT = /^(?:race|races|course|courses|distance|distances|razdalja|razdalje|distancia|distancias|distanza|distanze)$/i;
 const DISTANCE_LABEL = /^(\d{1,3}(?:[.,]\d{1,2})?)\s*(km|k|mi|miles?|m)$/i;
+const DISTANCE_IN_PATH = /(?:^|[^a-z0-9])(\d{1,3}(?:[.,]\d{1,2})?)\s*(km|k|mi|miles?|M)(?=$|[^a-z0-9])/gi;
 
 function distanceKey(value: string | null): string | null {
   if (!value) return null;
@@ -37,6 +38,19 @@ function distanceKey(value: string | null): string | null {
     : /^(?:mi|mile|miles)$/i.test(unit) || unit === "M" ? "mi"
       : null;
   return normalizedUnit ? `${number}|${normalizedUnit}` : null;
+}
+
+function coursePathDistance(value: string): string | null {
+  const normalized = value.replace(/[._-]+/g, " ");
+  const matches = [...normalized.matchAll(DISTANCE_IN_PATH)]
+    .map((match) => {
+      const unit = match[2] === "M" ? "M" : match[2].toLowerCase();
+      const label = `${match[1]} ${unit}`;
+      return { label, key: distanceKey(label) };
+    })
+    .filter((match): match is { label: string; key: string } => match.key !== null);
+  const unique = new Map(matches.map((match) => [match.key, match.label]));
+  return unique.size === 1 ? [...unique.values()][0] : null;
 }
 
 export function officialCourseLabelsMatch(candidate: string | null, expected: string | null): boolean {
@@ -107,20 +121,22 @@ export function identifyOfficialRaceCourse(inputUrl: string, html: string): Offi
   if (!COURSE_PATH_PARENT.test(parent)) return null;
   let pathLabel: string;
   try { pathLabel = decodeURIComponent(leaf); } catch { return null; }
-  if (!DISTANCE_LABEL.test(pathLabel)) return null;
-  const expectedKey = distanceKey(pathLabel);
+  const exactPathLabel = DISTANCE_LABEL.test(pathLabel) ? pathLabel.trim() : null;
+  const expectedLabel = exactPathLabel ?? coursePathDistance(pathLabel);
+  if (!expectedLabel) return null;
+  const expectedKey = distanceKey(expectedLabel);
   if (!expectedKey) return null;
   const signals = pageSignals(html);
-  const corroborating = signals.labels.find(({ label }) => officialCourseLabelsMatch(label, pathLabel));
+  const corroborating = signals.labels.find(({ label }) => officialCourseLabelsMatch(label, expectedLabel));
   if (!corroborating) return null;
   // Keep a stable course token instead of carrying an entire page title into matching.
-  const courseLabel = pathLabel.trim().slice(0, 160);
+  const courseLabel = expectedLabel.slice(0, 160);
   return {
     courseLabel,
     editionYear: signals.editionYear,
     eventName: signals.eventName,
     sourcePageUrl: url.href,
-    evidence: [`course URL path: ${pathLabel}`, `${corroborating.source} confirms course label: ${courseLabel}`],
+    evidence: [exactPathLabel ? `course URL path: ${pathLabel}` : `course URL path confirms distance: ${courseLabel}`, `${corroborating.source} confirms course label: ${courseLabel}`],
   };
 }
 

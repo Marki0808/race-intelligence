@@ -142,6 +142,125 @@ test("discovers one direct GPX link with evidence and an explicit distance label
   assert.equal(calls.filter((call) => call.type === "request").length, 1);
 });
 
+test("follows a GPX-download link to a same-origin index and preserves distinct course and edition evidence", async () => {
+  const rootUrl = "https://race.example/";
+  const indexUrl = "https://race.example/race/tracks";
+  const root = page('<a href="/race/tracks">Download track GPX 2026</a>', rootUrl);
+  const index = page([
+    '<article><h2>SDT - 100M 2026</h2><a href="https://files.example/SDT_100_M_2026.gpx">DOWNLOAD GPX</a></article>',
+    '<article><h2>CPS - 100K 2026</h2><a href="https://files.example/CPS_100_K_2026.gpx">DOWNLOAD GPX</a></article>',
+    '<article><h2>ETM - 50K 2026</h2><a href="https://files.example/ETM_50_K_2026.gpx">DOWNLOAD GPX</a></article>',
+    '<article><h2>CDA - 20K 2026</h2><a href="https://files.example/CDA_20_K_2026.gpx">DOWNLOAD GPX</a></article>',
+  ].join(""), indexUrl);
+  const { run, calls } = discovery(new Map([[rootUrl, root], [indexUrl, index]]));
+  const result = await run(rootUrl);
+
+  assert.equal(result.status, "success");
+  assert.deepEqual(calls.filter((call) => call.type === "request").map((call) => call.url), [rootUrl, indexUrl]);
+  assert.equal(result.candidates.length, 4);
+  assert.deepEqual(result.candidates.map(({ distanceLabel }) => distanceLabel), ["100M", "100K", "50K", "20K"]);
+  assert.ok(result.candidates.every(({ ambiguity }) => ambiguity === "multiple-candidates"));
+  assert.ok(result.candidates.every(({ sourcePageUrl }) => sourcePageUrl === indexUrl));
+  assert.ok(result.candidates.every(({ supportingEvidence }) => supportingEvidence.some((item) => item === "linked page evidence: Download track GPX 2026")));
+  assert.equal(result.candidates.some(({ gpxUrl }) => gpxUrl === indexUrl), false);
+  assert.equal("courseSelection" in result, false, "an event-level index must not automatically select a distance");
+});
+
+test("course identity and edition conflicts on an indexed GPX page prevent automatic preselection", async () => {
+  const rootUrl = "https://race.example/races/100K";
+  const indexUrl = "https://race.example/race/tracks";
+  const payload = { query: { race: "100K" }, props: { pageProps: { event: { name: "Example Trail", begin: "2026-11-01" } } } };
+  const root = page(`<h1>100K course</h1><script id="__NEXT_DATA__">${JSON.stringify(payload)}</script><a href="/race/tracks">Download track GPX 2026</a>`, rootUrl);
+  const index = page([
+    '<article><h2>2026 - 100K</h2><a href="https://files.example/route_100k_2026.gpx">Download 100K GPX</a></article>',
+    '<article><h2>2025 - 100K</h2><a href="https://files.example/route_100k_2025.gpx">Download 100K GPX</a></article>',
+  ].join(""), indexUrl);
+  const { run } = discovery(new Map([[rootUrl, root], [indexUrl, index]]));
+  const result = await run(rootUrl);
+  assert.equal(result.status, "success");
+  assert.equal(result.courseSelection.identity.courseLabel, "100K");
+  assert.equal(result.courseSelection.identity.editionYear, 2026);
+  assert.equal(result.courseSelection.preselection, null, "multiple edition candidates remain an explicit user choice");
+  assert.deepEqual(result.candidates.map(({ distanceLabel }) => distanceLabel), ["100K", "100K"]);
+});
+
+test("organizer homepages return explicit same-origin course choices before any course page is fetched", async () => {
+  const rootUrl = "https://organizer.example/";
+  const courses = ["11 km", "17 km", "35 km", "64 km", "108 km"];
+  const root = page(`<nav><ul>${courses.map((distance) => {
+    const number = Number.parseInt(distance, 10);
+    return `<li><a href="/razdalje/obala-${number >= 64 ? "ultra-" : ""}trail-${number}-km/">Obala ${number >= 64 ? "Ultra " : ""}Trail ${distance}</a></li>`;
+  }).join("")}</ul><a href="/news/64-km-results/">64 km results</a></nav>`, rootUrl);
+  const { run, calls } = discovery(new Map([[rootUrl, root]]));
+  const result = await run(rootUrl);
+
+  assert.equal(result.status, "course-selection-required");
+  assert.deepEqual(result.courses.map(({ distanceLabel }) => distanceLabel), courses);
+  assert.deepEqual(result.courses.map(({ displayName }) => displayName), [
+    "Obala Trail 11 km", "Obala Trail 17 km", "Obala Trail 35 km", "Obala Ultra Trail 64 km", "Obala Ultra Trail 108 km",
+  ]);
+  assert.ok(result.courses.every(({ sourcePageUrl }) => sourcePageUrl === rootUrl));
+  assert.ok(result.courses.every(({ supportingEvidence }) => supportingEvidence.some((item) => item.startsWith("matching course distance in link and same-origin destination:"))));
+  assert.equal(calls.filter((call) => call.type === "request").length, 1, "course links are presented, not crawled or mixed automatically");
+  assert.equal(result.courses.some(({ url }) => url.includes("results")), false);
+});
+
+test("explicit course selection restarts scoped discovery with course and edition identity and no cross-course GPX mixing", async () => {
+  const rootUrl = "https://organizer.example/";
+  const courseUrl = "https://organizer.example/razdalje/obala-ultra-trail-64-km/";
+  const root = page([
+    '<a href="/razdalje/obala-ultra-trail-64-km/">Obala Ultra Trail 64 km</a>',
+    '<a href="/razdalje/obala-ultra-trail-108-km/">Obala Ultra Trail 108 km</a>',
+  ].join(""), rootUrl);
+  const coursePage = page('<title>Obala Ultra Trail 64 km 2026</title><h1>Obala Ultra Trail 64 km</h1><a href="/downloads/obala-64-km.gpx">GPX file download</a>', courseUrl);
+  const pages = new Map([[rootUrl, root], [courseUrl, coursePage]]);
+  const first = await (await discovery(pages)).run(rootUrl);
+  assert.equal(first.status, "course-selection-required");
+  const selected = first.courses.find(({ distanceLabel }) => distanceLabel === "64 km");
+  assert.ok(selected);
+  assert.equal(selected.url, courseUrl);
+
+  const { run, calls } = discovery(pages);
+  const result = await run(selected.url);
+  assert.equal(result.status, "success");
+  assert.deepEqual(calls.filter((call) => call.type === "request").map((call) => call.url), [courseUrl]);
+  assert.deepEqual(result.candidates.map(({ distanceLabel }) => distanceLabel), ["64 km"]);
+  assert.equal(result.courseSelection.identity.courseLabel, "64 km");
+  assert.equal(result.courseSelection.identity.editionYear, 2026);
+  assert.equal(result.courseSelection.identity.eventName, "Obala Ultra Trail 64 km 2026");
+  assert.equal(result.courseSelection.preselection.resourceUrl, "https://organizer.example/downloads/obala-64-km.gpx");
+});
+
+test("does not turn unrelated distance-bearing links or mismatched course destinations into course choices", async () => {
+  const rootUrl = "https://organizer.example/";
+  const html = [
+    '<nav><a href="/news/trail-results-64-km/">Read the 64 km race results</a></nav>',
+    '<section><h2>Latest news</h2><a href="/stories/forest-35-km/">Forest trail story 35 km</a></section>',
+    '<section><h2>Distances</h2><a href="/courses/64-km/">Example Trail course 35 km</a></section>',
+  ].join("");
+  const result = await (await discovery(new Map([
+    [rootUrl, page(html, rootUrl)],
+    ["https://organizer.example/courses/64-km/", page("<p>Course information</p>", "https://organizer.example/courses/64-km/")],
+  ]))).run(rootUrl);
+  assert.equal(result.status, "no-results");
+});
+
+test("duplicate course destinations with conflicting edition evidence do not present an arbitrary year", async () => {
+  const rootUrl = "https://organizer.example/";
+  const html = [
+    '<a href="/distances/forest-trail-64-km/">Forest Trail 64 km 2026</a>',
+    '<a href="/distances/forest-trail-64-km/">Forest Trail 64 km 2027</a>',
+    '<a href="/distances/forest-trail-108-km/">Forest Trail 108 km 2026</a>',
+  ].join("");
+  const result = await (await discovery(new Map([[rootUrl, page(html, rootUrl)]]))).run(rootUrl);
+  assert.equal(result.status, "course-selection-required");
+  const course = result.courses.find(({ distanceLabel }) => distanceLabel === "64 km");
+  assert.ok(course);
+  assert.equal(course.editionYear, null);
+  assert.ok(course.supportingEvidence.some((item) => item.includes("2026")));
+  assert.ok(course.supportingEvidence.some((item) => item.includes("2027")));
+});
+
 test("keeps multiple distances ambiguous and never chooses a winner", async () => {
   const { run } = discovery(new Map([["https://race.example/event", page('<a href="/a.gpx">25 km GPX</a><a href="/b.gpx">50 km GPX</a>')]]));
   const result = await run("https://race.example/event");
@@ -689,6 +808,55 @@ test("single-event homepage with an explicit GPX index keeps the existing crawl 
   assert.equal(result.status, "success");
   assert.equal(result.candidates[0].distanceLabel, "110K");
   assert.deepEqual(calls.filter((call) => call.type === "request").map((call) => call.url), [rootUrl, indexUrl]);
+});
+
+test("a course page follows its explicitly described same-origin map details page and finds linked GPX", async () => {
+  const courseUrl = "https://race.example/routes/coastal-ultra/";
+  const mapUrl = "https://race.example/map/coastal-ultra/";
+  const fileUrl = "https://race.example/files/coastal-ultra.gpx";
+  const pages = new Map([
+    [courseUrl, page('<h1>Coastal Ultra</h1><p>Distance: 80 km</p><a href="/map/coastal-ultra/">Details</a><p>To download the GPX track of the route, click on Details in the top right corner of the map.</p>', courseUrl)],
+    [mapUrl, page('<main><h2>Coastal Ultra route map</h2><a href="/files/coastal-ultra.gpx">Download GPX</a></main>', mapUrl)],
+  ]);
+  const { run, calls } = discovery(pages);
+  const result = await run(courseUrl);
+  assert.equal(result.status, "success");
+  assert.equal(result.candidates.length, 1);
+  assert.equal(result.candidates[0].gpxUrl, fileUrl);
+  assert.deepEqual(calls.filter((call) => call.type === "request").map((call) => call.url), [courseUrl, mapUrl]);
+});
+
+test("map page with no explicit GPX resource returns no candidates and static GPX metadata is narrowly recognized", async () => {
+  const courseUrl = "https://race.example/routes/coastal-ultra/";
+  const mapUrl = "https://race.example/map/coastal-ultra/";
+  const noExport = new Map([
+    [courseUrl, page('<h1>Coastal Ultra</h1><p>80 km. To download the GPX track, click on Details in the map.</p><a href="/map/coastal-ultra/">Details</a>', courseUrl)],
+    [mapUrl, page('<main><h2>Route map</h2><p>No downloadable route file is listed.</p></main>', mapUrl)],
+  ]);
+  const first = discovery(noExport);
+  assert.deepEqual(await first.run(courseUrl), { status: "no-results", candidates: [] });
+  assert.deepEqual(first.calls.filter((call) => call.type === "request").map((call) => call.url), [courseUrl, mapUrl]);
+
+  const metadata = new Map([
+    [courseUrl, page('<h1>Coastal Ultra</h1><p>80 km. To download the GPX track, click on Details in the map.</p><a href="/map/coastal-ultra/">Details</a>', courseUrl)],
+    [mapUrl, page('<meta name="gpx-url" content="/files/course.gpx"><meta name="description" content="https://race.example/not-a-course.gpx">', mapUrl)],
+  ]);
+  const second = discovery(metadata);
+  const metadataResult = await second.run(courseUrl);
+  assert.equal(metadataResult.status, "success");
+  assert.deepEqual(metadataResult.candidates.map((candidate) => candidate.gpxUrl), ["https://race.example/files/course.gpx"]);
+});
+
+test("course map download instructions do not authorize unrelated or external map destinations", async () => {
+  const courseUrl = "https://race.example/routes/coastal-ultra/";
+  const unrelatedMap = "https://race.example/map/club-locations/";
+  const pages = new Map([
+    [courseUrl, page('<h1>Coastal Ultra</h1><p>80 km course. To download the GPX track, click on Details in the map.</p><a href="/map/club-locations/">Map</a><a href="https://maps.example/map/coastal-ultra/">Course map</a><a href="http://127.0.0.1/map/coastal-ultra/">Details</a>', courseUrl)],
+  ]);
+  const { run, calls } = discovery(pages);
+  assert.deepEqual(await run(courseUrl), { status: "no-results", candidates: [] });
+  assert.deepEqual(calls.filter((call) => call.type === "request").map((call) => call.url), [courseUrl]);
+  assert.equal(pages.has(unrelatedMap), false);
 });
 
 test("distance-specific race pages and generic navigation do not become organizer event choices", async () => {

@@ -1,7 +1,7 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { request as httpsRequest, type RequestOptions } from "node:https";
-import { findUniqueCourseResourcePreselection, identifyOfficialRaceCourse, type CourseResourcePreselection, type OfficialRaceCourseIdentity } from "./officialRaceCourseIdentity.ts";
+import { findUniqueCourseResourcePreselection, identifyOfficialRaceCourse, officialCourseLabelsMatch, type CourseResourcePreselection, type OfficialRaceCourseIdentity } from "./officialRaceCourseIdentity.ts";
 
 export const OFFICIAL_GPX_DISCOVERY_LIMITS = {
   timeoutMs: 8_000,
@@ -46,6 +46,16 @@ export type OfficialGpxEventChoice = {
   supportingEvidence: string[];
 };
 
+export type OfficialGpxCourseChoice = {
+  url: string;
+  sourcePageUrl: string;
+  linkText: string;
+  displayName: string;
+  distanceLabel: string;
+  editionYear: number | null;
+  supportingEvidence: string[];
+};
+
 export type OfficialGpxCourseSelection = {
   identity: OfficialRaceCourseIdentity;
   preselection: CourseResourcePreselection | null;
@@ -62,6 +72,7 @@ export type UnsupportedGpxResource = {
 export type OfficialGpxDiscoveryResult =
   | { status: "success"; candidates: GpxDiscoveryCandidate[]; archives?: GpxArchiveCandidate[]; courseSelection?: OfficialGpxCourseSelection }
   | { status: "event-selection-required"; events: OfficialGpxEventChoice[] }
+  | { status: "course-selection-required"; courses: OfficialGpxCourseChoice[] }
   | { status: "unsupported-resources"; resources: UnsupportedGpxResource[] }
   | { status: "no-results"; candidates: [] }
   | { status: "invalid-url"; candidates: [] }
@@ -551,6 +562,9 @@ function appendCardText(scopes: Array<{ text: string[]; isCard: boolean }>, valu
 }
 
 const DISTANCE = /(?:^|[^a-z0-9])(\d{1,3}(?:[.,]\d{1,2})?\s*(?:km|k|mi|mile|miles))(?![a-z])/i;
+// UTMB uses an uppercase M for mile distances (for example, 100M). Lowercase
+// “m” is intentionally not accepted because it can mean meters.
+const UPPERCASE_MILE_DISTANCE = /(?:^|[^a-z0-9])(\d{1,3}(?:[.,]\d{1,2})?\s*M)(?![a-z])/g;
 const ROUTE_NAV = /\b(gpx|tracks?|stazes?|stazama|trases?|trasama|routes?|courses?|parcours|recorridos|downloads?)\b/i;
 const STATION_NAV = /\b(aid\s*stations?|water\s*stations?|refreshments?|checkpoints?|regulations?|race\s*(?:info|information|guide|regulations?)|runner\s*guide|participant\s*guide|refuelling|feed\s*stations?|ravitaillement|verpflegung|versorgungspunkte|postas\s*de\s*avituallamiento)\b/i;
 const FAQ_NAV = /\b(?:faq|faqs|frequently\s+asked\s+questions)\b/i;
@@ -562,8 +576,11 @@ const GPX_PATH = /\.gpx$/i;
 type QueuedPage = { url: URL; depth: number; priority: number; order: number; linkedFromUrl: string | null; linkEvidence: string[]; optionalStationOnly: boolean };
 
 function distanceIn(value: string): string | null {
-  const matches = [...value.matchAll(new RegExp(DISTANCE.source, "gi"))]
-    .map((match) => match[1].replace(/\s+/g, " ").trim().replace(/(\d)\s*(km|mi)$/i, "$1 $2").replace(/k$/i, "K"));
+  const matches = [
+    ...[...value.matchAll(new RegExp(DISTANCE.source, "gi"))].map((match) => match[1]),
+    ...[...value.matchAll(UPPERCASE_MILE_DISTANCE)].map((match) => match[1]),
+  ]
+    .map((match) => match.replace(/\s+/g, " ").trim().replace(/(\d)\s*(km|mi)$/i, "$1 $2").replace(/(\d)\s*M$/, "$1M").replace(/k$/i, "K"));
   const unique = [...new Set(matches)];
   return unique.length === 1 ? unique[0] : null;
 }
@@ -579,11 +596,21 @@ function fileNameFromUrl(url: URL): string | null {
   }
 }
 
-function isGpxEvidence(url: URL, link: HtmlLink): boolean {
+function isGpxIndexLink(url: URL, link: HtmlLink, sourceUrl: URL): boolean {
+  if (url.origin !== sourceUrl.origin || GPX_PATH.test(url.pathname) || !DOWNLOAD.test(`${link.text} ${link.title}`)) return false;
+  let leaf = url.pathname.split("/").filter(Boolean).at(-1) ?? "";
+  try { leaf = decodeURIComponent(leaf); } catch { /* Keep the safely parsed path segment. */ }
+  // An explicit GPX-download label on a same-origin index path is navigation
+  // evidence. Keep it in the bounded HTML crawl so the actual file links can
+  // be discovered and selected individually.
+  return /^(?:gpx|gpx[-_ ]?(?:tracks?|courses?|routes?)|tracks?|routes?|courses?|downloads?)$/i.test(leaf);
+}
+
+function isGpxEvidence(url: URL, link: HtmlLink, sourceUrl: URL): boolean {
   const labels = `${link.text} ${link.title}`;
   // A generic “GPX tracks” navigation label is not a file candidate. It can
   // still be followed below as a same-origin course index page.
-  return GPX_PATH.test(url.pathname) || DOWNLOAD.test(labels);
+  return GPX_PATH.test(url.pathname) || DOWNLOAD.test(labels) && !isGpxIndexLink(url, link, sourceUrl);
 }
 
 const GENERIC_EVENT_LABEL = /^(?:learn more|find out more|more|details|saznaj više|saznaj vise|više|vise|event|events|race|races|utrka|utrke|homepage|home)$/i;
@@ -645,8 +672,8 @@ function organizerEventChoices(
   for (const link of links) {
     const target = sanitizeWebUrl(link.href, sourceUrl, true);
     if (!target || hasSensitiveQuery(target) || target.href === sourceUrl.href || isDistanceRoutePath(target.pathname)
-      || isGpxEvidence(target, link) || unsupportedArchiveEvidence(target, link)) continue;
-    const priority = subpagePriority(link, target);
+      || isGpxEvidence(target, link, sourceUrl) || unsupportedArchiveEvidence(target, link)) continue;
+    const priority = subpagePriority(link, target, sourceUrl);
     if (priority >= 80 || IRRELEVANT_NAV.test(`${link.text} ${link.title}`)) continue;
     if (link.isNavigation) {
       structure.prospectsExcludedByNavigation = incrementDiagnosticCount(structure.prospectsExcludedByNavigation);
@@ -708,6 +735,77 @@ function organizerEventChoices(
   return { choices: [...choices.values()], eventLinkProspects, meaningfulHeadingCount, meaningfulFallbackLabelCount, qualifyingLabelsBySource, structure };
 }
 
+const COURSE_PATH_SEGMENT = /^(?:race|races|event|events|course|courses|distance|distances|razdalja|razdalje|distancia|distancias|distanza|distanze)$/i;
+const COURSE_LABEL_CONTEXT = /\b(?:trail|ultra|course|race|route|distance|razdalja|razdalje|parcours|trase?)\b/i;
+const NON_COURSE_CHOICE_WORDS = new Set(["trail", "ultra", "course", "race", "event", "events", "route", "distance", "razdalja", "razdalje", "parcours", "powered", "the", "for", "of", "and", "by"]);
+
+function courseNameEvidence(value: string): boolean {
+  const distance = distanceIn(value);
+  if (!distance) return false;
+  const remainder = value.replace(/\d{1,3}(?:[.,]\d{1,2})?\s*(?:km|k|mi|miles?|M)\b/gi, " ");
+  const words = remainder.match(/[\p{L}\p{N}]+/gu) ?? [];
+  return words.filter((word) => !NON_COURSE_CHOICE_WORDS.has(word.toLocaleLowerCase())).length >= 1;
+}
+
+function organizerCourseChoices(links: HtmlLink[], sourceUrl: URL, maxChoices = 8): OfficialGpxCourseChoice[] {
+  const choices = new Map<string, OfficialGpxCourseChoice>();
+  const conflictingEditionUrls = new Set<string>();
+  for (const link of links) {
+    const target = sanitizeWebUrl(link.href, sourceUrl, true);
+    if (!target || target.href === sourceUrl.href || hasSensitiveQuery(target) ||
+      isGpxEvidence(target, link, sourceUrl) || unsupportedArchiveEvidence(target, link) ||
+      IRRELEVANT_NAV.test(`${link.text} ${link.title} ${link.ariaLabel}`)) continue;
+
+    let decodedPath = target.pathname;
+    try { decodedPath = decodeURIComponent(target.pathname); } catch { /* Keep the safely parsed path. */ }
+    const pathWords = decodedPath.replace(/[._-]+/g, " ");
+    const pathDistance = distanceIn(pathWords);
+    const explicitEvidence = [link.text, link.title, link.ariaLabel, link.contextHeading ?? "", link.cardContext ?? ""]
+      .filter(Boolean).join(" ");
+    const explicitDistance = distanceIn(explicitEvidence);
+    if (!pathDistance || !explicitDistance || !officialCourseLabelsMatch(pathDistance, explicitDistance)) continue;
+
+    const pathSegments = decodedPath.split("/").filter(Boolean);
+    const hasCoursePath = pathSegments.some((segment) => COURSE_PATH_SEGMENT.test(segment));
+    const courseName = [link.contextHeading, link.text, link.title, link.ariaLabel, link.cardContext]
+      .filter((value): value is string => Boolean(value))
+      .map((value) => value.replace(/\s+/g, " ").trim())
+      .find((value) => courseNameEvidence(value) && COURSE_LABEL_CONTEXT.test(value));
+    const courseContext = hasCoursePath || Boolean(courseName && COURSE_LABEL_CONTEXT.test(explicitEvidence));
+    if (!courseContext || !courseName || link.isNavigation && !hasCoursePath) continue;
+
+    const yearMatches = [...new Set([...explicitEvidence, decodedPath].join(" ").match(/\b20\d{2}\b/g)?.map(Number) ?? [])];
+    if (yearMatches.length > 1) conflictingEditionUrls.add(target.href);
+    const editionYear = yearMatches.length === 1 ? yearMatches[0] : null;
+    const evidence = [
+      link.text && `link text: ${link.text}`,
+      link.title && `title: ${link.title}`,
+      link.ariaLabel && `aria-label: ${link.ariaLabel}`,
+      link.contextHeading && `course-list context: ${link.contextHeading}`,
+      `matching course distance in link and same-origin destination: ${explicitDistance}`,
+    ].filter(Boolean) as string[];
+    const existing = choices.get(target.href);
+    if (existing) {
+      if (existing.editionYear !== null && editionYear !== null && existing.editionYear !== editionYear) conflictingEditionUrls.add(target.href);
+      existing.supportingEvidence = [...new Set([...existing.supportingEvidence, ...evidence])].slice(0, 6);
+      if (existing.displayName.length < courseName.length) existing.displayName = courseName.slice(0, 180);
+      existing.editionYear = conflictingEditionUrls.has(target.href) ? null : existing.editionYear ?? editionYear;
+      continue;
+    }
+    if (choices.size >= maxChoices) continue;
+    choices.set(target.href, {
+      url: target.href,
+      sourcePageUrl: publicSourceUrl(sourceUrl),
+      linkText: link.text.slice(0, 200),
+      displayName: courseName.slice(0, 180),
+      distanceLabel: explicitDistance,
+      editionYear,
+      supportingEvidence: evidence.slice(0, 6),
+    });
+  }
+  return [...choices.values()];
+}
+
 function unsupportedArchiveEvidence(url: URL, link: HtmlLink): boolean {
   return /\.zip$/i.test(url.pathname) && /\bgpx\b/i.test(`${link.text} ${link.title} ${link.contextHeading ?? ""}`);
 }
@@ -731,14 +829,14 @@ function rootHtmlProblem(response: SafeHttpsResponse): OfficialGpxEventDetection
   return null;
 }
 
-function subpagePriority(link: HtmlLink, target: URL, allowCourseLinkedFaq = false): number {
+function subpagePriority(link: HtmlLink, target: URL, sourceUrl: URL, allowCourseLinkedFaq = false): number {
   const label = `${link.text} ${link.title}`.trim();
   let decodedPath = target.pathname;
   try { decodedPath = decodeURIComponent(target.pathname); } catch { /* retain the safely parsed encoded path */ }
   const path = decodedPath.replace(/[-_]+/g, " ");
   const evidence = `${label} ${path}`;
   if (FAQ_NAV.test(label + " " + link.ariaLabel + " " + path)) return allowCourseLinkedFaq ? 110 : 0;
-  if (IRRELEVANT_NAV.test(evidence) || DOWNLOAD.test(label)) return 0;
+  if (IRRELEVANT_NAV.test(evidence) || DOWNLOAD.test(label) && !isGpxIndexLink(target, link, sourceUrl)) return 0;
 
   const routeLabel = ROUTE_NAV.test(label);
   const routePath = ROUTE_NAV.test(path);
@@ -752,6 +850,56 @@ function subpagePriority(link: HtmlLink, target: URL, allowCourseLinkedFaq = fal
   // global race/event indexes are deliberately excluded.
   if (RACE_NAV.test(evidence) && !/\/(?:races?|utrke|events?)(?:\/)?$/i.test(target.pathname)) return 35;
   return 0;
+}
+
+function isMapDetailsPath(url: URL): boolean {
+  return url.pathname.split("/").some((part) => /^maps?$/i.test(part));
+}
+
+function mapTargetMatchesCourse(sourceUrl: URL, target: URL, link: HtmlLink): boolean {
+  const tokens = (value: string) => value.toLocaleLowerCase().replace(/\.[a-z0-9]+$/i, "").split(/[^a-z0-9]+/)
+    .filter((token) => token.length > 2 && !/^(?:map|maps|route|routes|course|courses|race|races|details|track|tracks|gpx|download|the|and|for)$/i.test(token));
+  const sourceLeaf = sourceUrl.pathname.split("/").filter(Boolean).at(-1) ?? "";
+  const targetLeaf = target.pathname.split("/").filter(Boolean).at(-1) ?? "";
+  const sourceTokens = tokens(sourceLeaf);
+  const shared = sourceTokens.filter((token) => tokens(targetLeaf).includes(token));
+  const contextualText = `${link.contextHeading ?? ""} ${link.cardContext ?? ""}`.toLocaleLowerCase();
+  return shared.length >= 2 || sourceTokens.some((token) => token.length >= 6 && shared.includes(token))
+    || sourceTokens.some((token) => token.length >= 4 && contextualText.includes(token));
+}
+
+function hasCourseScopedMapDownloadInstruction(html: string, pageUrl: URL, courseIdentity: OfficialRaceCourseIdentity | null): boolean {
+  const segments = pageUrl.pathname.split("/").filter(Boolean);
+  const detailPath = segments.length >= 2 && /^(?:routes?|courses?|distances?)$/i.test(segments.at(-2) ?? "")
+    && !/^(?:index|tracks?|gpx|downloads?)$/i.test(segments.at(-1) ?? "");
+  if (!courseIdentity && !detailPath) return false;
+  const text = decodeEntities(html.replace(/<(script|style|noscript)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " ").replace(/<[^>]*>/g, " "))
+    .replace(/\s+/g, " ").slice(0, 200_000);
+  return /\bdownload\b[^.]{0,180}\bgpx\b/i.test(text)
+    && /\b(?:click|open|select)\b[^.]{0,120}\bdetails\b/i.test(text)
+    && /\bmap\b/i.test(text);
+}
+
+/** Reads only explicit, non-executable static GPX URL metadata. */
+function staticGpxMetadataLinks(html: string, sourceUrl: URL): HtmlLink[] {
+  const values: string[] = [];
+  const add = (raw: string | undefined) => {
+    if (!raw || values.length >= 8) return;
+    const url = sanitizeWebUrl(decodeEntities(raw.trim()), sourceUrl, true);
+    if (url && GPX_PATH.test(url.pathname) && !values.includes(url.href)) values.push(url.href);
+  };
+  for (const tag of html.matchAll(/<meta\b[^>]*>/gi)) {
+    const attrs = Object.fromEntries([...tag[0].matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g)].map((m) => [m[1].toLowerCase(), decodeEntities(m[2] ?? m[3] ?? m[4] ?? "")]));
+    const key = `${attrs.name ?? ""} ${attrs.property ?? ""}`;
+    if (/\bgpx\b/i.test(key)) add(attrs.content);
+  }
+  for (const match of html.matchAll(/\bdata-(?:gpx|route-gpx)(?:-url)?\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/gi)) add(match[1] ?? match[2] ?? match[3]);
+  return values.map((href) => ({
+    href, text: "", title: "GPX download metadata", ariaLabel: "", imageAlt: "", cardContext: null,
+    insideEventCard: false, contextHeading: null, isNavigation: false, meaningfulAnchorText: false,
+    meaningfulAriaOrTitle: false, meaningfulImageAlt: false, insideSemanticCard: false,
+    headingInSharedContainer: false, ancestorCategory: "other", nestingDepth: 0,
+  }));
 }
 
 function sanitizeWebUrl(raw: string, base: URL, sameOriginOnly: boolean): URL | null {
@@ -943,7 +1091,7 @@ export function createOfficialGpxDiscovery(
           });
         } catch { /* optional extraction capture must never affect GPX discovery */ }
         const parsedAnchors = parseAnchorLinks(html);
-        const links = parsedAnchors.links;
+        const links = [...parsedAnchors.links, ...staticGpxMetadataLinks(html, sourceUrl)];
         if (currentPage.depth === 0) {
           eventDetection.rootHtmlBytesAccepted = Math.max(0, Math.min(limits.maxResponseBytes, fetched.bytesRead));
           eventDetection.parsedAnchors = boundedDiagnosticCount(links.length);
@@ -953,7 +1101,7 @@ export function createOfficialGpxDiscovery(
         const candidatesBeforePage = candidates.size;
         const routeIndexEvidence = links.some((link) => {
           const target = sanitizeWebUrl(link.href, pageUrl, true);
-          return target !== null && !isGpxEvidence(target, link) && subpagePriority(link, target) >= 80;
+          return target !== null && !isGpxEvidence(target, link, pageUrl) && subpagePriority(link, target, pageUrl) >= 80;
         });
         for (const link of links) {
           const target = sanitizeWebUrl(link.href, pageUrl, false);
@@ -962,9 +1110,10 @@ export function createOfficialGpxDiscovery(
             link.text && `link text: ${link.text}`,
             link.title && `title: ${link.title}`,
             link.contextHeading && `associated heading: ${link.contextHeading}`,
+            ...currentPage.linkEvidence.map((item) => `linked page evidence: ${item}`),
           ].filter(Boolean) as string[];
           const zipLink = unsupportedArchiveEvidence(target, link) && !hasSensitiveQuery(target);
-          const gpxLink = !zipLink && isGpxEvidence(target, link);
+          const gpxLink = !zipLink && isGpxEvidence(target, link, pageUrl);
           if (gpxLink && !hasSensitiveQuery(target)) {
             const headingDistance = link.contextHeading ? distanceIn(link.contextHeading) : null;
             const linkDistance = distanceIn(`${link.text} ${link.title}`);
@@ -1030,7 +1179,12 @@ export function createOfficialGpxDiscovery(
             archiveCandidates.set(target.href, resource);
           } else if (!gpxLink && target.origin === firstUrl.origin && currentPage.depth < limits.maxSubpageDepth) {
             const allowCourseLinkedFaq = currentPage.depth === 0 && rootCourseIdentity !== null;
-            const priority = subpagePriority(link, target, allowCourseLinkedFaq);
+            const courseMapContext = currentPage.depth === 0 && hasCourseScopedMapDownloadInstruction(html, pageUrl, rootCourseIdentity);
+            const mapLinkLabel = `${link.text} ${link.title} ${link.ariaLabel} ${link.contextHeading ?? ""}`;
+            const linkedMapDetails = courseMapContext && isMapDetailsPath(target)
+              && mapTargetMatchesCourse(pageUrl, target, link)
+              && /\b(?:details?|route\s*map|course\s*map|map)\b/i.test(mapLinkLabel);
+            const priority = linkedMapDetails ? 115 : subpagePriority(link, target, pageUrl, allowCourseLinkedFaq);
             if (priority > 0) {
               const directLabel = `${link.text} ${link.title} ${link.ariaLabel}`;
               const linkLabel = `${directLabel} ${link.contextHeading ?? ""}`;
@@ -1042,6 +1196,10 @@ export function createOfficialGpxDiscovery(
           if (candidates.size + archiveCandidates.size >= limits.maxCandidates) break;
         }
         if (currentPage.depth === 0) {
+          const linkedCourses = organizerCourseChoices(links, sourceUrl);
+          if (candidates.size === 0 && archiveCandidates.size === 0 && !routeIndexEvidence && !rootCourseIdentity && linkedCourses.length >= 2) {
+            return { status: "course-selection-required", courses: linkedCourses };
+          }
           const eventScan = organizerEventChoices(links, sourceUrl, parsedAnchors.headingElements, parsedAnchors.meaningfulHeadingElements);
           eventDetection.eventLinkProspects = eventScan.eventLinkProspects;
           eventDetection.meaningfulHeadingCount = eventScan.meaningfulHeadingCount;

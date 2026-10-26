@@ -79,6 +79,16 @@ test("organizer event choices require explicit selection and launch a fresh scop
   assert.match(discoveryUi, /new URL\(choice\.url\)\.origin === new URL\(choice\.sourcePageUrl\)\.origin/);
 });
 
+test("organizer course choices require explicit distance selection and restart discovery from the exact course URL", () => {
+  assert.match(discoveryUi, /course-selection-required/);
+  assert.match(discoveryUi, /type="radio" name="selected-race-course"/);
+  assert.match(discoveryUi, /Course distance: \{choice\.distanceLabel\}/);
+  assert.match(discoveryUi, /Search this course for GPX links/);
+  assert.match(discoveryUi, /discoverPage\(selectedCourseUrl\)/);
+  assert.match(discoveryUi, /new URL\(choice\.url\)\.origin === new URL\(choice\.sourcePageUrl\)\.origin/);
+  assert.match(discoveryUi, /choice\.supportingEvidence\.length <= 6/);
+});
+
 test("GPX-labeled ZIP archives have explicit confirmation and validated inner-file selection", () => {
   assert.match(discoveryUi, /resourceType: "zip"/);
   assert.match(discoveryUi, /ZIP archive · \{archive\.displayLabel\}/);
@@ -128,6 +138,15 @@ test("download endpoint revalidates page link evidence and bounds body and GPX r
   assert.match(downloadRoute, /maxDuration = 30/);
   assert.match(downloadRoute, /Cache-Control.*no-store/);
   assert.match(downloadRoute, /resourceType === "zip-entry"/);
+});
+
+test("GPX download failures distinguish an HTML index from an oversized file using safe fixed reasons", () => {
+  assert.match(downloadModule, /reason: "response-too-large"/);
+  assert.match(downloadModule, /reason: "html-response"/);
+  assert.match(downloadRoute, /result\.reason \? \{ reason: result\.reason \}/);
+  assert.match(discoveryUi, /failure\.reason === "html-response"[\s\S]*?instead of a GPX file/);
+  assert.match(discoveryUi, /failure\.reason === "response-too-large"[\s\S]*?4 MiB download limit/);
+  assert.doesNotMatch(discoveryUi, /rawError|stackTrace|responseBody|internalAddress/);
 });
 
 test("discovered route stays GPX-derived without assigning race-edition provenance", () => {

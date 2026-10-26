@@ -103,6 +103,23 @@ test("same-course official station list corroborates structured course points an
   assert.equal(result.stationSegmentation.available, true);
 });
 
+test("transposed official station table corroborates only its matching structured GPX visit", () => {
+  const htmlStations = `<title>Example Ultra Edition 2027</title><h1>Example Ultra</h1><h2>0.78 km course</h2><h3>Course time limits</h3><table>
+    <tr><th>AID STATION</th><td>Ridge Aid Station</td></tr>
+    <tr><th>Distance</th><td>0.39 km</td></tr>
+  </table>`;
+  const result = buildAidStationDiscoveryV1([
+    { url: rootUrl, html: `${nextDataHtml()}${htmlStations}`, depth: 0, linkedFromUrl: null, linkEvidence: [] },
+  ], { resourceType: "gpx", sourcePageUrl: rootUrl, resourceUrl: gpxUrl, distanceLabel: "0.78 km" }, validGpx);
+  assert.equal(result.selectedContext.editionYear, 2027);
+  assert.equal(result.gpxProvenance.bindingStatus, "verified");
+  assert.deepEqual(result.visits.map((visit) => visit.roles.includes("aid-station")), [false, true, false]);
+  assert.equal(result.visits[1].position.confidence, "verified");
+  assert.equal(result.visits[1].supportingEvidence?.[0].format, "html-table");
+  assert.equal(result.visits[1].supportingEvidence?.[0].locator.kind, "html-table-column");
+  assert.equal(result.stationSegmentation.available, true);
+});
+
 test("linked same-origin station page corroborates only the selected structured course and edition", async () => {
   const stationUrl = "https://race.example/aid-stations";
   const rootHtml = `${nextDataHtml()}<a href="/aid-stations">Aid stations</a>`;

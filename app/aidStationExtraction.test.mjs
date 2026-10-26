@@ -77,6 +77,89 @@ test("HTML table adapter reads course-scoped cumulative distance and separate ne
   assert.notEqual(result.visits[0].visitId, result.visits[1].visitId);
 });
 
+const transposedAidTable = (names = ["Boršt", "Puče", "Šmarje", "Malija Stadium", "Strunjan"], distances = [17, 28, 40, 51, 59]) =>
+  `<h1>Coastal Ultra 64 km</h1><h2>64 km course</h2><h3>Course time limits</h3><table><tbody>
+    <tr><th>AID STATION</th>${names.map((name) => `<td>${name}</td>`).join("")}</tr>
+    <tr><th>Distance</th>${distances.map((distance) => `<td>${distance} km</td>`).join("")}</tr>
+    <tr><th>Elevation gain</th>${names.map((_, index) => `<td>${index * 100} m</td>`).join("")}</tr>
+    <tr><th>Distance to next aid station</th>${names.map((_, index) => `<td>${index + 5} km</td>`).join("")}</tr>
+    <tr><th>Cut-off time</th>${names.map((_, index) => `<td>${index + 1}:00</td>`).join("")}</tr>
+  </tbody></table>`;
+
+test("transposed station tables pair each name with its same-column cumulative distance and retain column provenance", () => {
+  const result = extractHtmlStationEvidence(transposedAidTable(), sourceUrl);
+  assert.deepEqual(result.visits.map((visit) => [visit.name, visit.sourcePosition.normalizedKm]), [
+    ["Boršt", 17], ["Puče", 28], ["Šmarje", 40], ["Malija Stadium", 51], ["Strunjan", 59],
+  ]);
+  assert.ok(result.visits.every((visit) => visit.roles.includes("aid-station")));
+  assert.deepEqual(result.visits.map((visit) => visit.sourceOrder), [0, 1, 2, 3, 4]);
+  assert.ok(result.visits.every((visit, index) => {
+    const parsed = stationVisitEvidenceV1Schema.safeParse(visit);
+    return parsed.success && visit.source.locator.kind === "html-table-column" && visit.source.locator.column === index + 1 && visit.sourcePosition.semantics === "cumulative";
+  }));
+  assert.equal(result.completeness.status, "complete");
+  assert.equal(result.completeness.extractedCount, 5);
+});
+
+test("transposed station table rejects absent, ambiguous, misaligned, duplicate, and invalid distance columns", () => {
+  const base = transposedAidTable();
+  assert.equal(extractHtmlStationEvidence(base.replace(/<tr><th>Distance<\/th>[\s\S]*?<\/tr>/, ""), sourceUrl).visits.length, 0);
+  assert.equal(extractHtmlStationEvidence(base.replace("<h3>Course time limits</h3>", "<h3>Race information</h3>"), sourceUrl).visits.length, 5, "the explicit AID STATION row is sufficient station context");
+  assert.equal(extractHtmlStationEvidence(base.replace("<td>59 km</td>", ""), sourceUrl).visits.length, 0, "ragged columns must not be paired");
+  assert.equal(extractHtmlStationEvidence(transposedAidTable(undefined, [17, 28, 40, 51, 51]), sourceUrl).visits.length, 0);
+  assert.equal(extractHtmlStationEvidence(transposedAidTable(undefined, [17, 28, "not published", 51, 59]), sourceUrl).visits.length, 0);
+});
+
+test("transposed tables require station context and an explicit distance property, not unrelated property columns", () => {
+  const unrelated = `<h1>64 km course</h1><h2>Course facts</h2><table>
+    <tr><th>Property</th><td>Start</td><td>Finish</td></tr><tr><th>Distance</th><td>17 km</td><td>59 km</td></tr>
+  </table>`;
+  const stationWithoutDistance = `<h2>64 km course</h2><table><tr><th>Aid Station</th><td>North Gate</td></tr><tr><th>Cut-off</th><td>4:00</td></tr></table>`;
+  assert.equal(extractHtmlStationEvidence(unrelated, sourceUrl).visits.length, 0);
+  assert.equal(extractHtmlStationEvidence(stationWithoutDistance, sourceUrl).visits.length, 0);
+});
+
+test("transposed tables keep start, finish, and checkpoints distinct and exclude post-finish services", () => {
+  const boundaries = `<h2>64 km course</h2><h3>Aid stations</h3><table>
+    <tr><th>Aid Station</th><td>Start</td><td>River Gate</td><td>Finish</td></tr>
+    <tr><th>Distance</th><td>0 km</td><td>17 km</td><td>64 km</td></tr></table>`;
+  const visits = extractHtmlStationEvidence(boundaries, sourceUrl).visits;
+  assert.deepEqual(visits.map((visit) => visit.sequenceRole), ["start", "intermediate-candidate", "finish"]);
+  assert.deepEqual(visits.map((visit) => visit.roles), [["start"], ["aid-station"], ["finish"]]);
+  const checkpoint = `<h2>64 km course</h2><h3>Checkpoints</h3><table>
+    <tr><th>Checkpoint</th><td>East gate</td><td>West gate</td></tr><tr><th>Distance</th><td>12 km</td><td>32 km</td></tr></table>`;
+  const checkpointVisits = extractHtmlStationEvidence(checkpoint, sourceUrl).visits;
+  assert.ok(checkpointVisits.every((visit) => visit.roles.includes("checkpoint") && !visit.roles.includes("aid-station")));
+  const postFinish = `<h2>64 km course</h2><h3>Aid stations</h3><table>
+    <tr><th>Aid Station</th><td>North Gate</td><td>Umag post-finish refreshments</td></tr><tr><th>Distance</th><td>17 km</td><td>65 km</td></tr></table>`;
+  assert.equal(extractHtmlStationEvidence(postFinish, sourceUrl).visits.length, 0, "an invalid post-finish column rejects the malformed mixed table as a whole");
+});
+
+test("transposed station tables preserve repeated visits, reject count conflicts, and honor edition binding", () => {
+  const repeated = extractHtmlStationEvidence(transposedAidTable(["Boršt", "Puče", "Boršt"], [17, 28, 40]), sourceUrl);
+  assert.deepEqual(repeated.visits.map((visit) => visit.name), ["Boršt", "Puče", "Boršt"]);
+  assert.notEqual(repeated.visits[0].visitId, repeated.visits[2].visitId);
+  const withWrongCount = `${transposedAidTable()}<h3>Information</h3><p>The 64 km course has 4 aid stations.</p>`;
+  const conflict = extractHtmlStationEvidence(withWrongCount, sourceUrl, { selectedCourseDistanceKm: 64, selectedCourseLabel: "64K" });
+  assert.equal(conflict.visits.length, 5);
+  assert.equal(conflict.completeness.status, "conflicting");
+  assert.equal(conflict.completeness.declaredCount, 4);
+  const wrongEdition = `<title>Coastal Ultra Edition 2026</title>${transposedAidTable()}`;
+  assert.deepEqual(extractHtmlStationEvidence(wrongEdition, sourceUrl, { expectedEditionYear: 2027 }).issues, ["course-identity-conflict"]);
+});
+
+test("transposed extraction does not promote positions when route-course or edition binding is unverified", () => {
+  const extracted = extractHtmlStationEvidence(transposedAidTable(), sourceUrl, { selectedCourseLabel: "64K", selectedCourseDistanceKm: 64 });
+  assert.equal(extracted.visits.length, 5);
+  const route = gpx([[[45, 14, 0], [45.1, 14.1, 100], [45.2, 14.2, 0]]]);
+  const unbound = alignStationEvidenceToGpx(extracted.visits, route, {
+    validatedCourse: true, editionValidated: false, bindingEvidenceIds: ["course-page"], eventName: null, editionYear: null,
+    courseLabel: "64K", courseId: null, selectedGpxUrl: "https://race.example/route.gpx", selectedCourseDistanceKm: 64,
+  });
+  assert.ok(unbound.visits.every((visit) => visit.position.confidence === "unresolved"));
+  assert.ok(unbound.visits.every((visit) => visit.position.reason === "course-binding-unverified"));
+});
+
 test("multi-course HTML requires explicit course selection and does not mix lists", () => {
   const html = `<h1>Example Ultra</h1><h2>100 km course</h2><h3>Aid stations</h3><ul><li>Aid Station 1: North Gate, 30 km</li></ul>
     <h2>50 km course</h2><h3>Aid stations</h3><ul><li>Aid Station 1: South Gate, 20 km</li></ul>`;
@@ -199,6 +282,55 @@ test("explicit cumulative kilometer 25 maps directly on a bound longer route wit
   assert.equal(result.visits[0].position.method, "source-distance");
   assert.equal(result.visits[0].position.distanceKm, 25);
   assert.equal(result.visits[0].coordinates, null);
+});
+
+test("heading-scoped station names pair with immediately associated distance paragraphs in source order", () => {
+  const html = `<h1>Coastal Ultra 100K</h1><h2>Aid stations</h2>
+    <h3>Malo Grablje</h3><p>10.3 km</p>
+    <h3>Vidikovac</h3><p>15. 5 km</p>
+    <h3>Stari Grad</h3><p>25. km</p>
+    <h3>Vrisnik</h3><p>46.6 kilometers</p>
+    <h3>Zavala</h3><p>62 km</p>
+    <h3>Vrisnik</h3><p>70.3 km</p>
+    <h3>Sv. Nedjelja</h3><p>85 km</p>
+    <h3>Milna</h3><p>95.3 km</p>`;
+  const result = extractHtmlStationEvidence(html, sourceUrl);
+  assert.deepEqual(result.visits.map((visit) => [visit.name, visit.sourcePosition?.normalizedKm]), [
+    ["Malo Grablje", 10.3], ["Vidikovac", 15.5], ["Stari Grad", 25], ["Vrisnik", 46.6],
+    ["Zavala", 62], ["Vrisnik", 70.3], ["Sv. Nedjelja", 85], ["Milna", 95.3],
+  ]);
+  assert.notEqual(result.visits[3].visitId, result.visits[5].visitId);
+  assert.deepEqual(result.visits.map((visit) => visit.roles), Array.from({ length: 8 }, () => ["aid-station"]));
+  assert.equal(result.visits[0].source.locator.path, "paragraph[0]");
+  assert.match(result.visits[0].source.excerpt, /Malo Grablje \| 10\.3 km/);
+});
+
+test("heading distance extraction rejects distant, ambiguous, malformed and timing-only associations", () => {
+  const distant = extractHtmlStationEvidence(`<h2>Aid stations</h2><h3>North Aid Station</h3><p>Refreshments are available.</p><h3>General information</h3><p>Course distance is 20 km.</p>`, sourceUrl);
+  assert.equal(distant.visits.length, 0);
+  const timing = extractHtmlStationEvidence(`<h2>Aid stations</h2><h3>North Gate</h3><p>Cutoff is 4 hours at 10 km.</p>`, sourceUrl);
+  assert.equal(timing.visits.length, 0);
+  const ambiguous = extractHtmlStationEvidence(`<h2>Aid stations</h2><h3>North Gate</h3><p>10 km then 12 km after the checkpoint.</p>`, sourceUrl);
+  assert.equal(ambiguous.visits.length, 0);
+  const malformed = extractHtmlStationEvidence(`<h2>Aid stations</h2><h3>North Gate</h3><p>10,,5 km</p>`, sourceUrl);
+  assert.equal(malformed.visits.length, 0);
+  const afterFinish = extractHtmlStationEvidence(`<h2>Aid stations</h2><h3>Post-finish refreshments in Umag</h3><p>101 km</p>`, sourceUrl);
+  assert.equal(afterFinish.visits.length, 0);
+});
+
+test("heading evidence keeps aid, checkpoint, water-only, start and finish roles distinct", () => {
+  const html = `<h2>Course 20 km</h2>
+    <h3>Start</h3><p>0 km</p>
+    <h2>Checkpoints</h2><h3>Timing Gate</h3><p>5 km</p>
+    <h2>Water-only points</h2><h3>Spring</h3><p>10 km</p>
+    <h2>Aid stations</h2><h3>Village Station</h3><p>15 km</p>
+    <h2>Finish</h2><p>20 km</p>`;
+  const result = extractHtmlStationEvidence(html, sourceUrl);
+  assert.deepEqual(result.visits.map((visit) => [visit.name, visit.sequenceRole, visit.roles]), [
+    ["Start", "start", ["start"]], ["Timing Gate", "intermediate-candidate", ["checkpoint"]],
+    ["Spring", "intermediate-candidate", ["water-only"]], ["Village Station", "intermediate-candidate", ["aid-station"]],
+    ["Finish", "finish", ["finish"]],
+  ]);
 });
 
 test("coordinate projection verifies unambiguous matches and leaves self-crossing visits unresolved", () => {

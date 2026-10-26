@@ -32,6 +32,20 @@ test("identifies a course-specific URL only when official page evidence corrobor
   assert.equal(identifyOfficialRaceCourse("https://race.example/event", "<h1>110K</h1>"), null, "a course heading alone on an event-level URL is not a course URL");
 });
 
+test("identifies descriptive distance-page slugs only when page title or heading confirms the exact distance", () => {
+  const courseUrl = "https://race.example/en/distances/example-ultra-trail-64-km/";
+  const courseHtml = "<title>Example Ultra Trail 64 km - 2026</title><h1>Example Ultra Trail 64 km</h1>";
+  assert.deepEqual(identifyOfficialRaceCourse(courseUrl, courseHtml), {
+    courseLabel: "64 km",
+    editionYear: 2026,
+    eventName: "Example Ultra Trail 64 km - 2026",
+    sourcePageUrl: courseUrl,
+    evidence: ["course URL path confirms distance: 64 km", "title confirms course label: 64 km"],
+  });
+  assert.equal(identifyOfficialRaceCourse(courseUrl, "<title>Example Ultra Trail 108 km</title><h1>Example Ultra Trail 108 km</h1>"), null);
+  assert.equal(identifyOfficialRaceCourse("https://race.example/news/example-trail-64-km/", courseHtml), null);
+});
+
 test("preselects one exact course candidate and never uses an approximate distance match", () => {
   const identity = identifyOfficialRaceCourse(url, html);
   assert.ok(identity);

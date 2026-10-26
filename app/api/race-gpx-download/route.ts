@@ -10,7 +10,7 @@ function failureResponse(result: Exclude<OfficialGpxDownloadResult, { status: "s
       : ["invalid-gpx", "invalid-archive", "unsafe-archive", "archive-too-large", "no-gpx-in-archive"].includes(result.status) ? 422
         : result.status === "provider-failure" && result.category === "busy" ? 429
           : result.status === "provider-failure" && result.category === "timeout" ? 504 : 502;
-  return Response.json({ status: result.status, ...(result.status === "provider-failure" ? { category: result.category } : {}) }, {
+  return Response.json({ status: result.status, ...(result.status === "provider-failure" ? { category: result.category, ...(result.reason ? { reason: result.reason } : {}) } : {}) }, {
     status,
     headers: { "Cache-Control": "no-store" },
   });

@@ -22,7 +22,7 @@ export type OfficialGpxDownloadResult =
   | { status: "archive-choices"; archiveDigest: string; files: Array<Pick<ExtractedGpxFile, "id" | "displayLabel">> }
   | { status: "archive-inspection-success"; archiveDigest: string; files: ExtractedGpxFile[] }
   | { status: "unsafe-destination" | "invalid-url" | "candidate-not-found" | "archive-changed" | "invalid-gpx" | "invalid-archive" | "unsafe-archive" | "archive-too-large" | "no-gpx-in-archive" }
-  | { status: "provider-failure"; category: "timeout" | "unavailable" | "invalid-response" | "busy" };
+  | { status: "provider-failure"; category: "timeout" | "unavailable" | "invalid-response" | "busy"; reason?: "response-too-large" | "html-response" | "unsupported-response" };
 
 type SafeFetcher = (
   input: string,
@@ -61,9 +61,12 @@ export function createOfficialGpxDownloader(
       }, dependencies);
       const contentType = response.headers["content-type"]?.split(";")[0].trim().toLowerCase();
       const contentEncoding = response.headers["content-encoding"]?.toLowerCase();
-      if (response.bytesRead > limits.maxBytes || response.body.byteLength > limits.maxBytes || response.statusCode < 200 || response.statusCode >= 300 || !ACCEPTED_GPX_TYPES.has(contentType ?? "") || (contentEncoding && contentEncoding !== "identity")) {
-        return { status: "provider-failure", category: "invalid-response" };
+      if (response.bytesRead > limits.maxBytes || response.body.byteLength > limits.maxBytes) return { status: "provider-failure", category: "invalid-response", reason: "response-too-large" };
+      if (response.statusCode < 200 || response.statusCode >= 300 || (contentEncoding && contentEncoding !== "identity")) {
+        return { status: "provider-failure", category: "invalid-response", reason: "unsupported-response" };
       }
+      if (contentType === "text/html" || contentType === "application/xhtml+xml") return { status: "provider-failure", category: "invalid-response", reason: "html-response" };
+      if (!ACCEPTED_GPX_TYPES.has(contentType ?? "")) return { status: "provider-failure", category: "invalid-response", reason: "unsupported-response" };
 
       let text: string;
       try {
@@ -77,7 +80,8 @@ export function createOfficialGpxDownloader(
       const message = error instanceof Error ? error.name : "";
       if (message === "UnsafeDestinationError") return { status: "unsafe-destination" };
       if (message === "OfficialGpxDiscoveryTimeoutError") return { status: "provider-failure", category: "timeout" };
-      if (message === "InvalidResponseError") return { status: "provider-failure", category: "invalid-response" };
+      if (message === "ResponseSizeLimitError") return { status: "provider-failure", category: "invalid-response", reason: "response-too-large" };
+      if (message === "InvalidResponseError") return { status: "provider-failure", category: "invalid-response", reason: "unsupported-response" };
       return { status: "provider-failure", category: "unavailable" };
     } finally {
       activeGpxDownloads--;

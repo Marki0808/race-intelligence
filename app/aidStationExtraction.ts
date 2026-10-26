@@ -14,9 +14,10 @@ export const COORDINATE_MATCH_TOLERANCE_M = 100;
 export const stationRoleSchema = z.enum(["aid-station", "water-only", "checkpoint", "start", "finish"]);
 export const stationPositionConfidenceSchema = z.enum(["verified", "approximate", "unresolved"]);
 const sourceLocatorSchema = z.object({
-  kind: z.enum(["next-data-json-path", "html-table-row", "html-list-item", "html-prose"]),
+  kind: z.enum(["next-data-json-path", "html-table-row", "html-table-column", "html-list-item", "html-prose"]),
   path: z.string().min(1).max(300),
   row: z.number().int().nonnegative().optional(),
+  column: z.number().int().nonnegative().optional(),
 }).strict();
 const coordinateSchema = z.object({ latitude: z.number().finite().min(-90).max(90), longitude: z.number().finite().min(-180).max(180) }).strict();
 const sourceDistanceSchema = z.object({
@@ -375,6 +376,78 @@ function tableRows(table: HtmlNode): string[][] {
     visit(row); return cells;
   });
 }
+function normalizedTableRowLabel(value: string): string {
+  return value.toLocaleLowerCase().replace(/[\s:：]+/g, " ").replace(/[()\[\]]/g, "").trim();
+}
+function extractTransposedHtmlTable(block: HtmlBlock, sourceUrl: string, options: StationExtractionOptions, eventName: string | null, year: number | null, rows: string[][]): StationVisitEvidenceV1[] {
+  if (rows.length < 2 || rows.length > 40) return [];
+  const width = rows[0]?.length ?? 0;
+  // Column alignment is the evidence: a ragged table cannot safely pair names and distances.
+  if (width < 2 || width > MAX_VISITS + 1 || rows.some((row) => row.length !== width)) return [];
+  const headingText = block.headings.join(" ");
+  const stationNameRows = rows.flatMap((row, index) => {
+    const label = normalizedTableRowLabel(row[0] ?? "");
+    const aidRow = /^(?:aid stations?|aid points?)$/.test(label);
+    const waterRow = /^(?:water stations?|water[- ]only points?)$/.test(label);
+    const checkpointRow = /^(?:checkpoints?|control points?|timing points?)$/.test(label);
+    const genericStationRow = /^(?:stations?|station names?|locations?|places?)$/.test(label) && /\b(?:aid stations?|water stations?|checkpoints?|refreshment points?)\b/i.test(headingText);
+    return aidRow || waterRow || checkpointRow || genericStationRow
+      ? [{ index, roles: aidRow || genericStationRow ? ["aid-station" as const] : waterRow ? ["water-only" as const] : ["checkpoint" as const] }]
+      : [];
+  });
+  if (stationNameRows.length !== 1) return [];
+  const distanceRows = rows.flatMap((row, index) => {
+    const label = normalizedTableRowLabel(row[0] ?? "");
+    if (/\b(?:to next|next|between|interval|remaining)\b/.test(label)) return [];
+    return /^(?:distance|course distance|distance from start|km|kilometers?|kilometres?|mileage)(?:\s+(?:\(?(?:km|mi|m)\)?))?$/.test(label)
+      ? [{ index, label }]
+      : [];
+  });
+  if (distanceRows.length !== 1) return [];
+  const nameRow = stationNameRows[0];
+  const distanceRow = distanceRows[0];
+  if (nameRow.index === distanceRow.index) return [];
+  const contextCourse = courseFromHeadings(block.headings);
+  const courseLabel = contextCourse.label ?? options.selectedCourseLabel ?? options.expectedCourseLabel ?? null;
+  const courseKm = contextCourse.km ?? options.selectedCourseDistanceKm ?? null;
+  const distanceLabel = rows[distanceRow.index][0] ?? "";
+  const inferredUnit: "km" | "mi" | "m" | null = /\bmi(?:le|les)?\b/.test(distanceLabel) ? "mi" : /\bmeters?\b|\(m\)/.test(distanceLabel) ? "m" : /\bkm\b|kilomet/.test(distanceLabel) ? "km" : null;
+  const visits: StationVisitEvidenceV1[] = [];
+  const seenPositions = new Set<number>();
+  for (let column = 1; column < width; column++) {
+    const rawName = cleanText(rows[nameRow.index][column], 200);
+    const rawDistance = cleanText(rows[distanceRow.index][column], 100);
+    if (!rawName || !rawDistance) return [];
+    const nameRoles = rolesFromExplicitText(rawName);
+    const isStart = nameRoles.includes("start") || /^start(?:ing)?(?:\s|$)/i.test(rawName);
+    const isFinish = nameRoles.includes("finish") || /^finish(?:\s|$)/i.test(rawName);
+    const postFinish = /\b(?:after|post)[- ]finish\b|\bfinish(?:-line)? refreshments\b/i.test(rawName);
+    if (postFinish) return [];
+    const distanceText = /\b(?:km|kilomet(?:er|re)s?|mi|miles?|m)\b/i.test(rawDistance)
+      ? rawDistance
+      : inferredUnit ? `${rawDistance} ${inferredUnit}` : rawDistance;
+    const position = extractDistance(distanceText, "cumulative");
+    if (!position || position.qualifier === "range" || position.qualifier === "at-least") return [];
+    const km = position.normalizedKm;
+    if ((!isStart && km <= 0) || (courseKm != null && (km > courseKm + 0.001 || (!isFinish && km >= courseKm - 0.001))) || [...seenPositions].some((prior) => Math.abs(prior - km) <= 0.001)) return [];
+    seenPositions.add(km);
+    // An aid-station table may include explicit start/finish columns; never label those as aid visits.
+    const roles = isStart ? ["start" as const] : isFinish ? ["finish" as const] : [...new Set([...nameRow.roles, ...nameRoles])];
+    const excerpt = `${rows[nameRow.index][0]}: ${rawName} | ${distanceLabel}: ${rawDistance}`.slice(0, 400);
+    const name = extractName(rawName) ?? (isStart || isFinish ? rawName : null);
+    if (!name) return [];
+    visits.push(buildVisit({
+      visitId: `${sourceUrl}#${block.locator}-column-${column}`,
+      source: { url: sourceUrl, format: "html-table", locator: { kind: "html-table-column", path: block.locator, row: nameRow.index, column }, excerpt },
+      context: toContext(options, courseLabel, courseKm, year, eventName), sourceOrder: column - 1, uid: null, name, roles,
+      sequenceRole: isStart ? "start" : isFinish ? "finish" : "intermediate-candidate",
+      classification: roles.length ? "explicit-role" : "station-candidate", sourcePosition: position, sourceIntervalToNext: null, coordinates: null,
+      sourceAttributes: { nameRow: rows[nameRow.index][0].slice(0, 200), distanceRow: distanceLabel.slice(0, 200), columnIndex: column },
+      ambiguities: [],
+    }));
+  }
+  return visits;
+}
 function extractHtmlTable(block: HtmlBlock, sourceUrl: string, options: StationExtractionOptions, eventName: string | null, year: number | null): StationVisitEvidenceV1[] {
   const rows = tableRows(block.node); if (rows.length < 2) return [];
   const header = rows[0].map((s) => s.toLocaleLowerCase());
@@ -384,7 +457,9 @@ function extractHtmlTable(block: HtmlBlock, sourceUrl: string, options: StationE
   const contextCourse = courseFromHeadings(block.headings);
   const courseLabel = contextCourse.label ?? options.selectedCourseLabel ?? options.expectedCourseLabel ?? null;
   const courseKm = contextCourse.km ?? options.selectedCourseDistanceKm ?? null;
-  if (nameIdx < 0 || distanceIdx < 0 || !/(?:station|aid|checkpoint|water)/i.test(`${block.headings.join(" ")} ${header.join(" ")}`)) return [];
+  if (nameIdx < 0 || distanceIdx < 0 || !/(?:station|aid|checkpoint|water)/i.test(`${block.headings.join(" ")} ${header.join(" ")}`)) {
+    return extractTransposedHtmlTable(block, sourceUrl, options, eventName, year, rows);
+  }
   const hDistance = header[distanceIdx]; const semantics: "cumulative" | "interval" | "unknown" = /\b(from start|course km|mile marker|cumulative|distance along)\b/.test(hDistance) || /^(?:km|kilomet(?:er|re)s?|mile|miles|mileage)$/i.test(hDistance.trim()) ? "cumulative" : /\b(next|interval|between|to next)\b/.test(hDistance) ? "interval" : "unknown";
   return rows.slice(1).flatMap((row, rowIndex) => {
     const cellText = row.join(" | ");
@@ -411,15 +486,49 @@ function stationContextRoles(headings: string[]): StationRole[] {
 }
 function extractHtmlListOrProse(block: HtmlBlock, sourceUrl: string, options: StationExtractionOptions, eventName: string | null, year: number | null, order: number, selectedGpxUrl: string | null): StationVisitEvidenceV1[] {
   const text = block.text; const contextRoles = stationContextRoles(block.headings);
-  const hasExplicitRole = rolesFromExplicitText(text).length > 0 || contextRoles.length > 0;
+  const localHeading = block.headings.at(-1) ?? "";
+  const headingRoles = rolesFromExplicitText(localHeading);
+  const hasExplicitRole = rolesFromExplicitText(text).length > 0 || contextRoles.length > 0 || headingRoles.length > 0;
   if (!hasExplicitRole) return [];
-  const distance = extractDistance(text, /\b(next|interval|between stations)\b/i.test(text) ? "interval" : "unknown"); if (!distance) return [];
-  const parsed = parseRolesAndName(text, contextRoles); if (!parsed.name) return [];
+  if ([...text.matchAll(/\b\d{1,3}(?:[.,]\s*\d{1,2})?\s*(?:km|kilomet(?:er|re)s?|mi|miles?)\b/gi)].length > 1) return [];
+  let distance = extractDistance(text, /\b(next|interval|between stations)\b/i.test(text) ? "interval" : "unknown");
+  let parsed = parseRolesAndName(text, contextRoles);
+  let excerpt = text;
+  if (!distance || !parsed.name) {
+    const roles = [...new Set([...contextRoles, ...headingRoles])];
+    const headingName = extractName(localHeading) ?? (headingRoles.includes("start") ? "Start" : headingRoles.includes("finish") ? "Finish" : null);
+    const headingDistance = parseHeadingDistance(text);
+    if (!headingDistance || !headingName || !roles.length || isGenericSectionHeading(localHeading)
+      || /\b(?:after|post)[- ]finish\b/i.test(`${localHeading} ${text}`)) return [];
+    distance = headingDistance;
+    parsed = { roles, name: headingName };
+    excerpt = `${localHeading} | ${text}`;
+  }
   const course = courseFromHeadings(block.headings); const format = block.kind === "list" ? "html-list" : "html-prose";
   return [buildVisit({
-    visitId: `${sourceUrl}#${block.locator}`, source: { url: sourceUrl, format, locator: { kind: format === "html-list" ? "html-list-item" : "html-prose", path: block.locator }, excerpt: text.slice(0, 400) },
+    visitId: `${sourceUrl}#${block.locator}`, source: { url: sourceUrl, format, locator: { kind: format === "html-list" ? "html-list-item" : "html-prose", path: block.locator }, excerpt: excerpt.slice(0, 400) },
     context: toContext(options, course.label, course.km, year, eventName, selectedGpxUrl), sourceOrder: order, uid: null, name: parsed.name, roles: parsed.roles, sequenceRole: parsed.roles.includes("start") ? "start" : parsed.roles.includes("finish") ? "finish" : "intermediate-candidate", classification: parsed.roles.length ? "explicit-role" : "station-candidate", sourcePosition: distance, sourceIntervalToNext: null, coordinates: null, sourceAttributes: {}, ambiguities: distance.semantics === "unknown" ? ["distance-semantics-unclear"] : [],
   })];
+}
+
+function isGenericSectionHeading(text: string): boolean {
+  return /^(?:general|course|race|event|route|station|stations|aid station|aid stations|water(?:[- ]only)? (?:point|points|station|stations)|checkpoint|checkpoints|refreshments?|information|details|schedule|results|registration)(?:\s+(?:information|details|points|stations|list|for runners))?$/i.test(text.trim());
+}
+
+/** Accepts only a single, standalone course-distance marker immediately under a heading. */
+function parseHeadingDistance(text: string): z.infer<typeof sourceDistanceSchema> | null {
+  if (/\b(?:cut[- ]?off|time\s*limit|hours?|minutes?|time|opens?|closes?|at\s+\d{1,2}:\d{2})\b/i.test(text)) return null;
+  const normalized = text
+    .replace(/(\d{1,3})[.,]\s+(\d{1,2})(?=\s*(?:km|kilomet(?:er|re)s?|mi|miles?)\b)/gi, "$1.$2")
+    .replace(/(\d{1,3})\.\s*(?=(?:km|kilomet(?:er|re)s?|mi|miles?)\b)/gi, "$1");
+  const matches = [...normalized.matchAll(/\b\d{1,3}(?:[.,]\d{1,2})?\s*(?:km|kilomet(?:er|re)s?|mi|miles?)\b/gi)];
+  if (matches.length !== 1) return null;
+  const match = matches[0];
+  const residue = `${normalized.slice(0, match.index)} ${normalized.slice((match.index ?? 0) + match[0].length)}`
+    .replace(/\b(?:distance|course|route|at|km|marker|the)\b/gi, " ")
+    .replace(/[\s:：,.;()\-–—]+/g, "").trim();
+  if (residue) return null;
+  return extractDistance(match[0], "cumulative");
 }
 
 function selectedCourseMention(text: string, options: StationExtractionOptions): { label: string; km: number | null } | null {

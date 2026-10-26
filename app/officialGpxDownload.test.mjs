@@ -100,12 +100,15 @@ test("rejects malformed GPX, HTML, unsupported media, and oversized response bod
   assert.deepEqual(await malformed("https://race.example/route.gpx"), { status: "invalid-gpx" });
 
   const html = createOfficialGpxDownloader(async (url) => ({ ...gpxResponse(validGpx, "text/html"), finalUrl: new URL(url), bytesRead: validGpx.length }));
-  assert.deepEqual(await html("https://race.example/route.gpx"), { status: "provider-failure", category: "invalid-response" });
+  assert.deepEqual(await html("https://race.example/route.gpx"), { status: "provider-failure", category: "invalid-response", reason: "html-response" });
 
   const oversized = createOfficialGpxDownloader(async (url) => ({
     ...gpxResponse("x".repeat(4 * 1024 * 1024 + 1)), finalUrl: new URL(url), bytesRead: 4 * 1024 * 1024 + 1,
   }));
-  assert.deepEqual(await oversized("https://race.example/route.gpx"), { status: "provider-failure", category: "invalid-response" });
+  assert.deepEqual(await oversized("https://race.example/route.gpx"), { status: "provider-failure", category: "invalid-response", reason: "response-too-large" });
+
+  const streamedOversize = createOfficialGpxDownloader(async () => { throw Object.assign(new Error("internal details are not returned"), { name: "ResponseSizeLimitError" }); });
+  assert.deepEqual(await streamedOversize("https://race.example/route.gpx"), { status: "provider-failure", category: "invalid-response", reason: "response-too-large" });
 });
 
 test("archive inspection extracts and validates one GPX entirely in memory", async () => {
@@ -317,6 +320,12 @@ test("download API returns validated GPX with station metadata without JSON-esca
     method: "POST", body: JSON.stringify({ sourcePageUrl: "https://race.example/event", gpxUrl: "https://race.example/route.gpx" }),
   }));
   assert.deepEqual(await failure.json(), { status: "provider-failure", category: "unavailable" });
+
+  const htmlFailureHandler = createRaceGpxDownloadPost(async () => ({ status: "provider-failure", category: "invalid-response", reason: "html-response" }));
+  const htmlFailure = await htmlFailureHandler(new Request("https://app.example/api/race-gpx-download", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sourcePageUrl: "https://race.example/event", gpxUrl: "https://race.example/race/tracks" }),
+  }));
+  assert.deepEqual(await htmlFailure.json(), { status: "provider-failure", category: "invalid-response", reason: "html-response" });
 });
 
 test("download API returns bounded archive-choice metadata, not every extracted GPX body", async () => {

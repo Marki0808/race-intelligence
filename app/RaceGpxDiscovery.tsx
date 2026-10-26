@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { setPendingDiscoveredGpx } from "./discoveredGpxTransfer";
 import type { AidStationDiscoveryV1 } from "./aidStationDiscovery";
-import type { OfficialGpxCourseSelection } from "./officialGpxDiscovery";
+import type { OfficialGpxCourseChoice, OfficialGpxCourseSelection } from "./officialGpxDiscovery";
 
 type Candidate = {
   gpxUrl: string;
@@ -41,7 +41,7 @@ type EventChoice = {
   supportingEvidence: string[];
 };
 
-type DiscoveryResponse = { status: string; candidates?: Candidate[]; archives?: ArchiveCandidate[]; events?: EventChoice[]; courseSelection?: unknown; category?: string };
+type DiscoveryResponse = { status: string; candidates?: Candidate[]; archives?: ArchiveCandidate[]; events?: EventChoice[]; courses?: OfficialGpxCourseChoice[]; courseSelection?: unknown; category?: string };
 
 function readCourseSelection(value: unknown): OfficialGpxCourseSelection | null {
   if (!value || typeof value !== "object") return null;
@@ -111,10 +111,12 @@ export default function RaceGpxDiscovery() {
   const [archiveFiles, setArchiveFiles] = useState<ExtractedGpxChoice[]>([]);
   const [archiveDigest, setArchiveDigest] = useState("");
   const [events, setEvents] = useState<EventChoice[]>([]);
+  const [courses, setCourses] = useState<OfficialGpxCourseChoice[]>([]);
   const [selectedUrl, setSelectedUrl] = useState("");
   const [selectedArchiveUrl, setSelectedArchiveUrl] = useState("");
   const [selectedArchiveFileId, setSelectedArchiveFileId] = useState("");
   const [selectedEventUrl, setSelectedEventUrl] = useState("");
+  const [selectedCourseUrl, setSelectedCourseUrl] = useState("");
   const [courseSelection, setCourseSelection] = useState<OfficialGpxCourseSelection | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "no-results" | "unsupported" | "error" | "downloading" | "archive-selection" | "ready">("idle");
   const [message, setMessage] = useState("");
@@ -129,10 +131,12 @@ export default function RaceGpxDiscovery() {
     setArchiveFiles([]);
     setArchiveDigest("");
     setEvents([]);
+    setCourses([]);
     setSelectedUrl("");
     setSelectedArchiveUrl("");
     setSelectedArchiveFileId("");
     setSelectedEventUrl("");
+    setSelectedCourseUrl("");
     setCourseSelection(null);
     setSubmittedUrl(url);
     setMessage("");
@@ -187,6 +191,23 @@ export default function RaceGpxDiscovery() {
           return;
         }
       }
+      if (result.status === "course-selection-required" && Array.isArray(result.courses)) {
+        const safeCourses = result.courses.filter((choice) =>
+          choice && isSafeDisplayUrl(choice.url) && isSafeDisplayUrl(choice.sourcePageUrl) &&
+          new URL(choice.url).origin === new URL(choice.sourcePageUrl).origin &&
+          typeof choice.displayName === "string" && choice.displayName.trim().length > 0 && choice.displayName.length <= 180 &&
+          typeof choice.linkText === "string" && choice.linkText.length <= 200 &&
+          typeof choice.distanceLabel === "string" && choice.distanceLabel.length <= 40 &&
+          (choice.editionYear === null || Number.isInteger(choice.editionYear) && choice.editionYear >= 1900 && choice.editionYear <= 3000) &&
+          Array.isArray(choice.supportingEvidence) && choice.supportingEvidence.length <= 6 &&
+          choice.supportingEvidence.every((item) => typeof item === "string" && item.length <= 300),
+        );
+        if (safeCourses.length >= 2) {
+          setCourses(safeCourses);
+          setStatus("idle");
+          return;
+        }
+      }
       if (result.status === "unsupported-resources") {
         setMessage("This page links to a route resource this flow cannot process. You can upload a GPX file instead.");
         setStatus("unsupported");
@@ -219,6 +240,11 @@ export default function RaceGpxDiscovery() {
   async function handleEventSelection() {
     if (!events.some((choice) => choice.url === selectedEventUrl) || status === "loading") return;
     await discoverPage(selectedEventUrl);
+  }
+
+  async function handleCourseSelection() {
+    if (!courses.some((choice) => choice.url === selectedCourseUrl) || status === "loading") return;
+    await discoverPage(selectedCourseUrl);
   }
 
   async function handleConfirmSelection() {
@@ -289,7 +315,7 @@ export default function RaceGpxDiscovery() {
   const showDirectCourseConfirmation = !!(exactCourseGpx && selectedUrl === exactCourseGpx.gpxUrl || exactCourseArchive && selectedArchiveUrl === exactCourseArchive.archiveUrl);
 
   async function showDownloadFailure(response: Response) {
-    let failure: { status?: string; category?: string } = {};
+    let failure: { status?: string; category?: string; reason?: string } = {};
     try { failure = await response.json() as typeof failure; } catch { /* use generic message */ }
     const detail = failure.status === "invalid-gpx" || failure.status === "no-gpx-in-archive" ? "No valid GPX route was found in the selected resource."
       : failure.status === "invalid-archive" ? "The selected ZIP archive is damaged or uses an unsupported format."
@@ -298,7 +324,9 @@ export default function RaceGpxDiscovery() {
             : failure.status === "archive-changed" ? "The archive changed while you were choosing a file. Search again and confirm the current archive."
               : failure.status === "candidate-not-found" ? "The race page changed. Search it again and choose a current route link."
                 : failure.category === "timeout" ? "The selected route took too long to download."
-                  : failure.category === "invalid-response" ? "The download was too large or was not a supported file response."
+              : failure.reason === "html-response" ? "This link opened a webpage instead of a GPX file. Choose a GPX download listed on that page."
+                : failure.reason === "response-too-large" ? "The GPX file exceeds the 4 MiB download limit."
+                  : failure.category === "invalid-response" ? "The selected link did not return a supported GPX response."
                     : "The selected route could not be retrieved safely.";
     setMessage(`${detail} You can upload a GPX file instead.`);
     setStatus("error");
@@ -401,6 +429,29 @@ export default function RaceGpxDiscovery() {
           ))}
           <button type="button" onClick={handleEventSelection} disabled={!selectedEventUrl || busy} className="min-h-11 w-full rounded-full border border-[#a7c957]/70 px-5 py-2.5 text-sm font-semibold text-[#d5e8a2] disabled:cursor-not-allowed disabled:opacity-40">
             Search this event for GPX links
+          </button>
+        </fieldset>
+      )}
+
+      {courses.length > 0 && status !== "loading" && (
+        <fieldset className="mt-4 space-y-3" data-testid="discovered-course-choices">
+          <legend className="text-sm font-semibold text-white">Choose the course you want to analyze</legend>
+          <p className="text-xs leading-5 text-amber-100/75">This page links to several distinct course distances. Choose one so routes from different courses are not mixed.</p>
+          {courses.map((choice) => (
+            <label key={choice.url} className="block min-w-0 cursor-pointer rounded-xl border border-white/10 bg-white/5 p-3 text-sm">
+              <span className="flex min-w-0 items-start gap-3">
+                <input type="radio" name="selected-race-course" value={choice.url} checked={selectedCourseUrl === choice.url} onChange={() => setSelectedCourseUrl(choice.url)} className="mt-1 accent-[#a7c957]" />
+                <span className="min-w-0 flex-1">
+                  <span className="block break-words font-semibold text-white">{choice.displayName}</span>
+                  <span className="mt-1 block text-xs text-white/65">Course distance: {choice.distanceLabel}{choice.editionYear ? ` · ${choice.editionYear}` : ""}</span>
+                  <span className="mt-1 block break-all text-xs text-white/45">Source: {choice.sourcePageUrl}</span>
+                  {choice.supportingEvidence.map((item, index) => <span key={`${index}-${item}`} className="mt-1 block break-words text-xs text-white/60">{item}</span>)}
+                </span>
+              </span>
+            </label>
+          ))}
+          <button type="button" onClick={handleCourseSelection} disabled={!selectedCourseUrl || busy} className="min-h-11 w-full rounded-full border border-[#a7c957]/70 px-5 py-2.5 text-sm font-semibold text-[#d5e8a2] disabled:cursor-not-allowed disabled:opacity-40">
+            Search this course for GPX links
           </button>
         </fieldset>
       )}
