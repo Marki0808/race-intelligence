@@ -8,18 +8,21 @@
 
 Terrain Intelligence / Mapped Terrain is disabled in the public V1 experience. Repeated Production OSM retrieval failures make evidence delivery unreliable, and useful explicit `surface=*` coverage across representative routes has not been measured. No surface-coverage estimate is claimed. The terrain modules, API, adapters, evidence contracts, persistence, diagnostics, and tests remain in the repository for possible V2 use. Reactivation requires both measured useful surface coverage on representative routes and proven reliable Production delivery. The disabled-by-default gate is `TERRAIN_INTELLIGENCE_V1_ENABLED` in `app/featureFlags.ts`; Route Mode also skips shared OSM cache reads while the flag is false.
 
+Race Mode is also deferred from the public V1 experience. V1 starts with GPX Route Analysis only; automatic race GPX discovery and aid-station discovery move to V2 alongside Terrain Intelligence. The disabled-by-default `RACE_MODE_V1_ENABLED` gate in `app/featureFlags.ts` hides Race Mode discovery and supported-race search on the homepage and redirects registered race edition URLs to `/route`. Discovery modules, APIs, race data models, tests, and shared integrations remain implemented. Re-enabling the flag restores the dormant entry points without requiring their removal or reconstruction.
+
 Sections 1–9 and 11–16 describe repository-derived implementation and status. Section 10 records operational facts from Production verification; it does not imply that every code path or external-provider persistence behavior was verified in Production.
 
 ## 1. Project overview
 
-Race Intelligence helps trail runners understand a route before running or racing it. The current product has two related flows:
+Race Intelligence helps trail runners understand a route before running or racing it. The public V1 product has one entry flow:
 
-- **Race Mode:** a curated race experience resolved from a statically registered `RaceRecordData`. It presents race/edition information, course exploration, Key Moments, Course Character, sources, and course analysis.
-- **Route Mode:** a user selects a GPX file for deterministic route analysis. Analysis runs in the browser. Terrain evidence APIs and persistence remain in the codebase but are gated off from V1; normal analysis does not request OSM enrichment. The existing shared-route lookup still supports reuse of canonical route analysis and optional Mapillary cache data.
+- **Route Analysis:** a user selects a GPX file for deterministic route analysis. Analysis runs in the browser. Terrain evidence APIs and persistence remain in the codebase but are gated off from V1; normal analysis does not request OSM enrichment. The existing shared-route lookup still supports reuse of canonical route analysis and optional Mapillary cache data.
+
+Race Mode remains implemented for possible V2 use, but the `RACE_MODE_V1_ENABLED` flag disables its public homepage entry points and redirects registered edition URLs to GPX upload.
 
 Current analytical outputs include distance and elevation metrics, Route Dynamics, consolidated runner-facing Route Sections, Key Route Moments, Gradient Intelligence, Route Narrative Engine summaries, and Course Brief. Terrain Intelligence remains implemented for possible V2 use but its presentation and request controls are disabled for V1. The deterministic V2 structural Course Brief is integrated into Race Mode and Route Mode; its separate V3 geographic presentation engine is not exposed. The V1 OpenAI API/provider flow remains separate and unchanged. GPX-derived outputs are distinct from external provider evidence. Race search remains statically registered rather than database-backed.
 
-The homepage offers two equal entry paths: Race Mode looks up races already in the static registry by name or official source URL, and Route Mode opens the existing local GPX upload flow. It also offers official race webpage discovery: users can inspect GPX link candidates, explicitly select and confirm one, then send it through server-side retrieval and existing Route Mode analysis. Discovered routes remain GPX-derived and are not assigned a registered race edition.
+The public V1 homepage offers GPX Route Analysis as its single entry path. Users select a GPX file and use the existing browser-side parse and analysis flow. Race Mode discovery, registry search, registered edition pages, download APIs, and aid-station integrations are retained behind the disabled public V1 scope for possible V2 reactivation.
 
 ## 2. End-to-end data flow
 

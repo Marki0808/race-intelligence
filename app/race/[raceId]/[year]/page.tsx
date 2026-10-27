@@ -1,4 +1,5 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
+import { RACE_MODE_V1_ENABLED } from "../../../featureFlags";
 import RacePageContent from "../../../RacePageContent";
 import { raceRegistry } from "../../../raceRegistry";
 import { createRaceResolver } from "../../../raceResolver";
@@ -10,6 +11,8 @@ export default async function RaceEditionPage({
 }: {
   params: Promise<{ raceId: string; year: string }>;
 }) {
+  if (!RACE_MODE_V1_ENABLED) redirect("/route");
+
   const { raceId, year: yearParam } = await params;
   const year = Number(yearParam);
 

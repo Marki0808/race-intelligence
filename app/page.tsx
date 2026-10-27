@@ -1,16 +1,13 @@
 import Link from "next/link";
 import RaceGpxDiscovery from "./RaceGpxDiscovery";
 import RaceSearch from "./RaceSearch";
+import { RACE_MODE_V1_ENABLED } from "./featureFlags";
 import { raceRegistry } from "./raceRegistry";
 
 const faqs = [
   {
     question: "What can I analyze?",
-    answer: "Use a supported race, discover a GPX link from an official race page, or upload a GPX route. Route analysis describes the elevation profile, sections and key route moments.",
-  },
-  {
-    question: "Will every race webpage provide a route?",
-    answer: "No. Route links depend on what the webpage makes available. If discovery cannot find one, try the event’s direct course page or upload a GPX file.",
+    answer: "Upload a GPX route to explore its elevation profile, Route Sections and Key Moments.",
   },
   {
     question: "Does the analysis predict my finish time?",
@@ -35,12 +32,12 @@ export default function Home() {
       <section className="overflow-hidden bg-[#17211c] text-white">
         <div className="mx-auto grid max-w-7xl gap-12 px-6 py-16 sm:py-20 lg:grid-cols-[1.05fr_.95fr] lg:items-center lg:px-10 lg:py-24">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#a7c957]">Route and race analysis</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#a7c957]">GPX route analysis</p>
             <h1 className="mt-5 max-w-3xl text-5xl font-semibold leading-[0.98] tracking-[-0.045em] sm:text-6xl lg:text-7xl">
               Don&apos;t just analyze the route. Understand it.
             </h1>
             <p className="mt-6 max-w-2xl text-base leading-7 text-white/60 sm:text-lg">
-              Explore the elevation profile, follow the route sections and see the key moments in a race or GPX course.
+              Explore a GPX route’s elevation profile, follow its sections and see its key moments.
             </p>
             <a href="#analyze" className="mt-8 inline-flex min-h-11 items-center rounded-full bg-[#a7c957] px-6 py-3 text-sm font-semibold text-[#17211c] transition hover:bg-[#b8d86b]">
               Choose how to start
@@ -70,20 +67,19 @@ export default function Home() {
         <div className="mx-auto max-w-7xl px-6 py-14 sm:py-20 lg:px-10">
           <div className="max-w-2xl">
             <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#71805d]">Choose your starting point</p>
-            <h2 className="mt-3 text-3xl font-semibold tracking-[-0.035em] sm:text-4xl">Analyze a race or a route</h2>
+            <h2 className="mt-3 text-3xl font-semibold tracking-[-0.035em] sm:text-4xl">Analyze a route</h2>
           </div>
 
-          <div className="mt-8 grid gap-5 lg:grid-cols-2">
-            <article className="min-w-0 rounded-[2rem] border border-black/10 bg-white p-5 shadow-sm sm:p-7">
+          <div className={`mt-8 grid gap-5 ${RACE_MODE_V1_ENABLED ? "lg:grid-cols-2" : "max-w-xl"}`}>
+            {RACE_MODE_V1_ENABLED && <article className="min-w-0 rounded-[2rem] border border-black/10 bg-white p-5 shadow-sm sm:p-7">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#71805d]">Race Mode</p>
               <h3 className="mt-3 text-2xl font-semibold">Analyze a race</h3>
               <p className="mt-2 max-w-xl text-sm leading-6 text-black/55">Paste an official race webpage to look for route links, then choose the course you want to analyze. Some pages may not expose a usable route.</p>
               <div className="mt-6"><RaceGpxDiscovery /></div>
-            </article>
-
+            </article>}
             <article className="min-w-0 rounded-[2rem] border border-black/10 bg-white p-5 shadow-sm sm:p-7">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#71805d]">Route Mode</p>
-              <h3 className="mt-3 text-2xl font-semibold">Analyze a route</h3>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#71805d]">Route Analysis</p>
+              <h3 className="mt-3 text-2xl font-semibold">Explore a GPX route</h3>
               <p className="mt-2 max-w-xl text-sm leading-6 text-black/55">Choose a GPX file to explore its elevation profile, Route Sections and Key Moments.</p>
               <Link href="/route" className="mt-6 inline-flex min-h-11 items-center justify-center rounded-full bg-[#17211c] px-6 py-3 text-sm font-semibold text-white transition hover:bg-[#293a31]">
                 Upload a GPX route
@@ -91,13 +87,13 @@ export default function Home() {
             </article>
           </div>
 
-          <details className="mt-7 rounded-2xl border border-black/10 bg-white/70 p-5 sm:p-6">
+          {RACE_MODE_V1_ENABLED && <details className="mt-7 rounded-2xl border border-black/10 bg-white/70 p-5 sm:p-6">
             <summary className="cursor-pointer list-none text-sm font-semibold focus-visible:rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#71805d]">
               Looking for a race already in the registry?
             </summary>
             <p className="mt-2 text-sm leading-6 text-black/55">Search supported races by name or official source URL.</p>
             <div className="mt-4" id="race-search-entry"><RaceSearch records={raceRegistry} /></div>
-          </details>
+          </details>}
         </div>
       </section>
 
@@ -109,7 +105,7 @@ export default function Home() {
           </div>
           <div className="grid gap-4 sm:grid-cols-3">
             {[
-              ["01", "Choose a race page or GPX file."],
+              ["01", "Choose a GPX file."],
               ["02", "Review the elevation profile and route shape."],
               ["03", "Explore sections and key moments."],
             ].map(([number, text]) => (

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const [home, discoveryUi, routeMode, downloadModule, downloadRoute, downloadHandler, transfer] = await Promise.all([
+const [home, discoveryUi, routeMode, downloadModule, downloadRoute, downloadHandler, transfer, featureFlags] = await Promise.all([
   readFile(new URL("./page.tsx", import.meta.url), "utf8"),
   readFile(new URL("./RaceGpxDiscovery.tsx", import.meta.url), "utf8"),
   readFile(new URL("./RouteMode.tsx", import.meta.url), "utf8"),
@@ -10,10 +10,12 @@ const [home, discoveryUi, routeMode, downloadModule, downloadRoute, downloadHand
   readFile(new URL("./api/race-gpx-download/route.ts", import.meta.url), "utf8"),
   readFile(new URL("./raceGpxDownloadHandler.ts", import.meta.url), "utf8"),
   readFile(new URL("./discoveredGpxTransfer.ts", import.meta.url), "utf8"),
+  readFile(new URL("./featureFlags.ts", import.meta.url), "utf8"),
 ]);
 
-test("homepage exposes race-page discovery beside the existing manual GPX entry", () => {
-  assert.match(home, /<RaceGpxDiscovery\s*\/>/);
+test("race discovery remains implemented but is gated off from the public V1 homepage", () => {
+  assert.match(featureFlags, /RACE_MODE_V1_ENABLED = false/);
+  assert.match(home, /RACE_MODE_V1_ENABLED && <article[\s\S]*?<RaceGpxDiscovery\s*\/>/);
   assert.match(home, /href="\/route"[\s\S]*?Upload a GPX route/);
   assert.match(discoveryUi, /\/api\/race-gpx-discovery/);
 });
@@ -45,8 +47,7 @@ test("discovery loading is bounded, duplicate submits are blocked, and errors re
 });
 
 test("supported-race registry lookup remains independent from official-page discovery state", () => {
-  assert.match(home, /<RaceGpxDiscovery\s*\/>/);
-  assert.match(home, /<RaceSearch records=\{raceRegistry\}\s*\/>/);
+  assert.match(home, /RACE_MODE_V1_ENABLED && <details[\s\S]*?<RaceSearch records=\{raceRegistry\}\s*\/>/);
   assert.doesNotMatch(home, /RaceGpxDiscovery[^<]*busy|RaceSearch[^<]*busy/);
   assert.match(discoveryUi, /const \[raceUrl, setRaceUrl\] = useState\(""\)/);
   assert.match(discoveryUi, /const \[status, setStatus\] = useState/);
