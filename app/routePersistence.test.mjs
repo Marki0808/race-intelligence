@@ -254,7 +254,7 @@ test("same geometry with changed elevation has a distinct analysis identity and 
   assert.equal(repeat.cacheHit, true);
   assert.equal(corrected.cacheHit, false);
   assert.equal(calculations, 2);
-  assert.notEqual(corrected.analysis.metrics.elevationGainM, first.analysis.metrics.elevationGainM);
+  assert.notEqual(corrected.analysis.points[5].elevationM, first.analysis.points[5].elevationM);
   assert.equal(store.analyses.size, 2);
 });
 

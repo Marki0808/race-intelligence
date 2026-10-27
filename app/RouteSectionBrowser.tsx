@@ -11,6 +11,7 @@ import TerrainSectionMap from "./TerrainSectionMap";
 import RouteSectionProfile from "./RouteSectionProfile";
 import type { GpxRoutePointData } from "./gpxAnalysis";
 import { TERRAIN_INTELLIGENCE_V1_ENABLED } from "./featureFlags";
+import { ROUTE_ELEVATION_METRIC_DESCRIPTION } from "./routeElevationMetrics";
 
 const rhythmLabels: Record<RouteSection["dominantRhythm"], string> = {
   climb: "Mostly climbing",
@@ -112,7 +113,7 @@ export function RouteSectionBrowserHeading({ action, controls }: { action?: Reac
         </div>
         {action}
       </div>
-      <p className="mt-4 max-w-2xl text-sm leading-6 text-black/50">Choose a section to explore its profile, route and available evidence. Section ascent and descent use the smoothed GPX profile; route totals sum recorded GPX elevations, so the figures may differ.</p>
+      <p className="mt-4 max-w-2xl text-sm leading-6 text-black/50">Choose a section to explore its profile, route and available evidence. {ROUTE_ELEVATION_METRIC_DESCRIPTION}</p>
     </div>
   );
 }

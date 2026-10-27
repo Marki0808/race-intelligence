@@ -125,7 +125,7 @@ test("disconnected GPX components remain separate and are never joined by a cust
   assert.ok(Math.abs(builtDistanceM - analysis.points.at(-1).distanceM) < 0.001);
 });
 
-test("section interval statistics use the shared smoothed profile model and preserve aid-station interval regressions", () => {
+test("terrain, custom, and aid-station intervals share route elevation totals while preserving interval regressions", () => {
   const analysis = makeAnalysis();
   const customPlan = {
     ...createCustomSectionPlan(),
@@ -150,8 +150,10 @@ test("section interval statistics use the shared smoothed profile model and pres
   assert.deepEqual(custom.sections.map((section) => section.elevationProfile), stationResult.sections.map((section) => section.elevationProfile));
   assert.deepEqual(custom.sections.map((section) => section.ascentM), stationResult.sections.map((section) => section.ascentM));
   assert.deepEqual(custom.sections.map((section) => section.descentM), stationResult.sections.map((section) => section.descentM));
-  assert.ok(Math.abs(custom.sections.reduce((sum, section) => sum + section.ascentM, 0) - analysis.metrics.elevationGainM) > 0 || Math.abs(custom.sections.reduce((sum, section) => sum + section.descentM, 0) - analysis.metrics.elevationLossM) > 0,
-    "smoothed section totals remain distinct from raw point-to-point whole-route metrics rather than distributing the discrepancy");
+  assert.equal(custom.sections.reduce((sum, section) => sum + section.ascentM, 0), analysis.metrics.elevationGainM);
+  assert.equal(custom.sections.reduce((sum, section) => sum + section.descentM, 0), analysis.metrics.elevationLossM);
+  assert.equal(analysis.routeSections.reduce((sum, section) => sum + section.ascentM, 0), analysis.metrics.elevationGainM);
+  assert.equal(analysis.routeSections.reduce((sum, section) => sum + section.descentM, 0), analysis.metrics.elevationLossM);
 });
 
 test("existing local Istria route boundaries are unaffected by custom interval generation", async () => {

@@ -1,4 +1,5 @@
 import type { GpxCourseAnalysisData } from "./raceTypes";
+import { ROUTE_ELEVATION_METRIC_DESCRIPTION } from "./routeElevationMetrics";
 
 export default function CourseAnalysis({
   analysis,
@@ -20,7 +21,7 @@ export default function CourseAnalysis({
     {
       label: "Elevation gain",
       value: `${analysis.elevationGainM.toLocaleString("en-US")} m`,
-      description: `Calculated from ${sourceDescription} using the course analysis engine.`,
+      description: `${ROUTE_ELEVATION_METRIC_DESCRIPTION} Source: ${sourceDescription}.`,
     },
     {
       label: "Highest point",
@@ -32,7 +33,7 @@ export default function CourseAnalysis({
           {
             label: "Elevation loss",
             value: `${analysis.elevationLossM.toLocaleString("en-US")} m`,
-            description: `Calculated from ${sourceDescription} using the course analysis engine.`,
+            description: `${ROUTE_ELEVATION_METRIC_DESCRIPTION} Source: ${sourceDescription}.`,
           },
           {
             label: "Lowest point",

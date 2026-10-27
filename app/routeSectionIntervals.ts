@@ -1,6 +1,7 @@
 import type { RouteAnalysisData } from "./gpxAnalysis.ts";
 import { DEFAULT_ROUTE_DYNAMICS_CONFIG, type RouteDominantRhythm } from "./routeDynamics.ts";
 import type { RouteSection } from "./routeSectionEngine.ts";
+import { buildRouteElevationMetricModel, measureRouteElevationInterval } from "./routeElevationMetrics.ts";
 
 const MAX_PROFILE_INTERPOLATION_GAP_M = 250;
 
@@ -20,6 +21,7 @@ export function buildRouteSectionsFromIntervals(
 ): { sections: RouteSection[]; labels: ReadonlyMap<string, { from: string; to: string }> } | null {
   const sections: RouteSection[] = [];
   const labels = new Map<string, { from: string; to: string }>();
+  const elevationMetricModel = buildRouteElevationMetricModel(analysis.points);
   for (const definition of definitions) {
     const { id, segmentIndex, startDistanceM, endDistanceM, fromLabel, toLabel } = definition;
     if (!id || !Number.isInteger(segmentIndex) || !Number.isFinite(startDistanceM) || !Number.isFinite(endDistanceM) || endDistanceM <= startDistanceM) return null;
@@ -29,13 +31,9 @@ export function buildRouteSectionsFromIntervals(
     const samples = intervalSamples(componentSamples, startDistanceM, endDistanceM);
     if (!profile || profile.length < 2 || samples.length === 0) return null;
 
-    let ascentM = 0;
-    let descentM = 0;
-    for (let index = 1; index < profile.length; index += 1) {
-      const delta = profile[index].elevationM - profile[index - 1].elevationM;
-      if (delta > 0) ascentM += delta;
-      else descentM += Math.abs(delta);
-    }
+    const elevationMetrics = measureRouteElevationInterval(elevationMetricModel, segmentIndex, startDistanceM, endDistanceM);
+    if (!elevationMetrics) return null;
+    const { ascentM, descentM } = elevationMetrics;
     const distanceKm = (endDistanceM - startDistanceM) / 1000;
     const verticalM = ascentM + descentM;
     const directionStrength = verticalM > 0 ? Math.abs(ascentM - descentM) / verticalM : 0;

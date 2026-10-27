@@ -11,6 +11,7 @@ import { avoidRouteDistanceTickLabelOverlap, getNiceAxisScale, getPositionedRout
 import { nearestRouteProfilePoint } from "./routeProfileInspection";
 import { layoutKeyMomentProfileMarkers } from "./routeKeyMomentProfileMarkers";
 import { ROUTE_MAP_STYLES } from "./routeMapStyles";
+import { ROUTE_ELEVATION_METRIC_DESCRIPTION } from "./routeElevationMetrics";
 
 export default function CourseExplorer({
   selectedMoment,
@@ -279,6 +280,7 @@ export default function CourseExplorer({
               <Metric label="Highest point" value={`${Math.round(displayedMetrics.highestPointM).toLocaleString("en-US")} m`} />
               {showExtendedMetrics && <Metric label="Lowest point" value={`${Math.round(displayedMetrics.lowestPointM).toLocaleString("en-US")} m`} />}
             </div>
+            <p className="mt-3 max-w-3xl text-xs leading-5 text-white/45">{ROUTE_ELEVATION_METRIC_DESCRIPTION}</p>
           </div>
         )}
       </div>

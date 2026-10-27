@@ -98,22 +98,15 @@ test("sub-metre verified start and finish projection offsets close against the e
   assert.equal(result.sections.at(-1).endPosition.distanceM, analysis.points.at(-1).distanceM);
 });
 
-test("section ascent and descent use existing smoothed dynamics, not endpoint elevation differences", () => {
+test("aid-station section ascent and descent reconcile with route totals using the shared metric profile", () => {
   const analysis = analysisFor();
   const result = buildAidStationSections(discoveryFor(analysis), analysis);
   assert.equal(result.available, true);
   for (const section of result.sections) {
-    let ascent = 0;
-    let descent = 0;
-    for (let index = 1; index < section.elevationProfile.length; index += 1) {
-      const delta = section.elevationProfile[index].elevationM - section.elevationProfile[index - 1].elevationM;
-      if (delta > 0) ascent += delta;
-      else descent += Math.abs(delta);
-    }
-    assert.equal(section.ascentM, Math.round(ascent));
-    assert.equal(section.descentM, Math.round(descent));
     assert.ok(section.elevationProfile.length >= 2);
   }
+  assert.equal(result.sections.reduce((sum, section) => sum + section.ascentM, 0), analysis.metrics.elevationGainM);
+  assert.equal(result.sections.reduce((sum, section) => sum + section.descentM, 0), analysis.metrics.elevationLossM);
 });
 
 test("incomplete, approximate, miscounted, duplicate, or out-of-route visits fail closed", () => {

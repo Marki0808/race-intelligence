@@ -8,6 +8,7 @@ import { buildRouteSections, type RouteSection } from "./routeSectionEngine.ts";
 import { createRouteKeyMoments } from "./routeKeyMoments.ts";
 import { buildGradientIntelligenceV1, type GradientIntelligenceV1 } from "./gradientIntelligence.ts";
 import type { AidStationDiscoveryV1 } from "./aidStationDiscovery.ts";
+import { buildRouteElevationMetricModel, measureRouteElevationInterval } from "./routeElevationMetrics.ts";
 
 export type GpxAnalysisErrorCode =
   | "invalid-gpx"
@@ -165,8 +166,6 @@ export function analyzeGpxRoute(
   const points: GpxRoutePointData[] = [];
   const segments: AnalyzedRouteSegment[] = [];
   let distanceM = 0;
-  let elevationGain = 0;
-  let elevationLoss = 0;
 
   sourceSegments.forEach((segment, segmentIndex) => {
     const segmentPoints: GpxRoutePointData[] = [];
@@ -180,9 +179,6 @@ export function analyzeGpxRoute(
         point.latitude,
         point.longitude,
       );
-      const elevationChange = point.elevationM - previous.elevationM;
-      if (elevationChange > 0) elevationGain += elevationChange;
-      else elevationLoss += Math.abs(elevationChange);
     }
     const analyzedPoint = { ...point, distanceM, segmentIndex };
     points.push(analyzedPoint);
@@ -201,20 +197,24 @@ export function analyzeGpxRoute(
   const lowestPoint = points.reduce((lowest, point) =>
     point.elevationM < lowest.elevationM ? point : lowest,
   );
+  const elevationMetricModel = buildRouteElevationMetricModel(points);
   const metrics: GpxRouteMetricsData = {
     distanceKm: Number((distanceM / 1000).toFixed(2)),
-    elevationGainM: Math.round(elevationGain),
-    elevationLossM: Math.round(elevationLoss),
+    elevationGainM: elevationMetricModel.ascentM,
+    elevationLossM: elevationMetricModel.descentM,
     highestPointM: highestPoint.elevationM,
     highestPointDistanceKm: Number((highestPoint.distanceM / 1000).toFixed(1)),
     lowestPointM: lowestPoint.elevationM,
   };
 
-  const majorClimbs = segments.flatMap(({ segmentIndex, points: segmentPoints }) => summarizeSegmentWindows(segmentPoints, segmentIndex, "climb"));
-  const majorDescents = segments.flatMap(({ segmentIndex, points: segmentPoints }) => summarizeSegmentWindows(segmentPoints, segmentIndex, "descent"));
-  const sections = segments.flatMap(({ segmentIndex, points: segmentPoints }) => segmentPoints.length > 1 ? summarizeRouteSections(segmentPoints, segmentIndex) : []);
+  const majorClimbs = segments.flatMap(({ segmentIndex, points: segmentPoints }) => summarizeSegmentWindows(segmentPoints, segmentIndex, "climb", elevationMetricModel));
+  const majorDescents = segments.flatMap(({ segmentIndex, points: segmentPoints }) => summarizeSegmentWindows(segmentPoints, segmentIndex, "descent", elevationMetricModel));
+  const sections = segments.flatMap(({ segmentIndex, points: segmentPoints }) => segmentPoints.length > 1 ? summarizeRouteSections(segmentPoints, segmentIndex, elevationMetricModel) : []);
   const routeDynamics = analyzeRouteDynamics(points);
-  const routeSections = buildRouteSections(routeDynamics, points);
+  const routeSections = buildRouteSections(routeDynamics, points).map((section) => {
+    const measured = measureRouteElevationInterval(elevationMetricModel, section.segmentIndex, section.startPosition.distanceM, section.endPosition.distanceM);
+    return measured ? { ...section, ascentM: measured.ascentM, descentM: measured.descentM } : section;
+  });
   const gradientIntelligence = buildGradientIntelligenceV1(routeDynamics, routeSections);
   const keyMoments = createRouteKeyMoments(points, metrics, routeDynamics);
 
@@ -239,10 +239,10 @@ function localizeSegment(points: readonly GpxRoutePointData[]) {
   return { offsetM, points: points.map((point) => ({ ...point, distanceM: point.distanceM - offsetM })) };
 }
 
-function summarizeSegmentWindows(points: readonly GpxRoutePointData[], segmentIndex: number, direction: "climb" | "descent") {
+function summarizeSegmentWindows(points: readonly GpxRoutePointData[], segmentIndex: number, direction: "climb" | "descent", metricModel: ReturnType<typeof buildRouteElevationMetricModel>) {
   if (points.length < 2) return [];
   const { offsetM, points: local } = localizeSegment(points);
-  return findMajorSegments(local, direction).map((segment) => ({
+  return findMajorSegments(local, direction, metricModel, segmentIndex, offsetM).map((segment) => ({
     ...segment,
     id: `segment-${segmentIndex}-${segment.id}`,
     segmentIndex,
@@ -251,9 +251,9 @@ function summarizeSegmentWindows(points: readonly GpxRoutePointData[], segmentIn
   }));
 }
 
-function summarizeRouteSections(points: readonly GpxRoutePointData[], segmentIndex: number) {
+function summarizeRouteSections(points: readonly GpxRoutePointData[], segmentIndex: number, metricModel: ReturnType<typeof buildRouteElevationMetricModel>) {
   const { offsetM, points: local } = localizeSegment(points);
-  return createRouteSections(local).map((section) => ({
+  return createRouteSections(local, metricModel, segmentIndex, offsetM).map((section) => ({
     ...section,
     id: `segment-${segmentIndex}-${section.id}`,
     segmentIndex,
@@ -265,6 +265,9 @@ function summarizeRouteSections(points: readonly GpxRoutePointData[], segmentInd
 function findMajorSegments(
   points: GpxRoutePointData[],
   direction: "climb" | "descent",
+  metricModel?: ReturnType<typeof buildRouteElevationMetricModel>,
+  segmentIndex = points[0]?.segmentIndex ?? 0,
+  distanceOffsetM = 0,
 ): GpxRouteSegmentData[] {
   const totalKm = points.at(-1)!.distanceM / 1000;
   const windowKm = Math.min(5, totalKm);
@@ -274,7 +277,7 @@ function findMajorSegments(
   starts.push(lastStartKm);
 
   const candidates = starts
-    .map((startKm, index) => summarizeRange(points, startKm, startKm + windowKm, `candidate-${index}`))
+    .map((startKm, index) => summarizeRange(points, startKm, startKm + windowKm, `candidate-${index}`, metricModel, segmentIndex, distanceOffsetM))
     .filter((segment) =>
       direction === "climb"
         ? segment.elevationGainM > 0
@@ -300,12 +303,12 @@ function findMajorSegments(
   return selected.sort((a, b) => a.startKm - b.startKm);
 }
 
-function createRouteSections(points: GpxRoutePointData[]): GpxRouteSegmentData[] {
+function createRouteSections(points: GpxRoutePointData[], metricModel?: ReturnType<typeof buildRouteElevationMetricModel>, segmentIndex = points[0]?.segmentIndex ?? 0, distanceOffsetM = 0): GpxRouteSegmentData[] {
   const totalKm = points.at(-1)!.distanceM / 1000;
   const sections: GpxRouteSegmentData[] = [];
   for (let startKm = 0, index = 0; startKm < totalKm; startKm += 10, index += 1) {
     sections.push(
-      summarizeRange(points, startKm, Math.min(startKm + 10, totalKm), `section-${index + 1}`),
+      summarizeRange(points, startKm, Math.min(startKm + 10, totalKm), `section-${index + 1}`, metricModel, segmentIndex, distanceOffsetM),
     );
   }
   return sections;
@@ -316,6 +319,9 @@ function summarizeRange(
   startKm: number,
   endKm: number,
   id: string,
+  metricModel?: ReturnType<typeof buildRouteElevationMetricModel>,
+  segmentIndex = points[0]?.segmentIndex ?? 0,
+  distanceOffsetM = 0,
 ): GpxRouteSegmentData {
   const startM = startKm * 1000;
   const endM = endKm * 1000;
@@ -350,13 +356,16 @@ function summarizeRange(
   const actualStartKm = firstPoint.distanceM / 1000;
   const actualEndKm = lastPoint.distanceM / 1000;
 
+  const measured = metricModel && selectedPoints.length > 0
+    ? measureRouteElevationInterval(metricModel, segmentIndex, firstPoint.distanceM + distanceOffsetM, lastPoint.distanceM + distanceOffsetM)
+    : null;
   return {
     id,
     startKm: Number(actualStartKm.toFixed(2)),
     endKm: Number(actualEndKm.toFixed(2)),
     distanceKm: Number((actualEndKm - actualStartKm).toFixed(2)),
-    elevationGainM: Math.round(gain),
-    elevationLossM: Math.round(loss),
+    elevationGainM: measured?.ascentM ?? Math.round(gain),
+    elevationLossM: measured?.descentM ?? Math.round(loss),
   };
 }
 
@@ -376,7 +385,7 @@ function createCourseCharacter(
       ? "one major descending window"
       : "no major descending window";
   const attentionPoints = [
-    `The GPX records ${metrics.elevationGainM.toLocaleString("en-US")} m of cumulative climbing.`,
+    `The filtered GPX elevation profile measures ${metrics.elevationGainM.toLocaleString("en-US")} m of cumulative climbing.`,
     `The highest recorded elevation is ${Math.round(metrics.highestPointM).toLocaleString("en-US")} m.`,
     ...climbs.slice(0, 2).map(
       (segment) => `A major climb occurs around ${segment.startKm}–${segment.endKm} km.`,
@@ -388,7 +397,7 @@ function createCourseCharacter(
 
   return {
     terrain: "Unknown — the GPX track does not establish the route surface.",
-    elevationPattern: `The GPX records ${metrics.elevationGainM.toLocaleString("en-US")} m of climbing and ${metrics.elevationLossM.toLocaleString("en-US")} m of descending over ${metrics.distanceKm} km.`,
+    elevationPattern: `The filtered GPX elevation profile measures ${metrics.elevationGainM.toLocaleString("en-US")} m of climbing and ${metrics.elevationLossM.toLocaleString("en-US")} m of descending over ${metrics.distanceKm} km.`,
     technicality: "Unknown — technical difficulty cannot be established from route coordinates and elevation alone.",
     courseRhythm: `The GPX elevation profile shows ${climbRhythm} and ${descentRhythm}.`,
     attentionPoints,

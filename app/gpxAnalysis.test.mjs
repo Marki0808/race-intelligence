@@ -26,8 +26,8 @@ test("route analysis calculates distance, gain, loss, high and low points", () =
 
   assert.equal(result.name, "Test trail");
   assert.ok(result.metrics.distanceKm > 0);
-  assert.equal(result.metrics.elevationGainM, 240);
-  assert.equal(result.metrics.elevationLossM, 70);
+  assert.equal(result.metrics.elevationGainM, 186);
+  assert.equal(result.metrics.elevationLossM, 16);
   assert.equal(result.metrics.highestPointM, 270);
   assert.equal(result.metrics.lowestPointM, 100);
   assert.ok(result.majorClimbs.length > 0);
@@ -309,10 +309,17 @@ test("the shared engine reproduces the Istria race GPX metrics as a regression c
   );
   const parsed = parseGpxText(gpxText);
   const analysis = analyzeGpxRoute(parsed);
-  assert.deepEqual(analysis.metrics, istria110kRaceRecord.courseAnalysis);
+  assert.deepEqual(analysis.metrics, {
+    ...istria110kRaceRecord.courseAnalysis,
+    elevationGainM: 4094,
+    elevationLossM: 4166,
+  });
   assert.equal(analysis.points.length, 5778);
   assert.equal(analysis.segments.length, 1);
   assert.equal(analysis.segments[0].points.length, 5778);
+  assert.deepEqual([analysis.metrics.elevationGainM, analysis.metrics.elevationLossM], [4094, 4166]);
+  assert.equal(analysis.routeSections.reduce((sum, section) => sum + section.ascentM, 0), analysis.metrics.elevationGainM);
+  assert.equal(analysis.routeSections.reduce((sum, section) => sum + section.descentM, 0), analysis.metrics.elevationLossM);
   assert.equal(analysis.gradientIntelligence?.schemaVersion, 1);
   assert.equal(analysis.gradientIntelligence?.algorithmVersion, 2);
   assert.deepEqual(analysis.gradientIntelligence?.sections.map(({ sectionId, segmentIndex }) => [sectionId, segmentIndex]), analysis.routeSections.map(({ id, segmentIndex }) => [id, segmentIndex]));
@@ -324,5 +331,5 @@ test("the shared engine reproduces the Istria race GPX metrics as a regression c
   assert.equal(fingerprint.routeFingerprintVersion, 2);
   assert.match(fingerprint.routeFingerprint, /^route-v2-sha256-[a-f0-9]{64}$/);
   assert.match(analysisInput, /^analysis-input-v2-sha256-[a-f0-9]{64}$/);
-  assert.equal(ROUTE_ANALYSIS_VERSION, 5);
+  assert.equal(ROUTE_ANALYSIS_VERSION, 6);
 });

@@ -170,8 +170,22 @@ function groupSectionsByComponent(sections: readonly RouteSection[]): Map<number
 function summarizeSections(sections: readonly RouteSection[]): SectionSummary[] {
   return sections.map((section) => {
     const distanceKm = Math.max(0, section.distanceKm);
-    const ascentM = Math.max(0, section.ascentM);
-    const descentM = Math.max(0, section.descentM);
+    // Course-phase structure remains tied to the established smoothed presentation profile.
+    // Reported route/section totals use the separate shared additive elevation metric model.
+    let ascentM = 0;
+    let descentM = 0;
+    if (section.elevationProfile.length >= 2) {
+      for (let index = 1; index < section.elevationProfile.length; index += 1) {
+        const change = section.elevationProfile[index].elevationM - section.elevationProfile[index - 1].elevationM;
+        if (change > 0) ascentM += change;
+        else descentM -= change;
+      }
+      ascentM = Math.round(ascentM);
+      descentM = Math.round(descentM);
+    } else {
+      ascentM = Math.max(0, section.ascentM);
+      descentM = Math.max(0, section.descentM);
+    }
     const verticalM = ascentM + descentM;
     const intensityMPerKm = distanceKm > 0 ? verticalM / distanceKm : 0;
     const directionBalance = verticalM > 0 ? (ascentM - descentM) / verticalM : 0;
@@ -398,18 +412,21 @@ function createCoursePhase(draft: DraftPhase, segmentIndex: number, ordinal: num
     ...draft.interruptions,
     ...contrarySections(ordered, character),
   ];
-  const sectionInterruptions = uniqueBy(contrary, ({ section }) => section.id).map(({ section, character }) => ({
-    factId: `phase-interruption-s${segmentIndex}-${stableKm(section.startKm)}-${stableKm(section.endKm)}-${section.id}`,
-    sourceSectionId: section.id,
-    segmentIndex,
-    character,
-    startKm: section.startKm,
-    endKm: section.endKm,
-    distanceKm: section.distanceKm,
-    ascentM: section.ascentM,
-    descentM: section.descentM,
-    embeddedEventIds: section.embeddedEvents.map((event) => event.id),
-  }));
+  const sectionInterruptions = uniqueBy(contrary, ({ section }) => section.id).map((sectionSummary) => {
+    const { section, character } = sectionSummary;
+    return {
+      factId: `phase-interruption-s${segmentIndex}-${stableKm(section.startKm)}-${stableKm(section.endKm)}-${section.id}`,
+      sourceSectionId: section.id,
+      segmentIndex,
+      character,
+      startKm: section.startKm,
+      endKm: section.endKm,
+      distanceKm: section.distanceKm,
+      ascentM: sectionSummary.ascentM,
+      descentM: sectionSummary.descentM,
+      embeddedEventIds: section.embeddedEvents.map((event) => event.id),
+    };
+  });
   const eventInterruptions = ordered.flatMap(({ section }) => section.embeddedEvents
     .filter((event) => isContraryEvent(event, character))
     .map((event) => ({

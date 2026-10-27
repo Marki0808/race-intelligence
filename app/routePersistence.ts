@@ -5,7 +5,7 @@ import type { RouteSection } from "./routeSectionEngine.ts";
 import type { RouteFingerprintResult } from "./routeFingerprint.ts";
 import { ROUTE_FINGERPRINT_VERSION } from "./routeFingerprint.ts";
 
-export const ROUTE_ANALYSIS_VERSION = 5;
+export const ROUTE_ANALYSIS_VERSION = 6;
 // V2 adds per-sample match evidence used for conservative distance attribution.
 export const OSM_ENRICHMENT_VERSION = 2;
 export const MAPILLARY_ENRICHMENT_VERSION = 1;
