@@ -150,7 +150,7 @@ test("Route Mode gates the view by validated station segmentation and switching 
     readFile(new URL("./CourseExplorer.tsx", import.meta.url), "utf8"),
   ]);
   assert.match(view, /segmentationMode: "terrain"/);
-  assert.match(view, /aidStationSections\.available \? \(/);
+  assert.match(view, /\{aidStationSections\.available && <button/);
   assert.match(view, /updateViewState\(\{ segmentationMode: "aid-station"/);
   assert.match(view, /selectionSections=\{activeSections\}/);
   assert.match(view, /sectionKind=\{showingAidStationSections \? "Aid Station Section"/);

@@ -9,7 +9,7 @@ import { createRouteSectionProfileLayout } from "./routeSectionProfilePresentati
 const EDGE = { left: 62, right: 16, top: 16, bottom: 38 };
 
 /** Component-local view of actual GPX samples on the full-route kilometre scale. */
-export default function RouteSectionProfile({ section, routePoints, sectionKind = "Route Section" }: { section: RouteSection; routePoints: readonly GpxRoutePointData[]; sectionKind?: "Route Section" | "Aid Station Section" }) {
+export default function RouteSectionProfile({ section, routePoints, sectionKind = "Route Section" }: { section: RouteSection; routePoints: readonly GpxRoutePointData[]; sectionKind?: "Route Section" | "Aid Station Section" | "Custom Section" }) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const gesture = useRef<{ pointerId: number; x: number; y: number; moved: boolean; held: boolean } | null>(null);
   const timer = useRef<number | null>(null);

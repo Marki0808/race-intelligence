@@ -34,7 +34,7 @@ export default function CourseExplorer({
   selectedMoment: string | null;
   selectedSectionKey?: string | null;
   selectionSections?: readonly RouteSection[];
-  sectionKind?: "Route Section" | "Aid Station Section";
+  sectionKind?: "Route Section" | "Aid Station Section" | "Custom Section";
   onSelectSection?: (section: RouteSection | null) => void;
   routeName: string;
   startLocation?: string;
@@ -339,7 +339,7 @@ export function ElevationProfile({
   selectedSection: RouteSection | null;
   selectedMomentInterval: ReturnType<typeof resolveKeyMomentInterval>;
   sections: readonly RouteSection[];
-  sectionKind?: "Route Section" | "Aid Station Section";
+  sectionKind?: "Route Section" | "Aid Station Section" | "Custom Section";
   onSelectSection?: (section: RouteSection | null) => void;
   momentMarkers?: readonly KeyMomentProfileMarkerInput[];
   selectedMoment?: string | null;

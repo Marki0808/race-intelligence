@@ -1,8 +1,8 @@
 import type { AidStationDiscoveryV1 } from "./aidStationDiscovery.ts";
 import type { RouteAnalysisData } from "./gpxAnalysis";
-import { DEFAULT_ROUTE_DYNAMICS_CONFIG, type RouteDominantRhythm, type ResampledRoutePoint } from "./routeDynamics.ts";
 import type { RouteSection } from "./routeSectionEngine.ts";
 import { routeSectionSelectionKey } from "./routeSectionSelection.ts";
+import { buildRouteSectionsFromIntervals } from "./routeSectionIntervals.ts";
 
 export type AidStationSectionLabels = { from: string; to: string };
 export type AidStationSectionsResult =
@@ -11,7 +11,6 @@ export type AidStationSectionsResult =
 
 const ENDPOINT_TOLERANCE_M = 5;
 const MAX_COVERAGE_ERROR_KM = 0.01;
-const MAX_INTERPOLATION_GAP_M = 250;
 
 /** Builds a display-only section set from a complete, verified station sequence and existing smoothed GPX dynamics. */
 export function buildAidStationSections(
@@ -88,86 +87,20 @@ export function buildAidStationSections(
     distanceM: index === 0 ? startM! : index === projectedBoundaries.length - 1 ? finishM! : boundary.distanceM,
   }));
 
-  const dynamics = analysis.routeDynamics.resampledPoints.filter((point) => point.segmentIndex === componentIndex);
-  if (dynamics.length < 2) return unavailable("smoothed-elevation-unavailable");
-  const sections: RouteSection[] = [];
-  const labels = new Map<string, AidStationSectionLabels>();
-  for (let index = 0; index < boundaries.length - 1; index += 1) {
-    const from = boundaries[index];
-    const to = boundaries[index + 1];
-    const profile = smoothedProfileBetween(dynamics, from.distanceM, to.distanceM);
-    if (!profile || profile.length < 2) return unavailable("smoothed-elevation-unavailable");
-    const sectionSamples = analysis.routeDynamics.samples.filter((point) => point.segmentIndex === componentIndex && point.distanceM >= from.distanceM && point.distanceM <= to.distanceM);
-    if (!sectionSamples.length) return unavailable("smoothed-elevation-unavailable");
-    let ascentM = 0;
-    let descentM = 0;
-    for (let pointIndex = 1; pointIndex < profile.length; pointIndex += 1) {
-      const delta = profile[pointIndex].elevationM - profile[pointIndex - 1].elevationM;
-      if (delta > 0) ascentM += delta;
-      else descentM += Math.abs(delta);
-    }
-    const distanceKm = (to.distanceM - from.distanceM) / 1000;
-    const verticalM = ascentM + descentM;
-    const intensity = distanceKm > 0 ? verticalM / distanceKm : 0;
-    const directionStrength = verticalM > 0 ? Math.abs(ascentM - descentM) / verticalM : 0;
-    const dominantRhythm: RouteDominantRhythm = intensity <= DEFAULT_ROUTE_DYNAMICS_CONFIG.flatMaximumIntensityMPerKm
-      ? "flat"
-      : intensity >= DEFAULT_ROUTE_DYNAMICS_CONFIG.minimumDirectionalIntensityMPerKm && directionStrength >= DEFAULT_ROUTE_DYNAMICS_CONFIG.minimumDirectionStrength
-        ? ascentM >= descentM ? "climb" : "descent"
-        : "rolling";
-    const id = `aid-station-section-${from.sourceOrder}-${to.sourceOrder}`;
-    const section: RouteSection = {
-      id,
-      segmentIndex: componentIndex,
-      startPosition: { distanceM: from.distanceM, segmentIndex: componentIndex },
-      endPosition: { distanceM: to.distanceM, segmentIndex: componentIndex },
-      startKm: round2(from.distanceM / 1000),
-      endKm: round2(to.distanceM / 1000),
-      distanceKm: round2(distanceKm),
-      dominantRhythm,
-      elevationStartM: Math.round(profile[0].elevationM),
-      elevationEndM: Math.round(profile.at(-1)!.elevationM),
-      elevationMinM: Math.round(Math.min(...profile.map((point) => point.elevationM))),
-      elevationMaxM: Math.round(Math.max(...profile.map((point) => point.elevationM))),
-      ascentM: Math.round(ascentM),
-      descentM: Math.round(descentM),
-      elevationProfile: profile,
-      embeddedEvents: [],
-      dynamicsSummary: {
-        verticalIntensityMPerKm: round1(intensity),
-        directionBalance: round2(verticalM ? (ascentM - descentM) / verticalM : 0),
-        directionStrength: round2(directionStrength),
-        stability: round2(sectionSamples.reduce((sum, point) => sum + point.stability, 0) / sectionSamples.length),
-      },
-      description: `Route segment between ${from.name} and ${to.name}.`,
-    };
-    sections.push(section);
-    labels.set(routeSectionSelectionKey(section), { from: from.name, to: to.name });
-  }
+  const sectionIntervals = buildRouteSectionsFromIntervals(analysis, boundaries.slice(0, -1).map((from, index) => ({
+    id: `aid-station-section-${from.sourceOrder}-${boundaries[index + 1].sourceOrder}`,
+    segmentIndex: componentIndex,
+    startDistanceM: from.distanceM,
+    endDistanceM: boundaries[index + 1].distanceM,
+    fromLabel: from.name,
+    toLabel: boundaries[index + 1].name,
+  })));
+  if (!sectionIntervals) return unavailable("smoothed-elevation-unavailable");
+  const { sections } = sectionIntervals;
+  const labels = new Map<string, AidStationSectionLabels>(sections.map((section) => [
+    routeSectionSelectionKey(section), sectionIntervals.labels.get(routeSectionSelectionKey(section))!,
+  ]));
   const sectionDistance = sections.reduce((sum, section) => sum + section.distanceKm, 0);
   if (Math.abs(sectionDistance - routeDistanceKm) > MAX_COVERAGE_ERROR_KM + sections.length * 0.005) return unavailable("section-distance-reconciliation-failed");
   return { available: true, sections, labels, positionMode };
 }
-
-function smoothedProfileBetween(points: readonly ResampledRoutePoint[], startM: number, endM: number) {
-  const start = interpolateSmoothedElevation(points, startM);
-  const end = interpolateSmoothedElevation(points, endM);
-  if (!start || !end) return null;
-  return [start, ...points.filter((point) => point.distanceM > startM && point.distanceM < endM).map((point) => ({ distanceM: point.distanceM, elevationM: point.smoothedElevationM })), end];
-}
-
-function interpolateSmoothedElevation(points: readonly ResampledRoutePoint[], distanceM: number) {
-  const exact = points.find((point) => Math.abs(point.distanceM - distanceM) < 0.001);
-  if (exact) return { distanceM, elevationM: exact.smoothedElevationM };
-  const rightIndex = points.findIndex((point) => point.distanceM > distanceM);
-  if (rightIndex <= 0) return null;
-  const left = points[rightIndex - 1];
-  const right = points[rightIndex];
-  const span = right.distanceM - left.distanceM;
-  if (span <= 0 || span > MAX_INTERPOLATION_GAP_M || distanceM < left.distanceM || distanceM > right.distanceM) return null;
-  const ratio = (distanceM - left.distanceM) / span;
-  return { distanceM, elevationM: left.smoothedElevationM + (right.smoothedElevationM - left.smoothedElevationM) * ratio };
-}
-
-function round1(value: number) { return Number(value.toFixed(1)); }
-function round2(value: number) { return Number(value.toFixed(2)); }

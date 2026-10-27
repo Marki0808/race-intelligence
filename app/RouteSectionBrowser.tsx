@@ -30,6 +30,7 @@ export default function RouteSectionBrowser({
   terrainEvidenceState = "not-requested",
   sectionLabels,
   sectionKind = "Route Section",
+  emptyMessage,
 }: {
   sections: readonly RouteSection[];
   routePoints?: readonly GpxRoutePointData[];
@@ -40,7 +41,8 @@ export default function RouteSectionBrowser({
   onSelectImage?: (image: MapillaryImageEvidence) => void;
   terrainEvidenceState?: TerrainEvidenceState;
   sectionLabels?: ReadonlyMap<string, { from: string; to: string }>;
-  sectionKind?: "Route Section" | "Aid Station Section";
+  sectionKind?: "Route Section" | "Aid Station Section" | "Custom Section";
+  emptyMessage?: string;
 }) {
   const orderedSections = numberRouteSectionsForDisplay(sections);
   return (
@@ -50,7 +52,7 @@ export default function RouteSectionBrowser({
           <ol className="divide-y divide-black/10 overflow-hidden rounded-2xl border border-black/10 bg-white" aria-label={sectionKind === "Aid Station Section" ? "Ordered aid station sections" : "Ordered route sections"}>
             {orderedSections.map(({ section, ordinal }) => {
               const isSelected = routeSectionSelectionKey(section) === selectedSectionKey;
-              const stationLabels = sectionLabels?.get(routeSectionSelectionKey(section));
+              const boundaryLabels = sectionLabels?.get(routeSectionSelectionKey(section));
               return (
                 <li key={routeSectionSelectionKey(section)}>
                   <button
@@ -64,7 +66,7 @@ export default function RouteSectionBrowser({
                     <span className="flex min-w-0 items-center gap-3">
                       <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-semibold ${isSelected ? "bg-[#71805d] text-white" : "bg-[#f4f2ed] text-black/60"}`}>{ordinal}</span>
                       <span className="min-w-0">
-                        <span className="block truncate text-sm font-semibold text-[#17211c]">{stationLabels ? `${stationLabels.from} → ${stationLabels.to}` : `${rhythmLabels[section.dominantRhythm]} · ${section.startKm}–${section.endKm} km`}</span>
+                        <span className="block truncate text-sm font-semibold text-[#17211c]">{boundaryLabels ? `${boundaryLabels.from} → ${boundaryLabels.to}` : `${rhythmLabels[section.dominantRhythm]} · ${section.startKm}–${section.endKm} km`}</span>
                         <span className="mt-1 block text-xs tabular-nums text-black/45">{section.distanceKm} km · +{section.ascentM} m / −{section.descentM} m</span>
                       </span>
                     </span>
@@ -81,7 +83,7 @@ export default function RouteSectionBrowser({
                         imageEvidence={imageEvidence.get(routeSectionSelectionKey(section)) ?? null}
                         terrainEvidenceState={terrainEvidenceState}
                         sectionKind={sectionKind}
-                        stationLabels={stationLabels}
+                        boundaryLabels={boundaryLabels}
                         onSelectImage={onSelectImage}
                         onClose={() => onSelectSection(null)}
                       />
@@ -93,7 +95,7 @@ export default function RouteSectionBrowser({
           </ol>
         </>
       ) : (
-        <p className="text-sm text-black/45">No stable route rhythm could be distinguished from this GPX elevation profile.</p>
+        <p className="text-sm text-black/45">{emptyMessage ?? "No stable route rhythm could be distinguished from this GPX elevation profile."}</p>
       )}
     </div>
   );
@@ -110,7 +112,7 @@ export function RouteSectionBrowserHeading({ action, controls }: { action?: Reac
         </div>
         {action}
       </div>
-      <p className="mt-4 max-w-2xl text-sm leading-6 text-black/50">Choose a section to explore its profile, route and available evidence.</p>
+      <p className="mt-4 max-w-2xl text-sm leading-6 text-black/50">Choose a section to explore its profile, route and available evidence. Section ascent and descent use the smoothed GPX profile; route totals sum recorded GPX elevations, so the figures may differ.</p>
     </div>
   );
 }
@@ -124,7 +126,7 @@ function SectionDetail({
   imageEvidence,
   terrainEvidenceState,
   sectionKind,
-  stationLabels,
+  boundaryLabels,
   onSelectImage,
   onClose,
 }: {
@@ -135,16 +137,18 @@ function SectionDetail({
   routeSections: readonly RouteSection[];
   imageEvidence: MapillarySectionEvidence | null;
   terrainEvidenceState: TerrainEvidenceState;
-  sectionKind: "Route Section" | "Aid Station Section";
-  stationLabels?: { from: string; to: string };
+  sectionKind: "Route Section" | "Aid Station Section" | "Custom Section";
+  boundaryLabels?: { from: string; to: string };
   onSelectImage: (image: MapillaryImageEvidence) => void;
   onClose: () => void;
 }) {
-  const title = stationLabels ? `${stationLabels.from} → ${stationLabels.to}` : rhythmLabels[section.dominantRhythm];
+  const isAidStationSection = sectionKind === "Aid Station Section";
+  const title = boundaryLabels ? `${boundaryLabels.from} → ${boundaryLabels.to}` : rhythmLabels[section.dominantRhythm];
   const terrain = getTerrainSectionPresentation(section, terrainEvidenceState);
   const imagery = getRouteImageryPresentation(imageEvidence);
-  const expectation = stationLabels ? null : presentRouteSectionNarrativeV2(gradientIntelligence, routeSections, section);
-  const whatToExpect = expectation?.paragraphs.length ? expectation.paragraphs : [section.description];
+  const expectation = boundaryLabels ? null : presentRouteSectionNarrativeV2(gradientIntelligence, routeSections, section);
+  const whatToExpect = sectionKind === "Custom Section" ? [section.description]
+    : expectation?.paragraphs.length ? expectation.paragraphs : [section.description];
 
   return (
     <article className="rounded-3xl border border-[#71805d]/30 bg-[#f4f2ed] p-5 sm:p-8" aria-label={`${sectionKind} ${ordinal} details`}>
@@ -155,10 +159,10 @@ function SectionDetail({
         </div>
         <button type="button" aria-label={`Close ${sectionKind} ${ordinal} details`} onClick={onClose} className="min-h-11 rounded-full border border-black/15 bg-white px-4 text-sm font-semibold text-black/70 hover:bg-[#e9eddf] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d]">Close details</button>
       </div>
-      {stationLabels ? (
+      {isAidStationSection && boundaryLabels ? (
         <section className="mt-5 border-t border-black/10 pt-5" aria-label="Aid station interval">
           <SectionSubheading>Between aid stations</SectionSubheading>
-          <p className="mt-3 text-sm leading-6 text-black/70">From {stationLabels.from} to {stationLabels.to} along the selected GPX route.</p>
+          <p className="mt-3 text-sm leading-6 text-black/70">From {boundaryLabels.from} to {boundaryLabels.to} along the selected GPX route.</p>
         </section>
       ) : (
         <section className="mt-5 border-t border-black/10 pt-5" aria-label="What to Expect">
@@ -181,7 +185,7 @@ function SectionDetail({
         <SectionSubheading>Section map · GPX-derived</SectionSubheading>
         <TerrainSectionMap points={routePoints} section={section} startDistanceKm={section.startKm} endDistanceKm={section.endKm} />
       </div>
-      {TERRAIN_INTELLIGENCE_V1_ENABLED && !stationLabels && <section className="mt-6 min-w-0 border-t border-black/10 pt-5" aria-label="Mapped terrain evidence">
+      {TERRAIN_INTELLIGENCE_V1_ENABLED && sectionKind === "Route Section" && <section className="mt-6 min-w-0 border-t border-black/10 pt-5" aria-label="Mapped terrain evidence">
         <SectionSubheading>Mapped terrain</SectionSubheading>
         {terrain.status === "available" ? (
           <div className="mt-2 space-y-4">
