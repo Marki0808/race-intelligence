@@ -4,7 +4,7 @@ import test from "node:test";
 import { createRouteFingerprint } from "./routeFingerprint.ts";
 import { createAnalysisInputFingerprint } from "./analysisInputFingerprint.ts";
 import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis.ts";
-import { lookupSharedRoute } from "./api/route-persistence/route.ts";
+import { lookupSharedRoute } from "./routePersistenceHandler.ts";
 import { getOrCreateRouteAnalysis, ROUTE_ANALYSIS_VERSION } from "./routePersistence.ts";
 import { getSharedRouteEligibility } from "./sharedRouteEligibility.ts";
 import { validatePersistenceRequest } from "./routePersistenceValidation.ts";

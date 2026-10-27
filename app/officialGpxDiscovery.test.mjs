@@ -206,6 +206,96 @@ test("organizer homepages return explicit same-origin course choices before any 
   assert.equal(result.courses.some(({ url }) => url.includes("results")), false);
 });
 
+test("generic labeled course cards with language-neutral CTAs produce separate choices", async () => {
+  const rootUrl = "https://kajbum.example/";
+  const html = `<title>Kajbumščak Trail</title><h1>Kajbumščak Trail</h1>
+    <section><article><h2>Mali Krap</h2><p>DUŽINA: 9km</p><a href="/krap">SAZNAJ VIŠE</a></article>
+    <article><h2>Šumski Gujdek</h2><p>DUŽINA: 18km</p><a href="/gujdek">SAZNAJ VIŠE</a></article>
+    <article><h2>Dedek Kajbumščak</h2><p>DUŽINA: 29km</p><a href="/dedek">SAZNAJ VIŠE</a></article></section>
+    <nav><a href="/shop/29-km-t-shirt">29 km shirt</a></nav>`;
+  const { run, calls } = discovery(new Map([[rootUrl, page(html, rootUrl)]]));
+  const result = await run(rootUrl);
+  assert.equal(result.status, "course-selection-required");
+  assert.deepEqual(result.courses.map(({ url, distanceLabel }) => [url, distanceLabel]), [
+    ["https://kajbum.example/krap", "9 km"],
+    ["https://kajbum.example/gujdek", "18 km"],
+    ["https://kajbum.example/dedek", "29 km"],
+  ]);
+  assert.deepEqual(result.courses.map(({ displayName }) => displayName), ["Mali Krap", "Šumski Gujdek", "Dedek Kajbumščak"]);
+  assert.equal(calls.filter(({ type }) => type === "request").length, 1, "course detail pages are not fetched until the user chooses one");
+  assert.equal(result.courses.some(({ url }) => url.includes("shop")), false);
+});
+
+test("separately selected short-slug pages keep each official GPX scoped to its course distance", async () => {
+  const routes = [
+    ["krap", "Mali Krap", "9km", "mali-krap-9k.gpx"],
+    ["gujdek", "Šumski Gujdek", "18km", "sumski-gujdek-18k.gpx"],
+    ["dedek", "Dedek Kajbumščak", "29km", "dedek-kajbumsak-29k.gpx"],
+  ];
+  for (const [slug, name, distance, file] of routes) {
+    const url = `https://kajbum.example/${slug}`;
+    const resourceUrl = `https://files.example/${file}`;
+    const html = `<title>Kajbumščak Trail</title><h1>${name}</h1><p>DUŽINA: ${distance}</p><a href="${resourceUrl}">PREUZMI GPX</a>`;
+    const result = await (await discovery(new Map([[url, page(html, url)]]))).run(url);
+    assert.equal(result.status, "success");
+    assert.equal(result.candidates.length, 1);
+    assert.equal(result.candidates[0].gpxUrl, resourceUrl);
+    assert.equal(result.candidates[0].distanceLabel.replace(/\s/g, "").toLocaleLowerCase().replace(/km$/, "k"), distance.toLocaleLowerCase().replace(/km$/, "k"));
+    assert.equal(result.courseSelection.identity.courseLabel.replace(/\s/g, "").toLocaleLowerCase().replace(/km$/, "k"), distance.toLocaleLowerCase().replace(/km$/, "k"));
+    assert.equal(result.courseSelection.preselection.resourceUrl, resourceUrl);
+  }
+});
+
+test("selected short-slug course page binds a single external GPX and keeps route filename year separate", async () => {
+  const courseUrl = "https://kajbum.example/gujdek";
+  const archiveUrl = "https://filesusr.example/ugd/opaque.gpx?dn=Kajbumscak+Trail+2025+-+Sumski+Gujdek+18k.gpx";
+  const html = `<title>Kajbumščak Trail 2026</title><h1>Šumski Gujdek</h1>
+    <p>DATUM: 21.06.2026</p><p>DUŽINA: 18km</p>
+    <a href="${archiveUrl}">PREUZMI GPX</a>`;
+  const { run, calls } = discovery(new Map([[courseUrl, page(html, courseUrl)]]));
+  const result = await run(courseUrl);
+  assert.equal(result.status, "success");
+  assert.deepEqual(calls.filter(({ type }) => type === "request").map(({ url }) => url), [courseUrl]);
+  assert.equal(result.candidates.length, 1);
+  assert.equal(result.candidates[0].gpxUrl, archiveUrl);
+  assert.equal(result.candidates[0].distanceLabel, "18km");
+  assert.equal(result.candidates[0].sourcePageUrl, courseUrl);
+  assert.equal(result.courseSelection.identity.courseLabel, "18km");
+  assert.equal(result.courseSelection.identity.editionYear, 2026);
+  assert.equal(result.courseSelection.preselection.resourceUrl, archiveUrl);
+  assert.equal(result.courseSelection.preselection.courseIdentity.editionYear, 2026);
+  assert.equal(result.courseSelection.preselection.evidence.some((item) => item.includes("2025")), false);
+  assert.ok(result.candidates[0].supportingEvidence.some((item) => item.includes("selected official course page confirms course distance")));
+});
+
+test("short-slug course pages with multiple distances or no named GPX resource remain unbound", async () => {
+  const url = "https://race.example/gujdek";
+  const ambiguous = page("<h1>Forest Course</h1><p>Length: 18 km; alternate length: 29 km</p><a href='https://files.example/a.gpx'>GPX</a>", url);
+  const ambiguousResult = await (await discovery(new Map([[url, ambiguous]]))).run(url);
+  assert.equal(ambiguousResult.status, "success");
+  assert.equal("courseSelection" in ambiguousResult, false);
+
+  const noResource = page("<h1>Forest Course</h1><p>Length: 18 km</p>", url);
+  const noResourceResult = await (await discovery(new Map([[url, noResource]]))).run(url);
+  assert.equal(noResourceResult.status, "no-results");
+});
+
+test("short-slug pages keep mismatched or multiple GPX resources explicitly ambiguous", async () => {
+  const url = "https://race.example/gujdek";
+  const mismatchPage = page('<h1>Forest Gujdek</h1><p>Distance: 18 km</p><a href="https://files.example/route-29k.gpx">29 km GPX</a>', url);
+  const mismatch = await (await discovery(new Map([[url, mismatchPage]]))).run(url);
+  assert.equal(mismatch.status, "success");
+  assert.equal(mismatch.courseSelection.identity.courseLabel, "18 km");
+  assert.equal(mismatch.candidates[0].distanceLabel, "29 km");
+  assert.equal(mismatch.courseSelection.preselection, null);
+
+  const variantsPage = page('<h1>Forest Gujdek</h1><p>Distance: 18 km</p><a href="https://files.example/route-a.gpx">Download GPX</a><a href="https://files.example/route-b.gpx">Download GPX</a>', url);
+  const variants = await (await discovery(new Map([[url, variantsPage]]))).run(url);
+  assert.equal(variants.status, "success");
+  assert.equal(variants.candidates.length, 2);
+  assert.equal(variants.courseSelection.preselection, null);
+});
+
 test("multiple explicit course choices take precedence over a competing GPX index link", async () => {
   const rootUrl = "https://organizer.example/";
   const courses = ["11 km", "17 km", "35 km", "64 km", "108 km"];

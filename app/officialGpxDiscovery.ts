@@ -368,6 +368,7 @@ type HtmlLink = {
   ariaLabel: string;
   imageAlt: string;
   cardContext: string | null;
+  localContext: string | null;
   insideEventCard: boolean;
   contextHeading: string | null;
   isNavigation: boolean;
@@ -388,7 +389,7 @@ function parseAnchorLinks(html: string): ParsedHtmlAnchors {
   const links: HtmlLink[] = [];
   const scopes: Array<{ tag: string; heading: string | null; text: string[]; isCard: boolean; isEventCard: boolean; isNavigation: boolean }> = [];
   let active: {
-    href: string; title: string; ariaLabel: string; imageAlt: string; cardContext: string | null; insideEventCard: boolean;
+    href: string; title: string; ariaLabel: string; imageAlt: string; cardContext: string | null; localContext: string | null; insideEventCard: boolean;
     pieces: string[]; contextHeading: string | null; isNavigation: boolean;
     meaningfulAriaOrTitle: boolean; meaningfulImageAlt: boolean; insideSemanticCard: boolean;
     headingInSharedContainer: boolean; ancestorCategory: HtmlLink["ancestorCategory"]; nestingDepth: number;
@@ -404,6 +405,7 @@ function parseAnchorLinks(html: string): ParsedHtmlAnchors {
       ariaLabel: active.ariaLabel,
       imageAlt: active.imageAlt,
       cardContext: active.cardContext,
+      localContext: active.localContext,
       insideEventCard: active.insideEventCard,
       text: decodeEntities(active.pieces.join(" ").replace(/\s+/g, " ").trim()).slice(0, 300),
       contextHeading: active.contextHeading,
@@ -422,12 +424,12 @@ function parseAnchorLinks(html: string): ParsedHtmlAnchors {
     const start = html.indexOf("<", cursor);
     if (start < 0) {
       if (active) active.pieces.push(html.slice(cursor));
-      else if (!activeHeading) appendCardText(scopes, html.slice(cursor));
+      else if (!activeHeading) appendScopedText(scopes, html.slice(cursor));
       break;
     }
     const textBetweenTags = html.slice(cursor, start);
     if (active) active.pieces.push(textBetweenTags);
-    else if (!activeHeading) appendCardText(scopes, textBetweenTags);
+    else if (!activeHeading) appendScopedText(scopes, textBetweenTags);
     if (html.startsWith("<!--", start)) {
       const close = html.indexOf("-->", start + 4);
       if (close < 0) break;
@@ -475,6 +477,13 @@ function parseAnchorLinks(html: string): ParsedHtmlAnchors {
         const localScope = [...scopes].reverse().find((item) => item.tag !== "html" && item.tag !== "body" && item.tag !== "main");
         if (cardScope) cardScope.heading = heading;
         else if (localScope) localScope.heading = heading;
+        // Keep bounded heading evidence on its containing layout scopes too;
+        // builders often place a title in one nested div and its CTA in a sibling.
+        for (const scope of scopes.slice(-6)) {
+          if (!scope.isNavigation && !["html", "body", "main", "nav", "header", "footer"].includes(scope.tag)) {
+            appendScopeValue(scope.text, heading, 480);
+          }
+        }
       }
       activeHeading = null;
     }
@@ -505,6 +514,12 @@ function parseAnchorLinks(html: string): ParsedHtmlAnchors {
         ariaLabel: decodeEntities(attrs["aria-label"] ?? "").trim().slice(0, 160),
         imageAlt: "",
         cardContext: [...scopes].reverse().find((item) => item.isCard)?.text.join(" ").replace(/\s+/g, " ").trim().slice(0, 160) || null,
+        localContext: (() => {
+          const contexts = [...scopes].reverse().slice(0, 6).map((item) => `${item.heading ?? ""} ${item.text.join(" ")}`)
+            .map((value) => value.replace(/\s+/g, " ").trim().slice(0, 480)).filter(Boolean);
+          return contexts.find((value) => /\b(?:dužina|duzina|distance|course\s+length|length)\b/i.test(value) && distanceIn(value))
+            ?? contexts[0] ?? null;
+        })(),
         insideEventCard: eventCard,
         pieces: [],
         contextHeading: [...scopes].reverse().find((item) => item.heading)?.heading ?? null,
@@ -556,11 +571,18 @@ function parseAnchorLinks(html: string): ParsedHtmlAnchors {
   return { links, headingElements: boundedDiagnosticCount(headingElements), meaningfulHeadingElements: boundedDiagnosticCount(meaningfulHeadingElements) };
 }
 
-function appendCardText(scopes: Array<{ text: string[]; isCard: boolean }>, value: string): void {
-  const card = [...scopes].reverse().find((item) => item.isCard);
-  if (!card || card.text.join(" ").length >= 160) return;
+function appendScopeValue(pieces: string[], value: string, limit: number): void {
+  const currentLength = pieces.join(" ").length;
+  if (currentLength >= limit) return;
   const text = decodeEntities(value).replace(/\s+/g, " ").trim();
-  if (text) card.text.push(text.slice(0, Math.max(0, 160 - card.text.join(" ").length)));
+  if (text) pieces.push(text.slice(0, Math.max(0, limit - currentLength)));
+}
+
+function appendScopedText(scopes: Array<{ tag: string; text: string[]; isNavigation: boolean; isCard: boolean }>, value: string): void {
+  for (const scope of scopes.slice(-6)) {
+    if (scope.isNavigation || ["html", "body", "main", "nav", "header", "footer"].includes(scope.tag)) continue;
+    appendScopeValue(scope.text, value, scope.isCard ? 160 : 480);
+  }
 }
 
 const DISTANCE = /(?:^|[^a-z0-9])(\d{1,3}(?:[.,]\d{1,2})?\s*(?:km|k|mi|mile|miles))(?![a-z])/i;
@@ -740,6 +762,8 @@ function organizerEventChoices(
 
 const COURSE_PATH_SEGMENT = /^(?:race|races|event|events|course|courses|distance|distances|razdalja|razdalje|distancia|distancias|distanza|distanze)$/i;
 const COURSE_LABEL_CONTEXT = /\b(?:trail|ultra|course|race|route|distance|razdalja|razdalje|parcours|trase?)\b/i;
+const COURSE_STAT_LABEL = /\b(?:dužina|duzina|distance|course\s+length|length)\b/i;
+const GENERIC_COURSE_LINK_TEXT = /^(?:saznaj\s+više|saznaj\s+vise|learn\s+more|read\s+more|details?|more\s+info(?:rmation)?)$/i;
 const NON_COURSE_CHOICE_WORDS = new Set(["trail", "ultra", "course", "race", "event", "events", "route", "distance", "razdalja", "razdalje", "parcours", "powered", "the", "for", "of", "and", "by"]);
 
 function courseNameEvidence(value: string): boolean {
@@ -766,15 +790,33 @@ function organizerCourseChoices(links: HtmlLink[], sourceUrl: URL, maxChoices = 
     const explicitEvidence = [link.text, link.title, link.ariaLabel, link.contextHeading ?? "", link.cardContext ?? ""]
       .filter(Boolean).join(" ");
     const explicitDistance = distanceIn(explicitEvidence);
-    if (!pathDistance || !explicitDistance || !officialCourseLabelsMatch(pathDistance, explicitDistance)) continue;
+    const localDistance = link.localContext && COURSE_STAT_LABEL.test(link.localContext) ? distanceIn(link.localContext) : null;
+    const distanceLabel = pathDistance && explicitDistance && officialCourseLabelsMatch(pathDistance, explicitDistance)
+      ? explicitDistance
+      : !pathDistance ? localDistance : null;
+    if (!distanceLabel) continue;
 
     const pathSegments = decodedPath.split("/").filter(Boolean);
     const hasCoursePath = pathSegments.some((segment) => COURSE_PATH_SEGMENT.test(segment));
+    let localName = link.localContext?.replace(/\b(?:dužina|duzina|distance|course\s+length|length)\b\s*:?/gi, " ")
+      .replace(/\d{1,3}(?:[.,]\d{1,2})?\s*(?:km|k|mi|miles?|M)\b/gi, " ")
+      .replace(/\b(?:saznaj\s+više|saznaj\s+vise|learn\s+more|read\s+more|details?|more\s+info(?:rmation)?)\b/gi, " ")
+      .replace(/\s+/g, " ").trim().slice(0, 180) ?? "";
+    const localWords = localName.split(" ");
+    if (localWords.length % 2 === 0 && localWords.slice(0, localWords.length / 2).join(" ").toLocaleLowerCase()
+      === localWords.slice(localWords.length / 2).join(" ").toLocaleLowerCase()) {
+      localName = localWords.slice(0, localWords.length / 2).join(" ");
+    }
     const courseName = [link.contextHeading, link.text, link.title, link.ariaLabel, link.cardContext]
       .filter((value): value is string => Boolean(value))
       .map((value) => value.replace(/\s+/g, " ").trim())
-      .find((value) => courseNameEvidence(value) && COURSE_LABEL_CONTEXT.test(value));
-    const courseContext = hasCoursePath || Boolean(courseName && COURSE_LABEL_CONTEXT.test(explicitEvidence));
+      .find((value) => courseNameEvidence(value) && COURSE_LABEL_CONTEXT.test(value))
+      ?? (localDistance && link.contextHeading && !courseNameEvidence(link.contextHeading) ? link.contextHeading : null)
+      ?? (localDistance && localName && !GENERIC_COURSE_LINK_TEXT.test(link.text.trim()) ? localName : null)
+      ?? (localDistance && localName ? localName : null);
+    const pathAndLinkEvidence = Boolean(pathDistance && explicitDistance && officialCourseLabelsMatch(pathDistance, explicitDistance));
+    const cardEvidence = Boolean(localDistance && COURSE_STAT_LABEL.test(link.localContext ?? "") && courseName && !link.isNavigation);
+    const courseContext = hasCoursePath || Boolean(courseName && COURSE_LABEL_CONTEXT.test(explicitEvidence)) || cardEvidence;
     if (!courseContext || !courseName || link.isNavigation && !hasCoursePath) continue;
 
     const yearMatches = [...new Set([...explicitEvidence, decodedPath].join(" ").match(/\b20\d{2}\b/g)?.map(Number) ?? [])];
@@ -785,7 +827,8 @@ function organizerCourseChoices(links: HtmlLink[], sourceUrl: URL, maxChoices = 
       link.title && `title: ${link.title}`,
       link.ariaLabel && `aria-label: ${link.ariaLabel}`,
       link.contextHeading && `course-list context: ${link.contextHeading}`,
-      `matching course distance in link and same-origin destination: ${explicitDistance}`,
+      pathAndLinkEvidence ? `matching course distance in link and same-origin destination: ${explicitDistance}`
+        : `course card has a labeled distance: ${distanceLabel}`,
     ].filter(Boolean) as string[];
     const existing = choices.get(target.href);
     if (existing) {
@@ -801,7 +844,7 @@ function organizerCourseChoices(links: HtmlLink[], sourceUrl: URL, maxChoices = 
       sourcePageUrl: publicSourceUrl(sourceUrl),
       linkText: link.text.slice(0, 200),
       displayName: courseName.slice(0, 180),
-      distanceLabel: explicitDistance,
+      distanceLabel,
       editionYear,
       supportingEvidence: evidence.slice(0, 6),
     });
@@ -898,7 +941,7 @@ function staticGpxMetadataLinks(html: string, sourceUrl: URL): HtmlLink[] {
   }
   for (const match of html.matchAll(/\bdata-(?:gpx|route-gpx)(?:-url)?\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/gi)) add(match[1] ?? match[2] ?? match[3]);
   return values.map((href) => ({
-    href, text: "", title: "GPX download metadata", ariaLabel: "", imageAlt: "", cardContext: null,
+    href, text: "", title: "GPX download metadata", ariaLabel: "", imageAlt: "", cardContext: null, localContext: null,
     insideEventCard: false, contextHeading: null, isNavigation: false, meaningfulAnchorText: false,
     meaningfulAriaOrTitle: false, meaningfulImageAlt: false, insideSemanticCard: false,
     headingInSharedContainer: false, ancestorCategory: "other", nestingDepth: 0,
@@ -1126,7 +1169,8 @@ export function createOfficialGpxDiscovery(
             const headingDistance = link.contextHeading ? distanceIn(link.contextHeading) : null;
             const linkDistance = distanceIn(`${link.text} ${link.title}`);
             const fileName = fileNameFromUrl(target);
-            const distanceLabel = headingDistance ?? linkDistance ?? (fileName ? distanceIn(fileName) : null);
+            const pageBoundDistance = rootCourseIdentity?.sourcePageUrl === sourceUrl.href ? rootCourseIdentity.courseLabel : null;
+            const distanceLabel = headingDistance ?? linkDistance ?? (fileName ? distanceIn(fileName) : null) ?? pageBoundDistance;
             const visibleText = [link.text, link.title].map((item) => item.trim()).find((item) =>
               item && !/^(?:gpx|track|route|download)(?:\s+(?:track|route|file|download|gpx|tracks|routes))*$/i.test(item),
             ) ?? "";
@@ -1136,6 +1180,9 @@ export function createOfficialGpxDiscovery(
                 ? visibleText.slice(0, 200)
                 : fileName ?? `${target.hostname}${target.pathname}`.slice(0, 200);
             if (fileName) evidence.push(`filename: ${fileName}`);
+            if (pageBoundDistance && !headingDistance && !linkDistance && !(fileName && distanceIn(fileName))) {
+              evidence.push(`selected official course page confirms course distance: ${pageBoundDistance}`);
+            }
             const existing = candidates.get(target.href);
             if (existing) {
               const labelsConflict = existing.distanceLabel && distanceLabel && existing.distanceLabel !== distanceLabel;

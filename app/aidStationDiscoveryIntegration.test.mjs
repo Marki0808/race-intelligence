@@ -4,7 +4,7 @@ import { buildAidStationDiscoveryV1, aidStationDiscoveryV1Schema } from "./aidSt
 import { extractHtmlStationEvidence } from "./aidStationExtraction.ts";
 import { createOfficialGpxDiscovery, OFFICIAL_GPX_DISCOVERY_LIMITS } from "./officialGpxDiscovery.ts";
 import { createOfficialGpxDownloadFlow } from "./officialGpxDownload.ts";
-import { createRaceGpxDownloadPost } from "./api/race-gpx-download/route.ts";
+import { createRaceGpxDownloadPost } from "./raceGpxDownloadHandler.ts";
 import { analyzeGpxRoute } from "./gpxAnalysis.ts";
 import { buildAidStationSections } from "./aidStationSections.ts";
 

@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const [home, discoveryUi, routeMode, downloadModule, downloadRoute, transfer] = await Promise.all([
+const [home, discoveryUi, routeMode, downloadModule, downloadRoute, downloadHandler, transfer] = await Promise.all([
   readFile(new URL("./page.tsx", import.meta.url), "utf8"),
   readFile(new URL("./RaceGpxDiscovery.tsx", import.meta.url), "utf8"),
   readFile(new URL("./RouteMode.tsx", import.meta.url), "utf8"),
   readFile(new URL("./officialGpxDownload.ts", import.meta.url), "utf8"),
   readFile(new URL("./api/race-gpx-download/route.ts", import.meta.url), "utf8"),
+  readFile(new URL("./raceGpxDownloadHandler.ts", import.meta.url), "utf8"),
   readFile(new URL("./discoveredGpxTransfer.ts", import.meta.url), "utf8"),
 ]);
 
@@ -134,16 +135,16 @@ test("download endpoint revalidates page link evidence and bounds body and GPX r
   assert.match(downloadModule, /result\.candidates\.some\(\(candidate\) => candidate\.gpxUrl === candidateUrl\)/);
   assert.match(downloadModule, /maxBytes: 4 \* 1024 \* 1024/);
   assert.match(downloadModule, /parseGpxText\(text\)/);
-  assert.match(downloadRoute, /MAX_REQUEST_BYTES = 8_192/);
+  assert.match(downloadHandler, /MAX_REQUEST_BYTES = 8_192/);
   assert.match(downloadRoute, /maxDuration = 30/);
-  assert.match(downloadRoute, /Cache-Control.*no-store/);
-  assert.match(downloadRoute, /resourceType === "zip-entry"/);
+  assert.match(downloadHandler, /Cache-Control.*no-store/);
+  assert.match(downloadHandler, /resourceType === "zip-entry"/);
 });
 
 test("GPX download failures distinguish an HTML index from an oversized file using safe fixed reasons", () => {
   assert.match(downloadModule, /reason: "response-too-large"/);
   assert.match(downloadModule, /reason: "html-response"/);
-  assert.match(downloadRoute, /result\.reason \? \{ reason: result\.reason \}/);
+  assert.match(downloadHandler, /result\.reason \? \{ reason: result\.reason \}/);
   assert.match(discoveryUi, /failure\.reason === "html-response"[\s\S]*?instead of a GPX file/);
   assert.match(discoveryUi, /failure\.reason === "response-too-large"[\s\S]*?4 MiB download limit/);
   assert.doesNotMatch(discoveryUi, /rawError|stackTrace|responseBody|internalAddress/);

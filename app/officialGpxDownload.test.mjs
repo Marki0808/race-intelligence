@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
 import test from "node:test";
-import { createRaceGpxDownloadPost } from "./api/race-gpx-download/route.ts";
+import { createRaceGpxDownloadPost } from "./raceGpxDownloadHandler.ts";
 import { createOfficialGpxArchiveDownloader, createOfficialGpxDownloadFlow, createOfficialGpxDownloader, OFFICIAL_GPX_DOWNLOAD_LIMITS } from "./officialGpxDownload.ts";
 import { inspectGpxArchive, OFFICIAL_GPX_ARCHIVE_LIMITS } from "./officialGpxArchive.ts";
 import { fetchPublicHttps } from "./officialGpxDiscovery.ts";
@@ -93,6 +93,17 @@ test("selected GPX is retrieved with bounded safe-fetch options and validated by
   assert.equal(received.options.sameOriginRedirects, false);
   assert.equal(received.options.maxRedirects, 2);
   assert.equal(received.options.timeoutMs, OFFICIAL_GPX_DOWNLOAD_LIMITS.timeoutMs);
+});
+
+test("downloads an explicitly linked external GPX using the application/gpx+xml media type and preserves its query filename", async () => {
+  const url = "https://435cd06c-c3e9-4dbb-89f1-4edc141e97d4.filesusr.com/ugd/opaque.gpx?dn=Kajbumscak+Trail+2025+-+Sumski+Gujdek+18k.gpx";
+  let requestedUrl;
+  const download = createOfficialGpxDownloader(async (requested) => {
+    requestedUrl = requested;
+    return { ...gpxResponse(validGpx, "application/gpx+xml"), finalUrl: new URL(requested), bytesRead: Buffer.byteLength(validGpx) };
+  });
+  assert.deepEqual(await download(url), { status: "success", text: validGpx });
+  assert.equal(requestedUrl, url);
 });
 
 test("rejects malformed GPX, HTML, unsupported media, and oversized response bodies", async () => {

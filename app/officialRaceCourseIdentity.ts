@@ -103,6 +103,25 @@ function explicitHtmlDateYears(html: string): number[] {
   return [...years];
 }
 
+function explicitlyLabeledCourseDistance(html: string): string | null {
+  const visible = textContentForIdentity(html.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " "));
+  const values = [...visible.matchAll(/\b(?:dužina|duzina|distance|course\s+length|length)\b\s*:?\s*(\d{1,3}(?:[.,]\d{1,2})?\s*(?:km|k|mi|miles?|M)\b)/gi)]
+    .map((match) => match[1].replace(/\s+/g, " ").trim());
+  const keys = new Map(values.map((value) => [distanceKey(value), value]));
+  keys.delete(null);
+  return keys.size === 1 ? [...keys.values()][0] : null;
+}
+
+function textContentForIdentity(value: string): string {
+  return value.replace(/<[^>]*>/g, " ").replace(/&nbsp;|&#160;/gi, " ")
+    .replace(/&amp;/gi, "&").replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'")
+    .replace(/\s+/g, " ").trim().slice(0, 12000);
+}
+
+function hasStaticGpxLink(html: string): boolean {
+  return /<a\b[^>]*\bhref\s*=\s*(["'])[^"']+\.gpx(?:[?#][^"']*)?\1/i.test(html);
+}
+
 function pageSignals(html: string): { labels: Array<{ label: string; source: string }>; eventName: string | null; editionYear: number | null; editionEvidence: string | null; editionConflict: boolean } {
   const labels: Array<{ label: string; source: string }> = [];
   let eventName: string | null = null;
@@ -152,7 +171,7 @@ function pageSignals(html: string): { labels: Array<{ label: string; source: str
   return { labels, eventName, editionYear, editionEvidence, editionConflict };
 }
 
-/** Requires a distance-specific race/course path and an exact matching page label. */
+/** Requires a distance-specific URL or a directly linked, explicitly labeled single-course page. */
 export function identifyOfficialRaceCourse(inputUrl: string, html: string): OfficialRaceCourseIdentity | null {
   let url: URL;
   try { url = new URL(inputUrl); } catch { return null; }
@@ -160,16 +179,32 @@ export function identifyOfficialRaceCourse(inputUrl: string, html: string): Offi
   const parts = url.pathname.split("/").filter(Boolean);
   const leaf = parts.at(-1) ?? "";
   const parent = parts.at(-2) ?? "";
-  if (!COURSE_PATH_PARENT.test(parent)) return null;
+  const pathScoped = COURSE_PATH_PARENT.test(parent);
   let pathLabel: string;
   try { pathLabel = decodeURIComponent(leaf); } catch { return null; }
   const exactPathLabel = DISTANCE_LABEL.test(pathLabel) ? pathLabel.trim() : null;
   const expectedLabel = exactPathLabel ?? coursePathDistance(pathLabel);
-  if (!expectedLabel) return null;
   const expectedKey = distanceKey(expectedLabel);
-  if (!expectedKey) return null;
   const signals = pageSignals(html);
   if (signals.editionConflict) return null;
+  if (!pathScoped || !expectedKey) {
+    // Some official course pages use a short, non-distance slug (for example,
+    // /gujdek). Bind only when the page itself has exactly one labeled course
+    // distance, a named H1, and a static GPX download link. Event homepages with
+    // several distances and pages without a route resource remain unscoped.
+    const labeledDistance = explicitlyLabeledCourseDistance(html);
+    const namedHeading = signals.labels.some(({ label, source }) => source === "h1" && /[\p{L}]{2,}/u.test(label));
+    if (!parts.length || !labeledDistance || !namedHeading || !hasStaticGpxLink(html)) return null;
+    const courseLabel = labeledDistance.slice(0, 160);
+    return {
+      courseLabel,
+      editionYear: signals.editionYear,
+      eventName: signals.eventName,
+      sourcePageUrl: url.href,
+      evidence: [`selected official course page identifies a labeled distance: ${courseLabel}`, "named course heading", "official page links a GPX resource", ...(signals.editionEvidence ? [signals.editionEvidence] : [])],
+    };
+  }
+  if (!expectedLabel || !expectedKey) return null;
   const corroborating = signals.labels.find(({ label }) => officialCourseLabelsMatch(label, expectedLabel));
   if (!corroborating) return null;
   // Keep a stable course token instead of carrying an entire page title into matching.
