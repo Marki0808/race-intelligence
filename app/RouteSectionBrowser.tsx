@@ -4,6 +4,7 @@ import { type ReactNode } from "react";
 import type { MapillaryImageEvidence, MapillarySectionEvidence } from "./mapillaryTerrainProof";
 import type { RouteSection } from "./routeSectionEngine";
 import type { GradientIntelligenceV1 } from "./gradientIntelligence";
+import type { RouteNarrativeRouteContextV2 } from "./routeNarrativePhases";
 import { presentRouteSectionNarrativeV2 } from "./routeSectionNarrativeV2";
 import { getRouteImageryPresentation, getTerrainSectionPresentation, numberRouteSectionsForDisplay, type TerrainEvidenceState } from "./routeSectionPresentation";
 import { routeSectionSelectionKey } from "./routeSectionSelection";
@@ -26,6 +27,7 @@ export default function RouteSectionBrowser({
   selectedSectionKey,
   onSelectSection,
   gradientIntelligence,
+  narrativeContext,
   imageEvidence = new Map(),
   onSelectImage = () => undefined,
   terrainEvidenceState = "not-requested",
@@ -38,6 +40,7 @@ export default function RouteSectionBrowser({
   selectedSectionKey: string | null;
   onSelectSection: (section: RouteSection | null) => void;
   gradientIntelligence?: GradientIntelligenceV1;
+  narrativeContext?: RouteNarrativeRouteContextV2;
   imageEvidence?: ReadonlyMap<string, MapillarySectionEvidence | null>;
   onSelectImage?: (image: MapillaryImageEvidence) => void;
   terrainEvidenceState?: TerrainEvidenceState;
@@ -80,6 +83,7 @@ export default function RouteSectionBrowser({
                         ordinal={ordinal}
                         routePoints={routePoints}
                         gradientIntelligence={gradientIntelligence}
+                        narrativeContext={narrativeContext}
                         routeSections={sections}
                         imageEvidence={imageEvidence.get(routeSectionSelectionKey(section)) ?? null}
                         terrainEvidenceState={terrainEvidenceState}
@@ -123,6 +127,7 @@ function SectionDetail({
   ordinal,
   routePoints,
   gradientIntelligence,
+  narrativeContext,
   routeSections,
   imageEvidence,
   terrainEvidenceState,
@@ -135,6 +140,7 @@ function SectionDetail({
   ordinal: number;
   routePoints: readonly GpxRoutePointData[];
   gradientIntelligence: GradientIntelligenceV1 | undefined;
+  narrativeContext?: RouteNarrativeRouteContextV2;
   routeSections: readonly RouteSection[];
   imageEvidence: MapillarySectionEvidence | null;
   terrainEvidenceState: TerrainEvidenceState;
@@ -147,9 +153,9 @@ function SectionDetail({
   const title = boundaryLabels ? `${boundaryLabels.from} → ${boundaryLabels.to}` : rhythmLabels[section.dominantRhythm];
   const terrain = getTerrainSectionPresentation(section, terrainEvidenceState);
   const imagery = getRouteImageryPresentation(imageEvidence);
-  const expectation = boundaryLabels ? null : presentRouteSectionNarrativeV2(gradientIntelligence, routeSections, section);
-  const whatToExpect = sectionKind === "Custom Section" ? [section.description]
-    : expectation?.paragraphs.length ? expectation.paragraphs : [section.description];
+  const expectation = isAidStationSection && boundaryLabels ? null
+    : presentRouteSectionNarrativeV2(gradientIntelligence, routeSections, section, narrativeContext);
+  const whatToExpect = expectation?.paragraphs.length ? expectation.paragraphs : [section.description];
 
   return (
     <article className="rounded-3xl border border-[#71805d]/30 bg-[#f4f2ed] p-5 sm:p-8" aria-label={`${sectionKind} ${ordinal} details`}>
@@ -173,6 +179,7 @@ function SectionDetail({
               <p key={`${expectation?.sectionId ?? section.id}-${expectation?.segmentIndex ?? section.segmentIndex}-expectation-${index}`}>{paragraph}</p>
             ))}
           </div>
+          {whatToExpect.some((paragraph) => /\b\d+(?:\.\d+)?%/.test(paragraph)) && <p className="mt-2 text-xs leading-5 text-black/45">Grade figures are average grades over the stated interval, measured from the smoothed GPX profile.</p>}
         </section>
       )}
       <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4">

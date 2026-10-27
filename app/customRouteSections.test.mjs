@@ -178,7 +178,10 @@ test("Route Analysis presents the shared custom section browser without changing
   assert.match(view, /selectionSections=\{activeSections\}/);
   assert.match(view, /buildCustomRouteSections\(analysis, customPlan\)/);
   assert.match(view, /selectedMoment=\{selectedMoment\}/);
-  assert.match(browser, /sectionKind === "Custom Section" \? \[section\.description\]/);
+  assert.match(view, /buildGradientIntelligenceV1\(analysis\.routeDynamics, customSections\.sections\)/);
+  assert.match(view, /narrativeContext=\{routeNarrativeContext\}/);
+  assert.match(browser, /presentRouteSectionNarrativeV2\(gradientIntelligence, routeSections, section, narrativeContext\)/);
+  assert.doesNotMatch(browser, /sectionKind === "Custom Section" \? \[section\.description\]/);
   assert.match(browser, /aria-pressed=\{isSelected\}/);
   assert.doesNotMatch(raceMode, /Custom Sections/);
 });

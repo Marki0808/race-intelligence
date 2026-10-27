@@ -1,5 +1,7 @@
 import { presentGradientExpectationV1 } from "./gradientIntelligencePresentation.ts";
-import type { GradientIntelligenceV1, GradientIntervalV1 } from "./gradientIntelligence.ts";
+import { buildGradientIntelligenceV1, type GradientIntelligenceV1 } from "./gradientIntelligence.ts";
+import type { RouteDynamicsResult } from "./routeDynamics.ts";
+import type { GradientIntervalV1 } from "./gradientIntelligence.ts";
 import type { RouteSection } from "./routeSectionEngine.ts";
 
 export const ROUTE_NARRATIVE_PHASES_SCHEMA_VERSION = 2;
@@ -42,6 +44,50 @@ export type RouteNarrativePhasesV2 = {
   measurements: { distanceM: number; ascentM: number; descentM: number; netElevationChangeM: number } | null;
   phases: RouteNarrativePhaseV2[];
 };
+
+export type RouteNarrativeRouteContextV2 = {
+  gradientIntelligence: GradientIntelligenceV1;
+  componentSections: RouteSection[];
+};
+
+/** Builds route-global gradient intervals from full component bounds, independent of UI section boundaries. */
+export function buildRouteNarrativeRouteContextV2(
+  dynamics: RouteDynamicsResult,
+  routeSections: readonly RouteSection[],
+): RouteNarrativeRouteContextV2 {
+  const grouped = new Map<number, RouteSection[]>();
+  for (const section of routeSections) {
+    const component = grouped.get(section.segmentIndex) ?? [];
+    component.push(section);
+    grouped.set(section.segmentIndex, component);
+  }
+  const componentSections = [...grouped].map(([segmentIndex, sections]) => {
+    const ordered = [...sections].sort((left, right) => left.startPosition.distanceM - right.startPosition.distanceM);
+    const first = ordered[0];
+    const last = ordered.at(-1)!;
+    const distanceM = last.endPosition.distanceM - first.startPosition.distanceM;
+    return {
+      ...first,
+      id: `narrative-component-${segmentIndex}`,
+      startKm: first.startPosition.distanceM / 1000,
+      endKm: last.endPosition.distanceM / 1000,
+      startPosition: first.startPosition,
+      endPosition: last.endPosition,
+      distanceKm: distanceM / 1000,
+      // The global context does not need an overall direction; this only prevents a UI section
+      // relationship from influencing component-level feature continuity.
+      dominantRhythm: "rolling" as const,
+      elevationStartM: first.elevationStartM,
+      elevationEndM: last.elevationEndM,
+      ascentM: ordered.reduce((sum, section) => sum + section.ascentM, 0),
+      descentM: ordered.reduce((sum, section) => sum + section.descentM, 0),
+    };
+  });
+  return {
+    componentSections,
+    gradientIntelligence: buildGradientIntelligenceV1(dynamics, componentSections),
+  };
+}
 
 type DirectionalRun = { direction: RouteNarrativePhaseV2["direction"]; intervals: GradientIntervalV1[] };
 

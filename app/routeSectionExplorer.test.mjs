@@ -211,7 +211,10 @@ test("Route Mode and Race Mode share the browser and clear the opposite map sele
   assert.match(routeView, /Aid Station Sections/);
   assert.match(routeView, /aria-pressed=\{segmentationMode === "terrain" \|\| \(segmentationMode === "aid-station" && !showingAidStationSections\)\}/);
   assert.match(routeView, /\{aidStationSections\.available && <button/);
-  assert.match(routeView, /gradientIntelligence=\{showingAidStationSections \|\| showingCustomSections \? undefined : analysis\.gradientIntelligence\}/);
+  assert.match(routeView, /buildGradientIntelligenceV1\(analysis\.routeDynamics, customSections\.sections\)/);
+  assert.match(routeView, /buildRouteNarrativeRouteContextV2\(analysis\.routeDynamics, analysis\.routeSections\)/);
+  assert.match(routeView, /gradientIntelligence=\{activeGradientIntelligence\}/);
+  assert.match(routeView, /narrativeContext=\{routeNarrativeContext\}/);
   assert.match(routeView, /sectionKind=\{showingAidStationSections \? "Aid Station Section" : showingCustomSections \? "Custom Section"/);
   assert.match(routeView, /TERRAIN_INTELLIGENCE_V1_ENABLED \? \([\s\S]*?<TerrainEvidenceAction state=\{terrainEvidenceState\}/);
   assert.match(routeView, /requestRouteTerrainEvidence\(analysis\.points\)/);
@@ -283,7 +286,7 @@ test("Route Mode and Race Mode share the browser and clear the opposite map sele
   assert.match(browser, /whatToExpect\.map\(/);
   assert.doesNotMatch(browser, /Detailed elevation changes|Measured route changes|sortRouteEmbeddedEventsForDisplay/);
   assert.doesNotMatch(browser, /expectation\.paragraphs\.slice\(1\)/);
-  assert.match(browser, /presentRouteSectionNarrativeV2\(gradientIntelligence, routeSections, section\)/);
+  assert.match(browser, /presentRouteSectionNarrativeV2\(gradientIntelligence, routeSections, section, narrativeContext\)/);
   assert.match(browser, /TERRAIN_INTELLIGENCE_V1_ENABLED && sectionKind === "Route Section" && <section[\s\S]*?<SectionSubheading>Mapped terrain<\/SectionSubheading>/);
   assert.match(browser, /getTerrainSectionPresentation\(section, terrainEvidenceState\)/);
   assert.match(browser, /unknownLabel/);

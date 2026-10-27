@@ -82,7 +82,7 @@ test("section details present the full generated chronology under What to Expect
   const profile = sectionBrowser.indexOf("<RouteSectionProfile section={section} routePoints={routePoints} sectionKind={sectionKind} />");
   const map = sectionBrowser.indexOf("<SectionSubheading>Section map · GPX-derived</SectionSubheading>");
   assert.ok(heading >= 0 && heading < narrative && narrative < metrics && metrics < profile && profile < map);
-  assert.match(sectionBrowser, /presentRouteSectionNarrativeV2\(gradientIntelligence, routeSections, section\)/);
+  assert.match(sectionBrowser, /presentRouteSectionNarrativeV2\(gradientIntelligence, routeSections, section, narrativeContext\)/);
   assert.doesNotMatch(sectionBrowser, /Detailed elevation changes|Measured route changes|sortRouteEmbeddedEventsForDisplay/);
   assert.doesNotMatch(sectionBrowser, /expectation\.paragraphs\.slice\(1\)/);
 });

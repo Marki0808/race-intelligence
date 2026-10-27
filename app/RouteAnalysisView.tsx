@@ -38,6 +38,8 @@ import RouteTakeaways from "./RouteTakeaways";
 import { buildAidStationSections } from "./aidStationSections";
 import CustomSectionControls from "./CustomSectionControls";
 import { appendCustomSectionBoundary, buildCustomRouteSections, createCustomSectionPlan, type CustomSectionPlan } from "./customRouteSections";
+import { buildGradientIntelligenceV1 } from "./gradientIntelligence";
+import { buildRouteNarrativeRouteContextV2 } from "./routeNarrativePhases";
 
 export default function RouteAnalysisView({
   analysis,
@@ -78,6 +80,14 @@ export default function RouteAnalysisView({
   const activeSections = showingCustomSections
     ? customSections.available ? customSections.sections : []
     : showingAidStationSections ? aidStationSections.sections : displayedSections;
+  const activeGradientIntelligence = useMemo(() => {
+    if (showingCustomSections) return customSections.available ? buildGradientIntelligenceV1(analysis.routeDynamics, customSections.sections) : undefined;
+    return showingAidStationSections ? undefined : analysis.gradientIntelligence;
+  }, [analysis.gradientIntelligence, analysis.routeDynamics, customSections, showingAidStationSections, showingCustomSections]);
+  const routeNarrativeContext = useMemo(
+    () => buildRouteNarrativeRouteContextV2(analysis.routeDynamics, analysis.routeSections),
+    [analysis.routeDynamics, analysis.routeSections],
+  );
   const imageEvidence = useMemo(
     () => mapillaryEvidenceByRouteSection(analysis.routeSections, mapillaryEvidence),
     [analysis.routeSections, mapillaryEvidence],
@@ -255,7 +265,7 @@ export default function RouteAnalysisView({
           )} action={TERRAIN_INTELLIGENCE_V1_ENABLED ? (
             <TerrainEvidenceAction state={terrainEvidenceState} onCheck={() => void loadEvidence()} />
           ) : undefined} />
-          <RouteSectionBrowser sections={activeSections} routePoints={analysis.points} gradientIntelligence={showingAidStationSections || showingCustomSections ? undefined : analysis.gradientIntelligence} selectedSectionKey={selectedSectionKey} onSelectSection={selectSection} imageEvidence={showingAidStationSections || showingCustomSections ? new Map() : imageEvidence} onSelectImage={(image) => updateViewState({ selectedImage: image })} terrainEvidenceState={terrainEvidenceState} sectionKind={showingAidStationSections ? "Aid Station Section" : showingCustomSections ? "Custom Section" : "Route Section"} sectionLabels={showingAidStationSections ? aidStationSections.labels : showingCustomSections && customSections.available ? customSections.labels : undefined} emptyMessage={showingCustomSections && !customSections.available ? "Enter valid custom boundaries to display sections." : undefined} />
+          <RouteSectionBrowser sections={activeSections} routePoints={analysis.points} gradientIntelligence={activeGradientIntelligence} narrativeContext={routeNarrativeContext} selectedSectionKey={selectedSectionKey} onSelectSection={selectSection} imageEvidence={showingAidStationSections || showingCustomSections ? new Map() : imageEvidence} onSelectImage={(image) => updateViewState({ selectedImage: image })} terrainEvidenceState={terrainEvidenceState} sectionKind={showingAidStationSections ? "Aid Station Section" : showingCustomSections ? "Custom Section" : "Route Section"} sectionLabels={showingAidStationSections ? aidStationSections.labels : showingCustomSections && customSections.available ? customSections.labels : undefined} emptyMessage={showingCustomSections && !customSections.available ? "Enter valid custom boundaries to display sections." : undefined} />
         </div>
       </section>
 
