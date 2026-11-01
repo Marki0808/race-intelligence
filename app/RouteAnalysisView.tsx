@@ -35,6 +35,7 @@ import { toggleKeyMomentSelection } from "./routeSectionSelection";
 import { buildSustainedGradientKeyMoments } from "./routeGradientMoments";
 import { expandKeyMomentsForDisplay } from "./routeKeyMomentPresentation";
 import RouteTakeaways from "./RouteTakeaways";
+import FeedbackForm from "./FeedbackForm";
 import { buildAidStationSections } from "./aidStationSections";
 import CustomSectionControls from "./CustomSectionControls";
 import { appendCustomSectionBoundary, buildCustomRouteSections, createCustomSectionPlan, type CustomSectionPlan } from "./customRouteSections";
@@ -274,6 +275,7 @@ export default function RouteAnalysisView({
 
       <KeyRouteMoments moments={keyMoments} routePoints={analysis.points} totalDistanceM={analysis.metrics.distanceKm * 1000} selectedMoment={selectedMoment} onSelect={selectMoment} />
       <RouteTakeaways analysis={analysis} />
+      <FeedbackForm />
 
       <TerrainImageViewer image={selectedImage} onClose={() => updateViewState({ selectedImage: null })} />
     </>

@@ -34,6 +34,14 @@ For local database integration, set `POSTGRES_URL` in `.env.local`. On Vercel, c
 
 The initial additive schema is in `supabase/migrations/202610020001_route_persistence.sql`. It has not been applied automatically. Before applying it, verify that the selected Supabase project is the intended Race Intelligence database and review the migration in the Supabase SQL Editor. Future authenticated private-route persistence should add ownership and access controls; it must not broaden this public-route allowlist by default. RLS is enabled without browser policies because this application accesses the database server-side.
 
+## Route Analysis feedback
+
+The completed Route Analysis page includes an optional free-text feedback form. `POST /api/feedback` stores only a server-generated UUID, trimmed feedback text (up to 2,000 characters), and a server timestamp in `public.route_feedback_submissions`. It does not receive route or GPX context. The endpoint fails closed unless both `POSTGRES_URL` and `FEEDBACK_RATE_LIMIT_SECRET` are configured. Keep both values server-side; never use a `NEXT_PUBLIC_` prefix.
+
+Before enabling feedback in a deployment, review and apply `supabase/migrations/202611010001_route_feedback.sql` to the intended Supabase project. Configure `FEEDBACK_RATE_LIMIT_SECRET` with at least 32 random bytes. The database-backed limiter allows up to 3 submissions per client IP per hour, 30 submissions globally per hour, and 100 globally per day. It reads Vercel's edge-provided `x-vercel-forwarded-for` header, immediately HMACs the address with the server secret, and stores only a short-lived digest and counter in the separate rate-limit table; raw addresses are not logged or persisted. Expired limiter rows are removed during submissions.
+
+Feedback has a 12-month retention period; the API prunes older rows on feedback requests. For guaranteed scheduled deletion even during long periods without new submissions, configure a monthly database cleanup with `delete from public.route_feedback_submissions where created_at < now() - interval '12 months';`. Operators can remove a single message with `delete from public.route_feedback_submissions where id = '<submission-uuid>';` or remove all messages with `delete from public.route_feedback_submissions;`. No scheduled cleanup is configured automatically by the application.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

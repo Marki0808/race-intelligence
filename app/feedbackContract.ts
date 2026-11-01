@@ -1,0 +1,2 @@
+export const MAX_FEEDBACK_CHARACTERS = 2_000;
+export const MAX_FEEDBACK_REQUEST_BYTES = 8 * 1024;
