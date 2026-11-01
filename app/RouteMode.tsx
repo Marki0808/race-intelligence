@@ -15,7 +15,7 @@ import { focusCompletedRouteAnalysis } from "./routeAnalysisFocus";
 import { createRouteFingerprint } from "./routeFingerprint";
 import { createAnalysisInputFingerprint } from "./analysisInputFingerprint";
 import { browserRoutePersistence, cacheRouteAnalysis, getOrCreateRouteAnalysis } from "./routePersistence";
-import { lookupSharedRoute, type SharedRouteCache } from "./routePersistenceClient";
+import { lookupSharedRoute, runOptionalRouteLookup, type SharedRouteCache } from "./routePersistenceClient";
 import type { RouteFingerprintResult } from "./routeFingerprint";
 import { consumePendingDiscoveredGpx } from "./discoveredGpxTransfer";
 import { TERRAIN_INTELLIGENCE_V1_ENABLED } from "./featureFlags";
@@ -65,31 +65,41 @@ export default function RouteMode() {
     aidStationDiscoveryV1?: RouteAnalysisData["aidStationDiscoveryV1"],
   ) => {
       try {
-        const [fingerprint, analysisInputFingerprint] = await Promise.all([
-          createRouteFingerprint(parsed.segments.map((segment) => segment.map(({ latitude, longitude }) => ({ latitude, longitude })))),
-          createAnalysisInputFingerprint(parsed.segments),
-        ]);
-        if (!requestGate.current.isCurrent(requestId)) return;
-        const shared = await lookupSharedRoute(fingerprint, analysisInputFingerprint, { includeOsm: TERRAIN_INTELLIGENCE_V1_ENABLED });
+        const lookupResult = await runOptionalRouteLookup(async (signal) => {
+          const [fingerprint, analysisInputFingerprint] = await Promise.all([
+            createRouteFingerprint(parsed.segments.map((segment) => segment.map(({ latitude, longitude }) => ({ latitude, longitude })))),
+            createAnalysisInputFingerprint(parsed.segments),
+          ]);
+          if (!requestGate.current.isCurrent(requestId)) return null;
+          const shared = await lookupSharedRoute(fingerprint, analysisInputFingerprint, {
+            includeOsm: TERRAIN_INTELLIGENCE_V1_ENABLED,
+            signal,
+          });
+          return { fingerprint, analysisInputFingerprint, shared };
+        });
         if (!requestGate.current.isCurrent(requestId)) return;
         let routeAnalysis: RouteAnalysisData;
-        if (shared.cache?.analysis) {
-          routeAnalysis = { ...shared.cache.analysis, name: displayName };
-          await cacheRouteAnalysis(browserRoutePersistence, fingerprint, routeAnalysis, analysisInputFingerprint);
-        } else {
+        if (lookupResult?.shared.cache?.analysis) {
+          routeAnalysis = { ...lookupResult.shared.cache.analysis, name: displayName };
+          await cacheRouteAnalysis(browserRoutePersistence, lookupResult.fingerprint, routeAnalysis, lookupResult.analysisInputFingerprint);
+        } else if (lookupResult) {
           const localResult = await getOrCreateRouteAnalysis(
             browserRoutePersistence,
-            fingerprint,
-            analysisInputFingerprint,
+            lookupResult.fingerprint,
+            lookupResult.analysisInputFingerprint,
             displayName,
             () => analyzeGpxRoute(parsed),
           );
           routeAnalysis = localResult.analysis;
+        } else {
+          routeAnalysis = { ...analyzeGpxRoute(parsed), name: displayName };
         }
         if (!requestGate.current.isCurrent(requestId)) return;
-        setRouteFingerprint(fingerprint);
-        setPersistenceScope(shared.persistenceScope);
-        setSharedCache(shared.cache);
+        if (lookupResult) {
+          setRouteFingerprint(lookupResult.fingerprint);
+          setPersistenceScope(lookupResult.shared.persistenceScope);
+          setSharedCache(lookupResult.shared.cache);
+        }
         setAnalysis({ ...routeAnalysis, aidStationDiscoveryV1: aidStationDiscoveryV1 ?? null });
       } catch {
         // Fingerprinting and persistence are optimizations; retain the existing local analysis path.

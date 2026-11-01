@@ -10,6 +10,7 @@ import {
   ROUTE_ELEVATION_METRIC_MEDIAN_RADIUS_M,
 } from "./routeElevationMetrics.ts";
 import { buildCustomRouteSections, createCustomSectionPlan } from "./customRouteSections.ts";
+import { measureRouteSourceElevationExtrema } from "./routeSourceElevationExtrema.ts";
 
 function points(samples, segmentIndex = 0) {
   return samples.map(([distanceM, elevationM]) => ({ distanceM, elevationM, segmentIndex, latitude: 45, longitude: 13 }));
@@ -30,8 +31,9 @@ test("profile extrema use safe finite iteration for large arrays and the disclos
   assert.deepEqual(getElevationRange(values), { minimum: -125_000, maximum: 124_999 });
   assert.equal(getElevationRange([Number.NaN, Number.POSITIVE_INFINITY]), null);
   assert.match(ROUTE_ELEVATION_METRIC_DESCRIPTION, /sampled every 50 m.*50 m-radius median filter/);
-  assert.match(ROUTE_ELEVATION_METRIC_DESCRIPTION, /displayed profile follows the GPX elevation samples/);
-  assert.match(ROUTE_ELEVATION_METRIC_DESCRIPTION, /gradient and narrative descriptions use a separately resampled and smoothed route-dynamics profile/);
+  assert.match(ROUTE_ELEVATION_METRIC_DESCRIPTION, /whole-route high\/low values and section elevation ranges use source GPX elevations/i);
+  assert.match(ROUTE_ELEVATION_METRIC_DESCRIPTION, /full-route profile follows GPX samples/);
+  assert.match(ROUTE_ELEVATION_METRIC_DESCRIPTION, /section mini-profiles, gradients and narratives use a separately resampled and smoothed route-dynamics profile/);
 });
 
 test("isolated altitude spikes are filtered while a sustained climb and descent remain measurable", () => {
@@ -118,5 +120,33 @@ test("route totals, automatic Terrain Sections, Custom Sections, and multiple bo
   assert.ok(plan.boundaries.every((boundary) => Number(boundary.distanceKm) < distanceKm));
   const custom = buildCustomRouteSections(analysis, plan);
   assert.equal(custom.available, true);
+  assert.deepEqual(sum(custom.sections), { ascentM: analysis.metrics.elevationGainM, descentM: analysis.metrics.elevationLossM });
+});
+
+test("whole-route and section elevation ranges use source GPX extrema while profiles remain smoothed", () => {
+  const segments = [Array.from({ length: 41 }, (_, index) => ({
+    latitude: 45,
+    longitude: index * 100 / 111_320,
+    elevationM: 250 + index * 0.8 + (index === 20 ? 90 : 0),
+  }))];
+  const analysis = analyzeGpxRoute({ segments });
+  const sourceElevations = analysis.points.map((point) => point.elevationM);
+  assert.equal(Math.min(...analysis.routeSections.map((section) => section.elevationMinM)), Math.round(Math.min(...sourceElevations)));
+  assert.equal(Math.max(...analysis.routeSections.map((section) => section.elevationMaxM)), Math.round(Math.max(...sourceElevations)));
+  assert.ok(Math.max(...analysis.routeDynamics.resampledPoints.map((point) => point.smoothedElevationM)) < Math.max(...sourceElevations));
+
+  const plan = {
+    ...createCustomSectionPlan(),
+    boundaries: [1, 2.5].map((distanceKm, index) => ({ id: `custom-point-${index + 1}`, distanceKm: String(distanceKm), name: "" })),
+  };
+  const custom = buildCustomRouteSections(analysis, plan);
+  assert.equal(custom.available, true);
+  for (const section of [...analysis.routeSections, ...custom.sections]) {
+    const expected = measureRouteSourceElevationExtrema(analysis.points, section.segmentIndex, section.startPosition.distanceM, section.endPosition.distanceM);
+    assert.ok(expected);
+    assert.equal(section.elevationMinM, Math.round(expected.minimum));
+    assert.equal(section.elevationMaxM, Math.round(expected.maximum));
+  }
+  assert.deepEqual(sum(analysis.routeSections), { ascentM: analysis.metrics.elevationGainM, descentM: analysis.metrics.elevationLossM });
   assert.deepEqual(sum(custom.sections), { ascentM: analysis.metrics.elevationGainM, descentM: analysis.metrics.elevationLossM });
 });

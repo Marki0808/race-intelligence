@@ -17,15 +17,45 @@ export type SharedRouteLookup = {
   cache: SharedRouteCache | null;
 };
 
+export const OPTIONAL_ROUTE_LOOKUP_TIMEOUT_MS = 1500;
+
+/** Runs optional shared-route work with a bounded lifetime and aborts any in-flight fetch on timeout. */
+export async function runOptionalRouteLookup<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs = OPTIONAL_ROUTE_LOOKUP_TIMEOUT_MS,
+): Promise<T | null> {
+  const controller = new AbortController();
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timeoutId = setTimeout(() => {
+      controller.abort();
+      resolve(null);
+    }, Math.max(0, timeoutMs));
+  });
+
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => operation(controller.signal)),
+      timeout,
+    ]);
+  } catch {
+    controller.abort();
+    return null;
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
+}
+
 export async function lookupSharedRoute(
   fingerprint: RouteFingerprintResult,
   analysisInputFingerprint: string,
-  options: { includeOsm?: boolean } = {},
+  options: { includeOsm?: boolean; signal?: AbortSignal } = {},
 ): Promise<SharedRouteLookup> {
   try {
     const response = await fetch("/api/route-persistence", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      ...(options.signal ? { signal: options.signal } : {}),
       body: JSON.stringify({
         operation: "lookup",
         persistenceScope: "shared",

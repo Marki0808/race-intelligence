@@ -1,4 +1,5 @@
 import type { GpxRoutePointData } from "./gpxAnalysis";
+import { measureRouteSourceElevationExtrema } from "./routeSourceElevationExtrema.ts";
 import type { TerrainSectionIntelligenceV1 } from "./terrainIntelligence.ts";
 import {
   DEFAULT_ROUTE_DYNAMICS_CONFIG,
@@ -816,7 +817,7 @@ function createSection(
     ? dynamics.samples[phase.endIndex].distanceM
     : (dynamics.samples[phase.endIndex].distanceM + dynamics.samples[phase.endIndex + 1].distanceM) / 2;
   const route = dynamics.resampledPoints.filter((point) => (point.segmentIndex ?? 0) === segmentIndex && point.distanceM >= startM && point.distanceM <= endM);
-  const elevations = route.map((point) => point.smoothedElevationM);
+  const sourceExtrema = measureRouteSourceElevationExtrema(routePoints, segmentIndex, startM, endM);
   let ascentM = 0;
   let descentM = 0;
   for (let pointIndex = 1; pointIndex < route.length; pointIndex += 1) {
@@ -859,8 +860,8 @@ function createSection(
     dominantRhythm: phase.rhythm as RouteDominantRhythm,
     elevationStartM: Math.round(route[0]?.smoothedElevationM ?? 0),
     elevationEndM: Math.round(route.at(-1)?.smoothedElevationM ?? 0),
-    elevationMinM: Math.round(Math.min(...elevations)),
-    elevationMaxM: Math.round(Math.max(...elevations)),
+    elevationMinM: Math.round(sourceExtrema?.minimum ?? route.reduce((minimum, point) => Math.min(minimum, point.elevationM), Number.POSITIVE_INFINITY)),
+    elevationMaxM: Math.round(sourceExtrema?.maximum ?? route.reduce((maximum, point) => Math.max(maximum, point.elevationM), Number.NEGATIVE_INFINITY)),
     ascentM: Math.round(ascentM),
     descentM: Math.round(descentM),
     elevationProfile: route.map((point) => ({ distanceM: point.distanceM, elevationM: point.smoothedElevationM })),

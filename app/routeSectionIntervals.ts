@@ -2,6 +2,7 @@ import type { RouteAnalysisData } from "./gpxAnalysis.ts";
 import { DEFAULT_ROUTE_DYNAMICS_CONFIG, type RouteDominantRhythm } from "./routeDynamics.ts";
 import type { RouteSection } from "./routeSectionEngine.ts";
 import { buildRouteElevationMetricModel, measureRouteElevationInterval } from "./routeElevationMetrics.ts";
+import { measureRouteSourceElevationExtrema } from "./routeSourceElevationExtrema.ts";
 
 const MAX_PROFILE_INTERPOLATION_GAP_M = 250;
 
@@ -32,7 +33,8 @@ export function buildRouteSectionsFromIntervals(
     if (!profile || profile.length < 2 || samples.length === 0) return null;
 
     const elevationMetrics = measureRouteElevationInterval(elevationMetricModel, segmentIndex, startDistanceM, endDistanceM);
-    if (!elevationMetrics) return null;
+    const sourceExtrema = measureRouteSourceElevationExtrema(analysis.points, segmentIndex, startDistanceM, endDistanceM);
+    if (!elevationMetrics || !sourceExtrema) return null;
     const { ascentM, descentM } = elevationMetrics;
     const distanceKm = (endDistanceM - startDistanceM) / 1000;
     const verticalM = ascentM + descentM;
@@ -57,8 +59,8 @@ export function buildRouteSectionsFromIntervals(
       dominantRhythm,
       elevationStartM: Math.round(profile[0].elevationM),
       elevationEndM: Math.round(profile.at(-1)!.elevationM),
-      elevationMinM: Math.round(Math.min(...profile.map((point) => point.elevationM))),
-      elevationMaxM: Math.round(Math.max(...profile.map((point) => point.elevationM))),
+      elevationMinM: Math.round(sourceExtrema.minimum),
+      elevationMaxM: Math.round(sourceExtrema.maximum),
       ascentM: Math.round(ascentM),
       descentM: Math.round(descentM),
       elevationProfile: profile,
