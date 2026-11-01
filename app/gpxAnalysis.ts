@@ -99,15 +99,15 @@ export function groupAnalyzedPointsBySegment<T extends { segmentIndex?: number }
 export function getGpxAnalysisErrorMessage(code: GpxAnalysisErrorCode): string {
   switch (code) {
     case "invalid-gpx":
-      return "That file does not appear to be a valid GPX route.";
+      return "This file is not a valid GPX route. Choose a .gpx or .xml file containing GPX route data.";
     case "no-track-points":
       return "No track points were found in this GPX file.";
     case "multiple-tracks":
       return "This GPX contains multiple tracks or routes and cannot be analyzed safely yet. Export a single-track or single-route GPX and try again.";
     case "insufficient-elevation":
-      return "This GPX does not contain usable elevation data for route analysis.";
+      return "This GPX route does not include enough usable elevation data to build an analysis.";
     case "too-many-points":
-      return "This GPX contains too many track points to analyze safely. Export a simplified route and try again.";
+      return "This GPX has more than 100,000 route points. Export a simplified route and try again.";
     case "invalid-coordinate":
       return "This GPX contains invalid location points and could not be analyzed.";
     case "invalid-route":

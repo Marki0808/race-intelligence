@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type Ref } from "react";
 import CourseExplorer from "./CourseExplorer";
 import CourseBriefView from "./CourseBriefView";
 import RouteSectionBrowser, { RouteSectionBrowserHeading } from "./RouteSectionBrowser";
@@ -46,11 +46,13 @@ export default function RouteAnalysisView({
   routeFingerprint,
   persistenceScope = "local",
   sharedCache = null,
+  analysisHeadingRef,
 }: {
   analysis: RouteAnalysisData;
   routeFingerprint?: RouteFingerprintResult;
   persistenceScope?: "local" | "shared";
   sharedCache?: SharedRouteCache | null;
+  analysisHeadingRef?: Ref<HTMLHeadingElement>;
 }) {
   type ViewState = { analysis: RouteAnalysisData; selectedMoment: string | null; selectedSectionKey: string | null; segmentationMode: "terrain" | "custom" | "aid-station"; selectedImage: MapillaryImageEvidence | null };
   const [viewState, setViewState] = useState<ViewState>(() => ({ analysis, selectedMoment: null, selectedSectionKey: null, segmentationMode: "terrain", selectedImage: null }));
@@ -237,6 +239,7 @@ export default function RouteAnalysisView({
             onSelectSection={selectSection}
             routeName={analysis.name}
             heading="GPX Route Analysis"
+            headingRef={analysisHeadingRef}
             eyebrow="YOUR ROUTE · GPX-DERIVED"
             supportingText="Route structure and measurements are calculated locally from the GPX file selected in this browser."
             routeAnalysis={analysis}

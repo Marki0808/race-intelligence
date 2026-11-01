@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent, type Ref } from "react";
 import type { Layer, Map as LeafletMap, Polyline } from "leaflet";
 import type { KeyMomentData } from "./raceTypes";
 import type { KeyMomentProfileMarkerInput } from "./routeKeyMomentProfileMarkers";
@@ -31,6 +31,7 @@ export default function CourseExplorer({
   eyebrow = "Course profile · GPX-derived",
   supportingText = "The elevation profile and route metrics are calculated from this GPX track.",
   showExtendedMetrics = false,
+  headingRef,
 }: {
   selectedMoment: string | null;
   selectedSectionKey?: string | null;
@@ -49,6 +50,7 @@ export default function CourseExplorer({
   eyebrow?: string;
   supportingText?: string;
   showExtendedMetrics?: boolean;
+  headingRef?: Ref<HTMLHeadingElement>;
 }) {
   const [mapExpanded, setMapExpanded] = useState(false);
   const [mapReady, setMapReady] = useState(false);
@@ -235,7 +237,7 @@ export default function CourseExplorer({
       <div className="p-5 sm:p-8 lg:p-10">
         <div className="max-w-3xl">
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-white/55">{eyebrow}</p>
-          <h2 className="mt-3 break-words text-3xl font-semibold sm:text-4xl">{heading}</h2>
+          <h2 ref={headingRef} tabIndex={-1} className="mt-3 break-words text-3xl font-semibold focus:outline-none sm:text-4xl">{heading}</h2>
           <p className="mt-3 text-sm leading-6 text-white/60">{supportingText}</p>
         </div>
 

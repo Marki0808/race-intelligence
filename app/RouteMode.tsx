@@ -11,6 +11,7 @@ import {
 import type { RouteAnalysisData } from "./gpxAnalysis";
 import { GpxUploadError, getGpxUploadErrorMessage, MAX_GPX_UPLOAD_BYTES, MAX_GPX_UPLOAD_TRACK_POINTS, parseRouteModeGpxText, readGpxUpload } from "./gpxUpload";
 import { RouteUploadRequestGate } from "./routeUploadRequestGate";
+import { focusCompletedRouteAnalysis } from "./routeAnalysisFocus";
 import { createRouteFingerprint } from "./routeFingerprint";
 import { createAnalysisInputFingerprint } from "./analysisInputFingerprint";
 import { browserRoutePersistence, cacheRouteAnalysis, getOrCreateRouteAnalysis } from "./routePersistence";
@@ -27,6 +28,7 @@ export default function RouteMode() {
   const [persistenceScope, setPersistenceScope] = useState<"local" | "shared">("local");
   const [sharedCache, setSharedCache] = useState<SharedRouteCache | null>(null);
   const requestGate = useRef(new RouteUploadRequestGate());
+  const analysisHeadingRef = useRef<HTMLHeadingElement>(null);
 
   const beginRouteRequest = useCallback(() => {
     const requestId = requestGate.current.begin();
@@ -108,6 +110,15 @@ export default function RouteMode() {
   useEffect(() => () => requestGate.current.invalidate(), []);
 
   useEffect(() => {
+    if (!analysis) return;
+    const frame = window.requestAnimationFrame(() => {
+      const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      focusCompletedRouteAnalysis(Boolean(analysis), analysisHeadingRef.current, prefersReducedMotion);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [analysis]);
+
+  useEffect(() => {
     const pending = consumePendingDiscoveredGpx();
     if (pending) {
       queueMicrotask(() => {
@@ -177,13 +188,13 @@ export default function RouteMode() {
               The GPX file is not uploaded or stored. A derived route fingerprint is checked against the public-route registry; non-matching route analysis remains in this browser&apos;s local cache. Mapillary imagery lookups use bounded section search areas, not GPX text or elevation data.
             </p>
             {isProcessing && (
-              <p aria-live="polite" className="mt-4 text-sm text-[#a7c957]">
-                Analyzing GPX-derived route data…
+              <p role="status" aria-live="polite" aria-atomic="true" className="mt-4 rounded-xl border border-[#a7c957]/30 bg-[#a7c957]/10 px-4 py-3 text-sm font-medium text-[#c5e57d]">
+                Reading your GPX and analyzing the route…
               </p>
             )}
             {error && (
               <p
-                role="status"
+                role="alert"
                 className="mt-4 rounded-xl bg-white/5 px-4 py-3 text-sm leading-6 text-white/70"
               >
                 {error}
@@ -196,6 +207,7 @@ export default function RouteMode() {
       {analysis && <RouteAnalysisView
         key={routeFingerprint?.routeFingerprint ?? analysis.name}
         analysis={analysis}
+        analysisHeadingRef={analysisHeadingRef}
         routeFingerprint={routeFingerprint ?? undefined}
         persistenceScope={persistenceScope}
         sharedCache={sharedCache}

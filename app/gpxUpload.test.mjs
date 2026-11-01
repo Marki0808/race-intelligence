@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { analyzeGpxRoute, GpxAnalysisError, parseGpxText } from "./gpxAnalysis.ts";
+import { analyzeGpxRoute, GpxAnalysisError, getGpxAnalysisErrorMessage, parseGpxText } from "./gpxAnalysis.ts";
 import {
   GpxUploadError,
   MAX_GPX_UPLOAD_BYTES,
@@ -41,6 +41,13 @@ test("invalid names and non-GPX XML are rejected without weakening content valid
   await assert.rejects(readGpxUpload(file("route.txt", validGpx)), (error) => error instanceof GpxUploadError && error.code === "unsupported-file-name");
   await assert.rejects(readGpxUpload(file("route.xml", "<html>not a route</html>")), (error) => error instanceof GpxAnalysisError && error.code === "invalid-gpx");
   assert.throws(() => parseRouteModeGpxText("not XML"), (error) => error instanceof GpxAnalysisError && error.code === "invalid-gpx");
+});
+
+test("upload validation messages clearly explain invalid GPX, missing elevation and point limits", () => {
+  assert.match(getGpxAnalysisErrorMessage("invalid-gpx"), /\.gpx or \.xml file containing GPX route data/);
+  assert.match(getGpxAnalysisErrorMessage("insufficient-elevation"), /not include enough usable elevation data/);
+  assert.match(getGpxAnalysisErrorMessage("too-many-points"), /more than 100,000 route points/);
+  assert.match(new GpxUploadError("file-too-large").message, /20 MiB upload limit/);
 });
 
 test("file-size limit is checked before reading and is documented by the upload contract", async () => {
