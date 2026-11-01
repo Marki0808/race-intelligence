@@ -125,7 +125,7 @@ test("confirmed GPX enters the existing RouteMode parser and analysis path in me
   assert.match(discoveryUi, /router\.push\("\/route"\)/);
   assert.match(transfer, /consumePendingDiscoveredGpx/);
   assert.match(routeMode, /consumePendingDiscoveredGpx\(\)/);
-  assert.match(routeMode, /parseGpxText\(text\)/);
+  assert.match(routeMode, /parseRouteModeGpxText\(text\)/);
   assert.match(routeMode, /pending\.aidStationDiscoveryV1/);
   assert.match(routeMode, /analyzeGpxRoute\(parsed\)/);
   assert.match(routeMode, /RouteAnalysisView/);
@@ -153,6 +153,6 @@ test("GPX download failures distinguish an HTML index from an oversized file usi
 
 test("discovered route stays GPX-derived without assigning race-edition provenance", () => {
   assert.match(discoveryUi, /do not by themselves prove that a linked file belongs to that edition/);
-  assert.match(routeMode, /Route Mode · GPX-derived/);
+  assert.match(routeMode, /Route Analysis · GPX-derived/);
   assert.doesNotMatch(downloadModule, /raceRegistry|raceEdition|editionId/);
 });

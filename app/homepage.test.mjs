@@ -28,6 +28,8 @@ test("Route Analysis is the only public V1 entry and Race Mode is centrally gate
   assert.doesNotMatch(homePage, /Will every race webpage provide a route\?/);
   assert.doesNotMatch(homePage, /Choose a race page or GPX file/);
   assert.doesNotMatch(homePage, /race or GPX course/);
+  assert.match(homePage, /Upload your GPX/);
+  assert.doesNotMatch(homePage, /Choose how to start|Choose your starting point/);
 });
 
 test("old registered Race Mode URLs redirect to the primary GPX upload experience", () => {
@@ -49,9 +51,12 @@ test("preserved Race Mode modules remain available behind the V1 feature flag", 
 
 test("Route Mode keeps the existing GPX file analysis flow", () => {
   assert.match(routeMode, /type="file"/);
-  assert.match(routeMode, /accept="\.gpx,application\/gpx\+xml,application\/xml,text\/xml"/);
+  assert.match(routeMode, /accept="\.gpx,\.xml,application\/gpx\+xml,application\/xml,text\/xml"/);
   assert.match(routeMode, /onChange=\{handleFileChange\}/);
-  assert.match(routeMode, /parseGpxText\(text\)/);
+  assert.match(routeMode, /readGpxUpload\(file\)/);
+  assert.match(routeMode, /setIsProcessing\(true\)/);
+  assert.match(routeMode, /requestGate\.current\.isCurrent\(requestId\)/);
+  assert.doesNotMatch(routeMode, /Race Search|choose a discovered route link/);
 });
 
 test("homepage FAQ is data-driven and limited to supported application behavior", () => {

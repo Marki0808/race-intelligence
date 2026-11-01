@@ -2,6 +2,7 @@ import type { GpxRoutePointData } from "./gpxAnalysis.ts";
 import type { KeyMomentData } from "./raceTypes.ts";
 import type { KeyMomentCardPresentation } from "./routeKeyMomentPresentation.ts";
 import { getNiceAxisScale } from "./routeProfilePresentation.ts";
+import { getElevationRange } from "./routeElevationMetrics.ts";
 
 export type KeyMomentProfileMarkerInput = {
   moment: KeyMomentData;
@@ -32,7 +33,9 @@ export function layoutKeyMomentProfileMarkers(
   if (!inputs.length || !points.length || !(totalDistanceM > 0) || !(width > 76) || !(height > 70)) return [];
   const plot = { left: 56, right: 20, top: 16, bottom: 38 };
   const plotHeight = height - plot.top - plot.bottom;
-  const scale = getNiceAxisScale(Math.min(...points.map((point) => point.elevationM)), Math.max(...points.map((point) => point.elevationM)), 6);
+  const range = getElevationRange(points.map((point) => point.elevationM));
+  if (!range) return [];
+  const scale = getNiceAxisScale(range.minimum, range.maximum, 6);
   const placed: KeyMomentProfileMarker[] = [];
 
   for (const input of inputs) {

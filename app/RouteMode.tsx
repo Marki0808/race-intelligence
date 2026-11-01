@@ -1,15 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import RouteAnalysisView from "./RouteAnalysisView";
 import {
   analyzeGpxRoute,
   GpxAnalysisError,
-  parseGpxText,
   getGpxAnalysisErrorMessage,
 } from "./gpxAnalysis";
 import type { RouteAnalysisData } from "./gpxAnalysis";
+import { GpxUploadError, getGpxUploadErrorMessage, MAX_GPX_UPLOAD_BYTES, MAX_GPX_UPLOAD_TRACK_POINTS, parseRouteModeGpxText, readGpxUpload } from "./gpxUpload";
+import { RouteUploadRequestGate } from "./routeUploadRequestGate";
 import { createRouteFingerprint } from "./routeFingerprint";
 import { createAnalysisInputFingerprint } from "./analysisInputFingerprint";
 import { browserRoutePersistence, cacheRouteAnalysis, getOrCreateRouteAnalysis } from "./routePersistence";
@@ -25,23 +26,50 @@ export default function RouteMode() {
   const [routeFingerprint, setRouteFingerprint] = useState<RouteFingerprintResult | null>(null);
   const [persistenceScope, setPersistenceScope] = useState<"local" | "shared">("local");
   const [sharedCache, setSharedCache] = useState<SharedRouteCache | null>(null);
+  const requestGate = useRef(new RouteUploadRequestGate());
 
-  const analyzeText = useCallback(async (text: string, fallbackName: string, aidStationDiscoveryV1?: RouteAnalysisData["aidStationDiscoveryV1"]) => {
+  const beginRouteRequest = useCallback(() => {
+    const requestId = requestGate.current.begin();
+    if (requestId === null) return null;
     setAnalysis(null);
     setRouteFingerprint(null);
     setPersistenceScope("local");
     setSharedCache(null);
     setError("");
     setIsProcessing(true);
+    return requestId;
+  }, []);
+
+  const runRouteRequest = useCallback(async (requestId: number, operation: () => Promise<void>) => {
     try {
-      const parsed = parseGpxText(text);
-      const displayName = parsed.name ?? fallbackName;
+      await operation();
+    } catch (caught) {
+      if (requestGate.current.isCurrent(requestId)) {
+        setError(caught instanceof GpxUploadError
+          ? getGpxUploadErrorMessage(caught.code)
+          : caught instanceof GpxAnalysisError
+            ? getGpxAnalysisErrorMessage(caught.code)
+            : "The GPX file could not be read or analyzed. Choose a valid GPX file and try again.");
+      }
+    } finally {
+      if (requestGate.current.finish(requestId)) setIsProcessing(false);
+    }
+  }, []);
+
+  const analyzeParsedRoute = useCallback(async (
+    parsed: ReturnType<typeof parseRouteModeGpxText>,
+    displayName: string,
+    requestId: number,
+    aidStationDiscoveryV1?: RouteAnalysisData["aidStationDiscoveryV1"],
+  ) => {
       try {
         const [fingerprint, analysisInputFingerprint] = await Promise.all([
           createRouteFingerprint(parsed.segments.map((segment) => segment.map(({ latitude, longitude }) => ({ latitude, longitude })))),
           createAnalysisInputFingerprint(parsed.segments),
         ]);
+        if (!requestGate.current.isCurrent(requestId)) return;
         const shared = await lookupSharedRoute(fingerprint, analysisInputFingerprint, { includeOsm: TERRAIN_INTELLIGENCE_V1_ENABLED });
+        if (!requestGate.current.isCurrent(requestId)) return;
         let routeAnalysis: RouteAnalysisData;
         if (shared.cache?.analysis) {
           routeAnalysis = { ...shared.cache.analysis, name: displayName };
@@ -56,24 +84,28 @@ export default function RouteMode() {
           );
           routeAnalysis = localResult.analysis;
         }
+        if (!requestGate.current.isCurrent(requestId)) return;
         setRouteFingerprint(fingerprint);
         setPersistenceScope(shared.persistenceScope);
         setSharedCache(shared.cache);
         setAnalysis({ ...routeAnalysis, aidStationDiscoveryV1: aidStationDiscoveryV1 ?? null });
       } catch {
         // Fingerprinting and persistence are optimizations; retain the existing local analysis path.
+        if (!requestGate.current.isCurrent(requestId)) return;
         setAnalysis({ ...analyzeGpxRoute(parsed), name: displayName, aidStationDiscoveryV1: aidStationDiscoveryV1 ?? null });
       }
-    } catch (caught) {
-      setError(
-        caught instanceof GpxAnalysisError
-          ? getGpxAnalysisErrorMessage(caught.code)
-          : "The GPX file could not be read. Try selecting it again.",
-      );
-    } finally {
-      setIsProcessing(false);
-    }
   }, []);
+
+  const analyzeText = useCallback(async (text: string, fallbackName: string, aidStationDiscoveryV1?: RouteAnalysisData["aidStationDiscoveryV1"]) => {
+    const requestId = beginRouteRequest();
+    if (requestId === null) return;
+    await runRouteRequest(requestId, async () => {
+      const parsed = parseRouteModeGpxText(text);
+      await analyzeParsedRoute(parsed, parsed.name ?? fallbackName, requestId, aidStationDiscoveryV1);
+    });
+  }, [analyzeParsedRoute, beginRouteRequest, runRouteRequest]);
+
+  useEffect(() => () => requestGate.current.invalidate(), []);
 
   useEffect(() => {
     const pending = consumePendingDiscoveredGpx();
@@ -89,17 +121,13 @@ export default function RouteMode() {
     const file = input.files?.[0];
     input.value = "";
     if (!file) return;
-
-    if (!file.name.toLowerCase().endsWith(".gpx")) {
-      setAnalysis(null);
-      setError("Please choose a file with the .gpx extension.");
-      return;
-    }
-    try {
-      await analyzeText(await file.text(), file.name.replace(/\.gpx$/i, ""));
-    } catch {
-      setError("The GPX file could not be read. Try selecting it again.");
-    }
+    const requestId = beginRouteRequest();
+    if (requestId === null) return;
+    await runRouteRequest(requestId, async () => {
+      const { parsed, fallbackName } = await readGpxUpload(file);
+      const displayName = parsed.name ?? fallbackName;
+      await analyzeParsedRoute(parsed, displayName, requestId);
+    });
   }
 
   return (
@@ -110,7 +138,7 @@ export default function RouteMode() {
             RACE<span className="text-[#a7c957]">{"//"}</span>SCOPE
           </Link>
           <Link href="/" className="text-sm text-white/60 transition hover:text-white">
-            Race Search
+            Home
           </Link>
         </div>
       </nav>
@@ -118,13 +146,13 @@ export default function RouteMode() {
       <section className="bg-[#17211c] text-white">
         <div className="mx-auto max-w-7xl px-6 py-16 lg:px-10 lg:py-24">
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#a7c957]">
-            Route Mode · GPX-derived
+            Route Analysis · GPX-derived
           </p>
           <h1 className="mt-5 max-w-4xl text-5xl font-semibold leading-[0.96] tracking-[-0.045em] sm:text-6xl lg:text-7xl">
             Analyze a GPX route.
           </h1>
           <p className="mt-6 max-w-2xl text-base leading-7 text-white/55 sm:text-lg">
-            Upload a GPX file or choose a discovered route link to calculate its distance, elevation profile and route sections.
+            Upload a GPX file to calculate its distance, elevation profile and route sections.
           </p>
 
           <div className="mt-9 max-w-2xl rounded-3xl border border-white/10 bg-white/5 p-5 sm:p-6">
@@ -137,13 +165,16 @@ export default function RouteMode() {
             <input
               id="route-gpx-file"
               type="file"
-              accept=".gpx,application/gpx+xml,application/xml,text/xml"
+              accept=".gpx,.xml,application/gpx+xml,application/xml,text/xml"
               onChange={handleFileChange}
               disabled={isProcessing}
               className="mt-4 block w-full min-w-0 cursor-pointer text-sm text-white/65 file:mr-4 file:rounded-full file:border-0 file:bg-[#a7c957] file:px-5 file:py-2.5 file:text-sm file:font-semibold file:text-[#17211c] hover:file:bg-[#b8d86b] disabled:cursor-wait"
             />
-            <p className="mt-4 text-xs leading-5 text-white/40">
-              Discovered links are checked as a supported single-track GPX before analysis. They are treated as GPX-derived routes and are not bound to a race edition. The GPX file itself is not stored. For registered public courses, the route fingerprint, analysis and optional map evidence may be shared through this app&apos;s server. Other uploaded routes remain in this browser&apos;s local cache. Mapillary imagery lookups use bounded section search areas, not the GPX file or elevation data.
+            <p className="mt-3 text-xs leading-5 text-white/45">
+              Choose a .gpx or .xml file containing valid GPX data. Uploads are limited to {MAX_GPX_UPLOAD_BYTES / (1024 * 1024)} MiB and {MAX_GPX_UPLOAD_TRACK_POINTS.toLocaleString("en-US")} track points.
+            </p>
+            <p className="mt-3 text-xs leading-5 text-white/40">
+              The GPX file is not uploaded or stored. A derived route fingerprint is checked against the public-route registry; non-matching route analysis remains in this browser&apos;s local cache. Mapillary imagery lookups use bounded section search areas, not GPX text or elevation data.
             </p>
             {isProcessing && (
               <p aria-live="polite" className="mt-4 text-sm text-[#a7c957]">

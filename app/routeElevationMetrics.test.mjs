@@ -4,6 +4,8 @@ import { analyzeGpxRoute } from "./gpxAnalysis.ts";
 import {
   buildRouteElevationMetricModel,
   measureRouteElevationInterval,
+  getElevationRange,
+  ROUTE_ELEVATION_METRIC_DESCRIPTION,
   ROUTE_ELEVATION_METRIC_INTERVAL_M,
   ROUTE_ELEVATION_METRIC_MEDIAN_RADIUS_M,
 } from "./routeElevationMetrics.ts";
@@ -20,6 +22,16 @@ function sum(sections) {
 test("elevation metric model documents fixed-distance sampling and its noise filter", () => {
   assert.equal(ROUTE_ELEVATION_METRIC_INTERVAL_M, 50);
   assert.equal(ROUTE_ELEVATION_METRIC_MEDIAN_RADIUS_M, 50);
+});
+
+test("profile extrema use safe finite iteration for large arrays and the disclosure names all three elevation bases", () => {
+  const values = Array.from({ length: 250_000 }, (_, index) => index - 125_000);
+  values[10] = Number.NaN;
+  assert.deepEqual(getElevationRange(values), { minimum: -125_000, maximum: 124_999 });
+  assert.equal(getElevationRange([Number.NaN, Number.POSITIVE_INFINITY]), null);
+  assert.match(ROUTE_ELEVATION_METRIC_DESCRIPTION, /sampled every 50 m.*50 m-radius median filter/);
+  assert.match(ROUTE_ELEVATION_METRIC_DESCRIPTION, /displayed profile follows the GPX elevation samples/);
+  assert.match(ROUTE_ELEVATION_METRIC_DESCRIPTION, /gradient and narrative descriptions use a separately resampled and smoothed route-dynamics profile/);
 });
 
 test("isolated altitude spikes are filtered while a sustained climb and descent remain measurable", () => {

@@ -1,6 +1,7 @@
 import type { GpxRoutePointData } from "./gpxAnalysis.ts";
 import type { KeyMomentData } from "./raceTypes.ts";
 import { resolveKeyMomentInterval } from "./routeSectionSelection.ts";
+import { getElevationRange } from "./routeElevationMetrics.ts";
 
 /** Uses only actual GPX samples inside a validated, component-bound Key Moment interval. */
 export function getKeyMomentProfilePoints(
@@ -17,8 +18,9 @@ export function getKeyMomentProfilePoints(
 
 export function keyMomentProfilePolyline(points: readonly GpxRoutePointData[], width = 320, height = 68): string | null {
   if (points.length < 2 || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
-  const min = Math.min(...points.map((point) => point.elevationM));
-  const max = Math.max(...points.map((point) => point.elevationM));
+  const elevationRange = getElevationRange(points.map((point) => point.elevationM));
+  if (!elevationRange) return null;
+  const { minimum: min, maximum: max } = elevationRange;
   const range = Math.max(1, max - min);
   return points.map((point, index) => {
     const x = (index / (points.length - 1)) * width;

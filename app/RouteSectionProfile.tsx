@@ -5,6 +5,7 @@ import type { GpxRoutePointData } from "./gpxAnalysis";
 import type { RouteSection } from "./routeSectionEngine";
 import { nearestRouteProfilePoint } from "./routeProfileInspection";
 import { createRouteSectionProfileLayout } from "./routeSectionProfilePresentation";
+import { getElevationRange } from "./routeElevationMetrics";
 
 const EDGE = { left: 62, right: 16, top: 16, bottom: 38 };
 
@@ -39,13 +40,15 @@ export default function RouteSectionProfile({ section, routePoints, sectionKind 
   const startM = section.startPosition.distanceM;
   const endM = section.endPosition.distanceM;
   const elevations = samples.map((point) => point.elevationM);
-  const layout = createRouteSectionProfileLayout(startM, endM, Math.min(...elevations), Math.max(...elevations), width, height);
+  const elevationRange = getElevationRange(elevations);
+  if (!elevationRange) return <p className="mt-5 rounded-xl bg-[#202c26] p-4 text-sm text-white/65">A section profile is unavailable because its elevation samples are invalid.</p>;
+  const layout = createRouteSectionProfileLayout(startM, endM, elevationRange.minimum, elevationRange.maximum, width, height);
   if (!layout) return <p className="mt-5 rounded-xl bg-[#202c26] p-4 text-sm text-white/65">A section profile is unavailable because its distance bounds are invalid.</p>;
   const { xForDistance: x, yForElevation: y, elevationScale: elevation, distanceTicks: visibleTicks } = layout;
-  const totalRouteDistanceM = Math.max(...routePoints.map((point) => point.distanceM));
+  const totalRouteDistanceM = routePoints.reduce((maximum, point) => Number.isFinite(point.distanceM) ? Math.max(maximum, point.distanceM) : maximum, 0);
   const sampleStart = samples[0];
   const sampleEnd = samples.at(-1)!;
-  const accessible = `${sectionKind} profile from ${formatKm(startM)} to ${formatKm(endM)} kilometres on the full route scale. Elevation ranges from ${Math.round(Math.min(...elevations))} to ${Math.round(Math.max(...elevations))} metres. ${samples.length} actual GPX samples from track component ${section.segmentIndex + 1}.`;
+  const accessible = `${sectionKind} profile from ${formatKm(startM)} to ${formatKm(endM)} kilometres on the full route scale. Elevation ranges from ${Math.round(elevationRange.minimum)} to ${Math.round(elevationRange.maximum)} metres. ${samples.length} actual GPX samples from track component ${section.segmentIndex + 1}.`;
   const inspect = (clientX: number, clientY: number) => {
     const box = svgRef.current?.getBoundingClientRect();
     if (!box || box.width <= 0) return;

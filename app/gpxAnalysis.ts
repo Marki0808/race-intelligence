@@ -15,6 +15,7 @@ export type GpxAnalysisErrorCode =
   | "no-track-points"
   | "multiple-tracks"
   | "insufficient-elevation"
+  | "too-many-points"
   | "invalid-coordinate"
   | "invalid-route";
 
@@ -105,6 +106,8 @@ export function getGpxAnalysisErrorMessage(code: GpxAnalysisErrorCode): string {
       return "This GPX contains multiple tracks or routes and cannot be analyzed safely yet. Export a single-track or single-route GPX and try again.";
     case "insufficient-elevation":
       return "This GPX does not contain usable elevation data for route analysis.";
+    case "too-many-points":
+      return "This GPX contains too many track points to analyze safely. Export a simplified route and try again.";
     case "invalid-coordinate":
       return "This GPX contains invalid location points and could not be analyzed.";
     case "invalid-route":
@@ -112,7 +115,7 @@ export function getGpxAnalysisErrorMessage(code: GpxAnalysisErrorCode): string {
   }
 }
 
-export function parseGpxText(text: string): ParsedGpx {
+export function parseGpxText(text: string, options: { maxTrackPoints?: number } = {}): ParsedGpx {
   const xml = text.replace(/^\uFEFF/, "").trim();
   if (!xml || !hasValidXmlStructure(xml) || !/^<(?:[\w.-]+:)?gpx(?:\s|>)/i.test(stripXmlProlog(xml))) {
     throw new GpxAnalysisError("invalid-gpx");
@@ -125,6 +128,10 @@ export function parseGpxText(text: string): ParsedGpx {
   }
 
   const pointTag = trackCount > 0 ? "trkpt" : "rtept";
+  if (options.maxTrackPoints !== undefined) {
+    if (!Number.isInteger(options.maxTrackPoints) || options.maxTrackPoints < 1) throw new RangeError("maxTrackPoints must be a positive integer.");
+    if (countOpeningTags(xml, pointTag) > options.maxTrackPoints) throw new GpxAnalysisError("too-many-points");
+  }
   const segments = trackCount > 0
     ? parseTrackSegments(xml)
     : [parsePointElements(xml, pointTag)];
@@ -461,7 +468,9 @@ function hasValidXmlStructure(xml: string): boolean {
 
 function countOpeningTags(xml: string, name: string): number {
   const matcher = new RegExp(`<(?:(?:[\\w.-]+):)?${name}\\b`, "gi");
-  return [...xml.matchAll(matcher)].length;
+  let count = 0;
+  while (matcher.exec(xml)) count += 1;
+  return count;
 }
 
 function parseXmlAttributes(text: string): Map<string, string> {

@@ -3,7 +3,19 @@ import type { GpxRoutePointData } from "./gpxAnalysis.ts";
 /** Elevation reporting is measured on a 50 m route grid with a 50 m-radius median filter. */
 export const ROUTE_ELEVATION_METRIC_INTERVAL_M = 50;
 export const ROUTE_ELEVATION_METRIC_MEDIAN_RADIUS_M = 50;
-export const ROUTE_ELEVATION_METRIC_DESCRIPTION = "Elevation gain and loss use GPX elevations sampled every 50 m and a 50 m-radius median filter to reduce isolated altitude spikes. The displayed profile is smoothed separately.";
+export const ROUTE_ELEVATION_METRIC_DESCRIPTION = "Reported ascent and descent use GPX elevations sampled every 50 m and a 50 m-radius median filter to reduce isolated altitude spikes. The displayed profile follows the GPX elevation samples; gradient and narrative descriptions use a separately resampled and smoothed route-dynamics profile.";
+
+/** Finds finite elevation bounds without spreading an unbounded route-point array into Math.min/max. */
+export function getElevationRange(values: readonly number[]): { minimum: number; maximum: number } | null {
+  let minimum = Number.POSITIVE_INFINITY;
+  let maximum = Number.NEGATIVE_INFINITY;
+  for (const value of values) {
+    if (!Number.isFinite(value)) continue;
+    if (value < minimum) minimum = value;
+    if (value > maximum) maximum = value;
+  }
+  return minimum === Number.POSITIVE_INFINITY ? null : { minimum, maximum };
+}
 
 type MetricProfilePoint = {
   distanceM: number;

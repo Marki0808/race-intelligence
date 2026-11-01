@@ -11,7 +11,7 @@ import { avoidRouteDistanceTickLabelOverlap, getNiceAxisScale, getPositionedRout
 import { nearestRouteProfilePoint } from "./routeProfileInspection";
 import { layoutKeyMomentProfileMarkers } from "./routeKeyMomentProfileMarkers";
 import { ROUTE_MAP_STYLES } from "./routeMapStyles";
-import { ROUTE_ELEVATION_METRIC_DESCRIPTION } from "./routeElevationMetrics";
+import { getElevationRange, ROUTE_ELEVATION_METRIC_DESCRIPTION } from "./routeElevationMetrics";
 
 export default function CourseExplorer({
   selectedMoment,
@@ -87,8 +87,9 @@ export default function CourseExplorer({
     lowestPointM: selectedSection.elevationMinM,
   } : metrics;
   const elevations = points.map((point) => point.elevationM);
-  const minimumElevation = elevations.length > 0 ? Math.min(...elevations) : 0;
-  const maximumElevation = elevations.length > 0 ? Math.max(...elevations) : 0;
+  const elevationRange = getElevationRange(elevations);
+  const minimumElevation = elevationRange?.minimum ?? 0;
+  const maximumElevation = elevationRange?.maximum ?? 0;
 
   useEffect(() => {
     if (!mapRef.current || points.length === 0) return;

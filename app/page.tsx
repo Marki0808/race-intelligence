@@ -40,7 +40,7 @@ export default function Home() {
               Explore a GPX route’s elevation profile, follow its sections and see its key moments.
             </p>
             <a href="#analyze" className="mt-8 inline-flex min-h-11 items-center rounded-full bg-[#a7c957] px-6 py-3 text-sm font-semibold text-[#17211c] transition hover:bg-[#b8d86b]">
-              Choose how to start
+              Upload your GPX
             </a>
           </div>
 
@@ -66,7 +66,7 @@ export default function Home() {
       <section id="analyze" className="scroll-mt-6">
         <div className="mx-auto max-w-7xl px-6 py-14 sm:py-20 lg:px-10">
           <div className="max-w-2xl">
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#71805d]">Choose your starting point</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#71805d]">Start with your GPX</p>
             <h2 className="mt-3 text-3xl font-semibold tracking-[-0.035em] sm:text-4xl">Analyze a route</h2>
           </div>
 

@@ -6,6 +6,7 @@ import KeyMoment from "./KeyMoment";
 import { orderKeyMomentsForDisplay, presentKeyMomentCard } from "./routeKeyMomentPresentation";
 import { ElevationProfile } from "./CourseExplorer";
 import { clipRoutePointsToKeyMoment, resolveKeyMomentInterval } from "./routeSectionSelection";
+import { getElevationRange } from "./routeElevationMetrics";
 
 export default function KeyRouteMoments({ moments, routePoints, totalDistanceM, selectedMoment, onSelect }: {
   moments: readonly KeyMomentData[];
@@ -23,6 +24,7 @@ export default function KeyRouteMoments({ moments, routePoints, totalDistanceM, 
   const selectedMomentInterval = selectedMomentData ? resolveKeyMomentInterval(routePoints, selectedMomentData) : null;
   const selectedPoints = selectedMomentData ? clipRoutePointsToKeyMoment(routePoints, selectedMomentData) : [];
   const elevations = routePoints.map((point) => point.elevationM).filter(Number.isFinite);
+  const elevationRange = getElevationRange(elevations);
   const markerInputs = displayable.map(({ moment, card, number }) => ({ moment, card, number }));
   return <section className="bg-[#f4f2ed]" aria-labelledby="key-route-moments-title">
     <div className="mx-auto max-w-7xl px-6 py-16 lg:px-10 lg:py-20">
@@ -33,7 +35,7 @@ export default function KeyRouteMoments({ moments, routePoints, totalDistanceM, 
       </div>
       <div className="mt-8 rounded-2xl bg-[#202c26] p-3 sm:p-5" aria-label="Key Moment locations on the complete route">
         <p className="mb-2 px-2 text-xs font-semibold uppercase tracking-[0.16em] text-white/60">Key Moments along the full route</p>
-        <ElevationProfile points={routePoints} selectedPoints={selectedPoints} minElevation={elevations.length ? Math.min(...elevations) : 0} maxElevation={elevations.length ? Math.max(...elevations) : 0}
+        <ElevationProfile points={routePoints} selectedPoints={selectedPoints} minElevation={elevationRange?.minimum ?? 0} maxElevation={elevationRange?.maximum ?? 0}
           selectedSection={null} selectedMomentInterval={selectedMomentInterval} sections={[]} momentMarkers={markerInputs} selectedMoment={selectedMoment} onSelectMoment={onSelect} />
       </div>
     </div>

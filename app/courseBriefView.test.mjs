@@ -46,8 +46,9 @@ test("Race Mode passes the selected edition's existing analysis and isolates edi
 });
 
 test("Route Mode passes its existing analysis to Course Brief without another GPX read", () => {
-  assert.match(routeModeSource, /parseGpxText\(text\)/);
-  assert.match(routeModeSource, /analyzeText\(await file\.text\(\)/);
+  assert.match(routeModeSource, /parseRouteModeGpxText\(text\)/);
+  assert.match(routeModeSource, /readGpxUpload\(file\)/);
+  assert.match(routeModeSource, /analyzeParsedRoute\(parsed, displayName, requestId\)/);
   assert.match(routeModeSource, /<RouteAnalysisView[\s\S]*?analysis=\{analysis\}/);
   assert.match(routeSource, /<CourseBriefView routeAnalysis=\{analysis\}/);
   assert.equal((routeSource.match(/analyzeGpxRoute|parseGpxText/g) ?? []).length, 0);
