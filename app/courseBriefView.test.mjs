@@ -55,7 +55,7 @@ test("Route Mode passes its existing analysis to Course Brief without another GP
 });
 
 test("view preserves structural text only and isolates failures from course content", () => {
-  assert.match(componentSource, /composeCourseBriefWholeRouteNarrative\(currentState\.result\.input, currentState\.result\.structuralOutput, currentState\.result\.selection\.selectedCandidates\)/);
+  assert.match(componentSource, /composeCourseBriefWholeRouteNarrative\(currentState\.result\.input, currentState\.result\.structuralOutput, currentState\.result\.selection\.selectedCandidates, units\)/);
   assert.match(componentSource, /narrative\.paragraphs\.map/);
   assert.match(componentSource, /\{paragraph\.text\}/);
   assert.doesNotMatch(componentSource, /structuralOutput\.observations\.map/);

@@ -1,6 +1,7 @@
 import type { RouteAnalysisData } from "./gpxAnalysis.ts";
 import type { RouteSectionIntervalDefinition } from "./routeSectionIntervals.ts";
 import { buildRouteSectionsFromIntervals } from "./routeSectionIntervals.ts";
+import { formatDistanceMeters, type RouteUnitSystem } from "./routeUnits.ts";
 import type { RouteSection } from "./routeSectionEngine.ts";
 
 export const MAX_CUSTOM_SECTION_BOUNDARIES = 20;
@@ -40,7 +41,7 @@ export function appendCustomSectionBoundary(plan: CustomSectionPlan, routeDistan
   return { ...plan, boundaries: [...plan.boundaries, { id: `custom-point-${nextId}`, distanceKm: midpointKm.toFixed(2), name: "" }] };
 }
 
-export function validateCustomSectionPlan(plan: CustomSectionPlan, routeDistanceM: number): CustomSectionValidation {
+export function validateCustomSectionPlan(plan: CustomSectionPlan, routeDistanceM: number, units: RouteUnitSystem = "metric"): CustomSectionValidation {
   const errors: string[] = [];
   if (!Number.isFinite(routeDistanceM) || routeDistanceM <= 0) return { valid: false, errors: ["The route distance is unavailable, so custom sections cannot be created."] };
   if (plan.boundaries.length > MAX_CUSTOM_SECTION_BOUNDARIES) errors.push(`Use no more than ${MAX_CUSTOM_SECTION_BOUNDARIES} custom boundaries.`);
@@ -54,10 +55,10 @@ export function validateCustomSectionPlan(plan: CustomSectionPlan, routeDistance
     const km = boundary.distanceKm.trim() === "" ? Number.NaN : Number(boundary.distanceKm);
     const distanceM = km * 1000;
     if (!Number.isFinite(distanceM)) {
-      errors.push(`Boundary ${index + 1} needs a valid distance in kilometers.`);
+      errors.push(`Boundary ${index + 1} needs a valid distance in ${units === "metric" ? "kilometers" : "miles"}.`);
       continue;
     }
-    if (distanceM <= 0 || distanceM >= routeDistanceM) errors.push(`Boundary ${index + 1} must be between 0 and ${(routeDistanceM / 1000).toFixed(2)} km.`);
+    if (distanceM <= 0 || distanceM >= routeDistanceM) errors.push(`Boundary ${index + 1} must be between 0 and ${formatDistanceMeters(routeDistanceM, units)}.`);
     if (distanceM <= previousM) errors.push("Custom boundaries must be in strictly increasing order with no duplicate distances.");
     previousM = distanceM;
   }
@@ -68,9 +69,10 @@ export function validateCustomSectionPlan(plan: CustomSectionPlan, routeDistance
 export function buildCustomRouteSections(
   analysis: Pick<RouteAnalysisData, "points" | "routeDynamics">,
   plan: CustomSectionPlan,
+  units: RouteUnitSystem = "metric",
 ): CustomRouteSectionsResult {
   const routeDistanceM = analysis.points.at(-1)?.distanceM ?? Number.NaN;
-  const validation = validateCustomSectionPlan(plan, routeDistanceM);
+  const validation = validateCustomSectionPlan(plan, routeDistanceM, units);
   if (!validation.valid) return { available: false, sections: [], labels: new Map(), errors: validation.errors };
 
   const userBoundaries = plan.boundaries.map((boundary, index) => ({

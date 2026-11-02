@@ -11,6 +11,7 @@ import {
 } from "./customRouteSections.ts";
 import { buildAidStationSections } from "./aidStationSections.ts";
 import { routeSectionSelectionKey } from "./routeSectionSelection.ts";
+import { distanceInputToKm } from "./routeUnits.ts";
 
 function makeAnalysis({ components = 1, elevations = [100, 160, 125, 230, 205, 125, 155, 80, 120] } = {}) {
   const segments = Array.from({ length: components }, (_, component) => Array.from({ length: elevations.length }, (_, index) => ({
@@ -63,6 +64,35 @@ test("manual boundaries create ordered full-route intervals with named labels an
     assert.ok(section.elevationProfile.length >= 2);
     assert.ok(section.mapData?.every((point) => point.segmentIndex === section.segmentIndex));
   }
+});
+
+test("unit presentation changes do not mutate canonical custom boundaries or section calculations", () => {
+  const analysis = makeAnalysis();
+  const plan = { ...createCustomSectionPlan(), boundaries: [{ id: "custom-point-1", distanceKm: "1.00", name: "Midpoint" }] };
+  const before = structuredClone(plan);
+  const metric = buildCustomRouteSections(analysis, plan, "metric");
+  const customary = buildCustomRouteSections(analysis, plan, "us-customary");
+  assert.deepEqual(plan, before);
+  assert.equal(metric.available, true);
+  assert.equal(customary.available, true);
+  assert.deepEqual(customary.sections.map(({ startPosition, endPosition, ascentM, descentM }) => [startPosition.distanceM, endPosition.distanceM, ascentM, descentM]),
+    metric.sections.map(({ startPosition, endPosition, ascentM, descentM }) => [startPosition.distanceM, endPosition.distanceM, ascentM, descentM]));
+  assert.match(validateCustomSectionPlan({ ...plan, boundaries: [{ ...plan.boundaries[0], distanceKm: "" }] }, analysis.points.at(-1).distanceM, "us-customary").errors[0], /miles/);
+});
+
+test("US Customary custom-boundary input is converted to canonical kilometers once at the editor boundary", () => {
+  const longAnalysis = analyzeGpxRoute({
+    name: "Long custom boundary test",
+    segments: [Array.from({ length: 40 }, (_, index) => ({ latitude: 45, longitude: 13 + index * 0.005, elevationM: 100 + index * 3 }))],
+  });
+  const beforeMetrics = structuredClone(longAnalysis.metrics);
+  const canonicalKm = distanceInputToKm("5", "us-customary");
+  const plan = { ...createCustomSectionPlan(), boundaries: [{ id: "custom-point-1", distanceKm: canonicalKm, name: "Five miles" }] };
+  const result = buildCustomRouteSections(longAnalysis, plan, "us-customary");
+  assert.equal(result.available, true);
+  assert.equal(Number(plan.boundaries[0].distanceKm), 8.04672);
+  assert.ok(Math.abs(result.sections[0].endPosition.distanceM - 8046.72) < 0.001);
+  assert.deepEqual(longAnalysis.metrics, beforeMetrics);
 });
 
 test("boundary add chooses an unused midpoint and respects the count cap", () => {
@@ -176,11 +206,11 @@ test("Route Analysis presents the shared custom section browser without changing
   assert.match(view, /customPlanState\.analysis === analysis \? customPlanState\.plan : createCustomSectionPlan\(\)/, "the plan remains separate from the selected view mode");
   assert.match(view, /CustomSectionControls/);
   assert.match(view, /selectionSections=\{activeSections\}/);
-  assert.match(view, /buildCustomRouteSections\(analysis, customPlan\)/);
+  assert.match(view, /buildCustomRouteSections\(analysis, customPlan, units\)/);
   assert.match(view, /selectedMoment=\{selectedMoment\}/);
   assert.match(view, /buildGradientIntelligenceV1\(analysis\.routeDynamics, customSections\.sections\)/);
   assert.match(view, /narrativeContext=\{routeNarrativeContext\}/);
-  assert.match(browser, /presentRouteSectionNarrativeV2\(gradientIntelligence, routeSections, section, narrativeContext\)/);
+  assert.match(browser, /presentRouteSectionNarrativeV2\(gradientIntelligence, routeSections, section, narrativeContext, units\)/);
   assert.doesNotMatch(browser, /sectionKind === "Custom Section" \? \[section\.description\]/);
   assert.match(browser, /aria-pressed=\{isSelected\}/);
   assert.doesNotMatch(raceMode, /Custom Sections/);

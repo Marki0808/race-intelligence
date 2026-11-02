@@ -49,22 +49,39 @@ test("Istria whole-route narrative preserves chronological shape and important c
   assert.equal(composition.structuralOutput.observations.length, 4);
   assert.equal(narrative.paragraphs.length, 2);
   const text = narrative.paragraphs.map(({ text: paragraph }) => paragraph).join(" ");
-  assert.match(text, /opens with predominantly uphill travel through about km 30\.5/);
-  assert.match(text, /longest and largest detected climb/);
-  assert.match(text, /climb gives way to downhill travel/);
-  assert.match(text, /climbs and descents recur/);
-  assert.match(text, /relatively little climbing and descending per kilometre/);
+  assert.match(text, /route opens with a climb that continues to around km 30\.5/);
+  assert.match(text, /longest climb \(7\.0 km, gaining 526 m\)/);
+  assert.match(text, /route turns downhill and continues to around km 42\.8/);
+  assert.match(text, /repeated climbs and descents/);
+  assert.match(text, /little elevation change/);
+  assert.doesNotMatch(text, /uphill travel|downhill travel|gives way to|through about km|descent-led/);
   assert.ok(text.indexOf("km 30.5") < text.indexOf("km 42.8"));
   assert.ok(text.indexOf("km 42.8") < text.indexOf("km 86.3"));
   assert.ok(narrative.paragraphs[0].sourceFactIds.length >= 5);
 });
 
+test("Course Brief formats route positions and elevation anchors in US customary units", async () => {
+  const { composition } = await fromGpx("../public/ISTRIA_110K_2027.gpx");
+  const narrative = composeCourseBriefWholeRouteNarrative(
+    composition.input,
+    composition.structuralOutput,
+    composition.selection.selectedCandidates,
+    "us-customary",
+  );
+  assert.ok(narrative);
+  const text = narrative.paragraphs.map(({ text: paragraph }) => paragraph).join(" ");
+  assert.match(text, /mile(?:s)? \d+(?:\.\d)?/);
+  assert.doesNotMatch(text, /\bmi \d/);
+  assert.match(text, /ft\)/);
+  assert.doesNotMatch(text, /km \d|\d km|\d m\)/);
+});
+
 test("Učka alternating sustained phases compose into a connected whole-route story", { skip: !existsSync(fileURLToPath(new URL("../test-routes/gradient-calibration/Učka Loop Challenge (42km2200m+) Official Route.gpx", import.meta.url))) }, async () => {
   const { narrative } = await fromGpx("../test-routes/gradient-calibration/Učka Loop Challenge (42km2200m+) Official Route.gpx");
   const text = narrative.paragraphs[0].text;
-  assert.match(text, /opens with predominantly uphill travel/);
-  assert.match(text, /climb gives way to downhill travel/);
-  assert.match(text, /longest and largest detected climb/);
+  assert.match(text, /route opens with a climb that continues/);
+  assert.match(text, /route turns downhill and continues/);
+  assert.match(text, /longest climb/);
   assert.match(text, /Toward the finish/);
   assert.ok(text.indexOf("km 9.1") < text.indexOf("km 16.9"));
   assert.ok(text.indexOf("km 16.9") < text.indexOf("km 29.7"));
@@ -74,8 +91,10 @@ test("shorter rolling route gets a concise whole-route description", { skip: !ex
   const { narrative } = await fromGpx("../test-routes/gradient-calibration/Lužec Trail 20km.gpx");
   assert.equal(narrative.paragraphs.length, 1);
   const text = narrative.paragraphs[0].text;
-  assert.match(text, /climbing and descending/i);
+  assert.match(text, /climbing and descending|climbs and descents/i);
   assert.doesNotMatch(text, /smoothed net grade|technical|rocky|muddy|difficult|pace/i);
+  assert.doesNotMatch(text, /uphill travel|downhill travel|gives way to|through about km|descent-led/);
+  assert.doesNotMatch(text, /More than half of the (?:climbing|descending)/);
   assert.ok(text.split(/[.!?]\s+/).filter(Boolean).length <= 4);
 });
 
@@ -89,13 +108,13 @@ test("synthetic sustained climb, descent and rolling profiles retain direction a
   assert.doesNotMatch(descent.narrative.paragraphs[0].text, /uphill|climb/i);
 
   const rolling = await narrativeForAnalysis(analyzeSynthetic(["rolling"]));
-  assert.match(rolling.narrative.paragraphs[0].text, /climbing and descending|ups and downs/i);
+  assert.match(rolling.narrative.paragraphs[0].text, /climbing and descending|climbs and descents|little elevation change/i);
 });
 
 test("a short low-change route stays concise and missing elevation produces no invented prose", async () => {
   const lowChange = await narrativeForAnalysis(analyzeSynthetic(["flat"], { pointsPerRun: 31 }));
   assert.equal(lowChange.narrative.paragraphs.length, 1);
-  assert.match(lowChange.narrative.paragraphs[0].text, /little climbing and descending|mixed/i);
+  assert.match(lowChange.narrative.paragraphs[0].text, /little elevation change|mixed/i);
   assert.ok(lowChange.narrative.paragraphs[0].text.split(/[.!?]\s+/).filter(Boolean).length <= 2);
 
   assert.throws(() => analyzeGpxRoute({ segments: [[
@@ -110,7 +129,7 @@ test("selected rhythm grouping is summarized without fabricating direction or te
   const { composition, narrative } = await narrativeForAnalysis(analysis);
   assert.ok(composition.selection.selectedCandidates.some(({ renderPatternId }) => renderPatternId === "RHYTHM_SEQUENCE"));
   const text = narrative.paragraphs[0].text;
-  assert.match(text, /climbing and descending repeat|climbs and descents recur/i);
+  assert.match(text, /climbing and descending|climbs and descents repeat/i);
   assert.doesNotMatch(text, /rocky|muddy|technical|difficult|fatigue|pace|surface/i);
   assert.ok(narrative.paragraphs[0].sourceFactIds.every((id) => composition.input.facts.some((fact) => fact.factId === id)));
 });

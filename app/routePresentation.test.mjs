@@ -93,11 +93,11 @@ test("Key Moment presentation preserves consistent measured values, exact positi
   const grade = { id: "grade", number: "", title: "Steepest sustained climb", distance: "2–3 km", focusStartKm: 2, focusEndKm: 3, segmentIndex: 0, text: "Smoothed profile grade.", source: "GPX-derived", measurement: { kind: "gradient", direction: "climb", startDistanceM: 2000, endDistanceM: 3000, distanceM: 1000, averageNetGradientPct: 12.2, segmentIndex: 0 } };
   const card = presentKeyMomentCard(grade, points, 5000);
   assert.equal(card?.value, "+12.2%");
-  assert.equal(card?.locationSentence, "This sustained climb runs from km 2 to km 3.");
+  assert.equal(card?.locationSentence, "This sustained climb runs from 2 km to 3 km.");
   assert.equal(presentKeyMomentCard({ ...grade, measurement: { ...grade.measurement, distanceM: 1700 } }, points, 5000), null);
   const high = { ...grade, id: "high", title: "Highest point", measurement: { kind: "point", distanceM: 3000, elevationM: 60, segmentIndex: 0 } };
   assert.deepEqual(orderKeyMomentsForDisplay([high, grade]).map((item) => item.id), ["grade", "high"]);
-  assert.equal(presentKeyMomentCard(high, points, 5000)?.locationSentence, "The highest point is at km 3.");
+  assert.equal(presentKeyMomentCard(high, points, 5000)?.locationSentence, "The highest point is at 3 km.");
   assert.equal(presentKeyMomentCard({ ...high, measurement: { ...high.measurement, segmentIndex: 1 } }, points, 5000), null);
 });
 
@@ -114,7 +114,7 @@ test("longest and biggest remain separate cards even when the same event holds b
   const cards = eventMoments.map((moment) => presentKeyMomentCard(moment, points, 7000));
   assert.equal(cards[0]?.value, "5.0 km");
   assert.equal(cards[1]?.value, "+500 m");
-  assert.equal(cards[0]?.locationSentence, "This climb runs from km 1 to km 6.");
+  assert.equal(cards[0]?.locationSentence, "This climb runs from 1 km to 6 km.");
   assert.equal(cards[1]?.locationSentence, cards[0]?.locationSentence);
 });
 

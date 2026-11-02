@@ -2,8 +2,10 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f5f5ef;
+  --foreground: #203329;
+  --analysis-muted: #59635d;
+  --analysis-accent-text: #536b3e;
   --font-system-sans: ui-sans-serif, system-ui, -apple-system,
     BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-system-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
@@ -17,15 +19,57 @@
   --font-mono: var(--font-system-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-system-sans);
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 5.5rem;
+}
+
+.topo-hero {
+  background-color: #eff2e9;
+  background-image: linear-gradient(105deg, rgba(245, 246, 239, .68) 0%, rgba(239, 242, 233, .47) 48%, rgba(239, 242, 233, .4) 100%), url("/topographic-contours.svg");
+  background-position: center, 54% center;
+  background-size: cover, cover;
+}
+
+.topo-upload {
+  isolation: isolate;
+  background-color: #26382f;
+  background-image: linear-gradient(112deg, rgba(38, 56, 47, .72), rgba(38, 56, 47, .64)), url("/topographic-contours.svg");
+  background-position: center, 72% center;
+  background-size: cover, cover;
+}
+
+.route-analysis-surface {
+  --analysis-ink: #17211c;
+  color: var(--analysis-ink);
+  background-color: #f4f2ed;
+}
+
+@media (max-width: 640px) {
+  .topo-hero {
+    background-position: center, 57% center;
+  }
+
+  .topo-upload {
+    background-position: center, 64% center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+  }
 }

@@ -1,5 +1,6 @@
 import type { GpxRoutePointData } from "./gpxAnalysis.ts";
 import type { KeyMomentData } from "./raceTypes.ts";
+import { formatDistanceMeters, formatElevationMeters, type RouteUnitSystem } from "./routeUnits.ts";
 
 export type KeyMomentCardPresentation = {
   kind: "event" | "gradient" | "point" | "rolling";
@@ -29,6 +30,7 @@ export function presentKeyMomentCard(
   moment: KeyMomentData,
   points: readonly GpxRoutePointData[],
   totalDistanceM: number,
+  units: RouteUnitSystem = "metric",
 ): KeyMomentCardPresentation | null {
   const measurement = moment.measurement;
   if (!measurement || !Number.isFinite(totalDistanceM) || totalDistanceM <= 0) return null;
@@ -46,8 +48,8 @@ export function presentKeyMomentCard(
     if (!/^(highest|lowest) point$/i.test(moment.title)) return null;
     start = end = measurement.distanceM;
     title = moment.title;
-    value = `${Math.round(measurement.elevationM).toLocaleString("en-US")} m`;
-    locationSentence = `The ${moment.title.toLowerCase()} is at km ${formatKm(start)}.`;
+    value = formatElevationMeters(measurement.elevationM, units);
+    locationSentence = `The ${moment.title.toLowerCase()} is at ${formatDistanceMeters(start, units)}.`;
   } else {
     start = measurement.startDistanceM;
     end = measurement.endDistanceM;
@@ -61,21 +63,21 @@ export function presentKeyMomentCard(
       if (!measurement.roles.includes(role)) return null;
       title = `${displayRole === "biggest" ? "Biggest" : "Longest"} ${measurement.direction}`;
       if (displayRole === "biggest") {
-        value = `${measurement.direction === "climb" ? "+" : "−"}${Math.round(measurement.elevationChangeM).toLocaleString("en-US")} m`;
+        value = `${measurement.direction === "climb" ? "+" : "−"}${formatElevationMeters(measurement.elevationChangeM, units)}`;
       } else {
-        value = `${(measurement.distanceM / 1000).toFixed(1)} km`;
+        value = formatDistanceMeters(measurement.distanceM, units, 1, 1);
       }
-      locationSentence = `This ${measurement.direction} runs from km ${formatKm(start)} to km ${formatKm(end)}.`;
+      locationSentence = `This ${measurement.direction} runs from ${formatDistanceMeters(start, units, 2)} to ${formatDistanceMeters(end, units, 2)}.`;
     } else if (measurement.kind === "gradient") {
       if (!Number.isFinite(measurement.averageNetGradientPct) || (measurement.direction === "climb" ? measurement.averageNetGradientPct <= 0 : measurement.averageNetGradientPct >= 0)) return null;
       title = `Steepest sustained ${measurement.direction}`;
       value = `${measurement.averageNetGradientPct > 0 ? "+" : "−"}${Math.abs(measurement.averageNetGradientPct).toFixed(1)}%`;
-      locationSentence = `This sustained ${measurement.direction} runs from km ${formatKm(start)} to km ${formatKm(end)}.`;
+      locationSentence = `This sustained ${measurement.direction} runs from ${formatDistanceMeters(start, units, 2)} to ${formatDistanceMeters(end, units, 2)}.`;
     } else if (measurement.kind === "rolling") {
       if (![measurement.distanceM, measurement.startDistanceM, measurement.endDistanceM].every(Number.isFinite) || measurement.distanceM <= 0 || end <= start || Math.abs(end - start - measurement.distanceM) > 1) return null;
       title = moment.title;
-      value = `${(measurement.distanceM / 1000).toFixed(1)} km`;
-      locationSentence = `This rolling stretch runs from km ${formatKm(start)} to km ${formatKm(end)}.`;
+      value = formatDistanceMeters(measurement.distanceM, units, 1);
+      locationSentence = `This rolling stretch runs from ${formatDistanceMeters(start, units, 2)} to ${formatDistanceMeters(end, units, 2)}.`;
     } else {
       return null;
     }
@@ -117,5 +119,4 @@ function measuredStart(moment: KeyMomentData) {
   return measurement?.kind === "point" ? measurement.distanceM : measurement?.kind === "event" || measurement?.kind === "gradient" || measurement?.kind === "rolling" ? measurement.startDistanceM : moment.focusStartPosition?.distanceM ?? moment.focusStartKm * 1000;
 }
 
-function formatKm(distanceM: number) { return (distanceM / 1000).toFixed(2).replace(/0+$/, "").replace(/\.$/, ""); }
 function clampPercent(value: number) { return Math.max(0, Math.min(100, value)); }

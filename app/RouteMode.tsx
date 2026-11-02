@@ -19,11 +19,13 @@ import { lookupSharedRoute, runOptionalRouteLookup, type SharedRouteCache } from
 import type { RouteFingerprintResult } from "./routeFingerprint";
 import { consumePendingDiscoveredGpx } from "./discoveredGpxTransfer";
 import { TERRAIN_INTELLIGENCE_V1_ENABLED } from "./featureFlags";
+import { RouteUnitPreferenceProvider } from "./RouteUnitPreference";
 
-export default function RouteMode() {
+export default function RouteMode({ embedded = false }: { embedded?: boolean }) {
   const [analysis, setAnalysis] = useState<RouteAnalysisData | null>(null);
   const [error, setError] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [routeFingerprint, setRouteFingerprint] = useState<RouteFingerprintResult | null>(null);
   const [persistenceScope, setPersistenceScope] = useState<"local" | "shared">("local");
   const [sharedCache, setSharedCache] = useState<SharedRouteCache | null>(null);
@@ -137,10 +139,7 @@ export default function RouteMode() {
     }
   }, [analyzeText]);
 
-  async function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
-    const input = event.currentTarget;
-    const file = input.files?.[0];
-    input.value = "";
+  async function handleSelectedFile(file: File | undefined) {
     if (!file) return;
     const requestId = beginRouteRequest();
     if (requestId === null) return;
@@ -149,6 +148,85 @@ export default function RouteMode() {
       const displayName = parsed.name ?? fallbackName;
       await analyzeParsedRoute(parsed, displayName, requestId);
     });
+  }
+
+  async function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    input.value = "";
+    await handleSelectedFile(file);
+  }
+
+  const uploadPanel = (
+    <div
+      onDragOver={(event) => { event.preventDefault(); if (!isProcessing) setIsDraggingFile(true); }}
+      onDragLeave={(event) => {
+        const nextTarget = event.relatedTarget;
+        if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) setIsDraggingFile(false);
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        setIsDraggingFile(false);
+        if (!isProcessing) void handleSelectedFile(event.dataTransfer.files?.[0]);
+      }}
+      className={`max-w-2xl rounded-3xl border p-5 transition-colors sm:p-6 ${isDraggingFile ? "border-[#b9d975] bg-[#a7c957]/15" : "border-white/15 bg-white/[0.07]"}`}
+    >
+      <input
+        id="route-gpx-file"
+        type="file"
+        accept=".gpx,.xml,application/gpx+xml,application/xml,text/xml"
+        onChange={handleFileChange}
+        disabled={isProcessing}
+        className="peer sr-only"
+        aria-describedby="route-upload-guidance route-privacy-note"
+      />
+      <label htmlFor="route-gpx-file" className="inline-flex min-h-12 cursor-pointer items-center justify-center rounded-full bg-[#b9d975] px-6 text-sm font-bold text-[#17211c] transition hover:bg-[#c9e98a] peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-4 peer-focus-visible:outline-[#d8eea5] peer-disabled:cursor-wait">
+        Choose GPX file
+      </label>
+      <p id="route-upload-guidance" className="mt-3 text-xs leading-5 text-white/65">
+        Drop a .gpx or .xml file here, or use the file picker. Files must contain valid GPX data and stay within {MAX_GPX_UPLOAD_BYTES / (1024 * 1024)} MiB and {MAX_GPX_UPLOAD_TRACK_POINTS.toLocaleString("en-US")} track points.
+      </p>
+      <p className="mt-3 text-sm font-semibold text-[#d5eba2]">Free to use. No account required.</p>
+      <p id="route-privacy-note" className="mt-2 text-xs leading-5 text-white/60">
+        Your GPX is analyzed in this browser and is not uploaded or stored. A derived route fingerprint may be checked against shared route records, and map tiles are requested for the area you view.
+      </p>
+      {isProcessing && (
+        <p role="status" aria-live="polite" aria-atomic="true" className="mt-4 rounded-xl border border-[#b9d975]/35 bg-[#a7c957]/10 px-4 py-3 text-sm font-medium text-[#e1f2bc]">
+          Reading your GPX and analyzing the route…
+        </p>
+      )}
+      {error && <p role="alert" className="mt-4 rounded-xl bg-white/10 px-4 py-3 text-sm leading-6 text-white">{error}</p>}
+      <p className="sr-only" aria-live="polite">{isDraggingFile ? "Release to analyze this GPX file." : ""}</p>
+    </div>
+  );
+
+  const analysisView = analysis && <RouteUnitPreferenceProvider><div className="route-analysis-surface"><RouteAnalysisView
+    key={routeFingerprint?.routeFingerprint ?? analysis.name}
+    analysis={analysis}
+    analysisHeadingRef={analysisHeadingRef}
+    routeFingerprint={routeFingerprint ?? undefined}
+    persistenceScope={persistenceScope}
+    sharedCache={sharedCache}
+  /></div></RouteUnitPreferenceProvider>;
+
+  if (embedded) {
+    return (
+      <section id="analyze" className="topo-upload scroll-mt-24 text-white">
+        <div className="mx-auto max-w-7xl px-6 py-16 sm:py-20 lg:px-10">
+          <div className="grid gap-9 lg:grid-cols-[.8fr_1fr] lg:items-center">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#c2df7a]">Start with your GPX</p>
+              <h2 className="mt-3 text-3xl font-semibold tracking-[-0.035em] sm:text-4xl">Analyze your route</h2>
+              <p className="mt-4 max-w-lg text-sm leading-6 text-white/75 sm:text-base">
+                Choose a route file to explore its elevation profile, meaningful sections and key moments.
+              </p>
+            </div>
+            {uploadPanel}
+          </div>
+          {analysisView}
+        </div>
+      </section>
+    );
   }
 
   return (
@@ -176,52 +254,11 @@ export default function RouteMode() {
             Upload a GPX file to calculate its distance, elevation profile and route sections.
           </p>
 
-          <div className="mt-9 max-w-2xl rounded-3xl border border-white/10 bg-white/5 p-5 sm:p-6">
-            <label
-              htmlFor="route-gpx-file"
-              className="block text-sm font-semibold text-white"
-            >
-              Select a GPX file
-            </label>
-            <input
-              id="route-gpx-file"
-              type="file"
-              accept=".gpx,.xml,application/gpx+xml,application/xml,text/xml"
-              onChange={handleFileChange}
-              disabled={isProcessing}
-              className="mt-4 block w-full min-w-0 cursor-pointer text-sm text-white/65 file:mr-4 file:rounded-full file:border-0 file:bg-[#a7c957] file:px-5 file:py-2.5 file:text-sm file:font-semibold file:text-[#17211c] hover:file:bg-[#b8d86b] disabled:cursor-wait"
-            />
-            <p className="mt-3 text-xs leading-5 text-white/45">
-              Choose a .gpx or .xml file containing valid GPX data. Uploads are limited to {MAX_GPX_UPLOAD_BYTES / (1024 * 1024)} MiB and {MAX_GPX_UPLOAD_TRACK_POINTS.toLocaleString("en-US")} track points.
-            </p>
-            <p className="mt-3 text-xs leading-5 text-white/40">
-              The GPX file is not uploaded or stored. A derived route fingerprint is checked against the public-route registry; non-matching route analysis remains in this browser&apos;s local cache. Mapillary imagery lookups use bounded section search areas, not GPX text or elevation data.
-            </p>
-            {isProcessing && (
-              <p role="status" aria-live="polite" aria-atomic="true" className="mt-4 rounded-xl border border-[#a7c957]/30 bg-[#a7c957]/10 px-4 py-3 text-sm font-medium text-[#c5e57d]">
-                Reading your GPX and analyzing the route…
-              </p>
-            )}
-            {error && (
-              <p
-                role="alert"
-                className="mt-4 rounded-xl bg-white/5 px-4 py-3 text-sm leading-6 text-white/70"
-              >
-                {error}
-              </p>
-            )}
-          </div>
+          <div className="mt-9">{uploadPanel}</div>
         </div>
       </section>
 
-      {analysis && <RouteAnalysisView
-        key={routeFingerprint?.routeFingerprint ?? analysis.name}
-        analysis={analysis}
-        analysisHeadingRef={analysisHeadingRef}
-        routeFingerprint={routeFingerprint ?? undefined}
-        persistenceScope={persistenceScope}
-        sharedCache={sharedCache}
-      />}
+      {analysisView}
     </main>
   );
 }

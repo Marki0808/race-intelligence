@@ -17,8 +17,13 @@ function loadProfilePresentationHelper() {
   const url = new URL("./routeProfilePresentation.ts", import.meta.url);
   const source = require("node:fs").readFileSync(url, "utf8");
   const js = ts.transpile(source, { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 });
+  const unitsUrl = new URL("./routeUnits.ts", import.meta.url);
+  const unitsSource = require("node:fs").readFileSync(unitsUrl, "utf8");
+  const unitsJs = ts.transpile(unitsSource, { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 });
+  const unitsModule = { exports: {} };
+  new Function("exports", "require", "module", "__filename", "__dirname", unitsJs)(unitsModule.exports, require, unitsModule, unitsUrl.pathname, new URL(".", unitsUrl).pathname);
   const transpiledModule = { exports: {} };
-  new Function("exports", "require", "module", "__filename", "__dirname", js)(transpiledModule.exports, (specifier) => specifier === "./routeSectionSelection" ? { routeSectionSelectionKey: (section) => `${section.segmentIndex}:${section.id}` } : require(specifier), transpiledModule, url.pathname, new URL(".", url).pathname);
+  new Function("exports", "require", "module", "__filename", "__dirname", js)(transpiledModule.exports, (specifier) => specifier === "./routeSectionSelection" ? { routeSectionSelectionKey: (section) => `${section.segmentIndex}:${section.id}` } : specifier === "./routeUnits" ? unitsModule.exports : require(specifier), transpiledModule, url.pathname, new URL(".", url).pathname);
   return transpiledModule.exports;
 }
 
@@ -58,7 +63,7 @@ test("Race and Route Mode use accurate analysis headings and a single five-metri
 
 test("profile inspection shows measured point values and distinguishes drags from interval selection", () => {
   assert.match(explorer, /nearestRouteProfilePoint\(points, distanceM, elevationM\)/);
-  assert.match(explorer, /inspectedPoint\.distanceM \/ 1000/);
+  assert.match(explorer, /formatDistanceMeters\(inspectedPoint\.distanceM, units\)/);
   assert.match(explorer, /inspectedPoint\.elevationM/);
   assert.match(explorer, /Math\.hypot\(event\.clientX - gesture\.startX, event\.clientY - gesture\.startY\) > 8/);
   assert.match(explorer, /gesture\.longPressed = true/);
@@ -82,7 +87,7 @@ test("section details present the full generated chronology under What to Expect
   const profile = sectionBrowser.indexOf("<RouteSectionProfile section={section} routePoints={routePoints} sectionKind={sectionKind} />");
   const map = sectionBrowser.indexOf("<SectionSubheading>Section map · GPX-derived</SectionSubheading>");
   assert.ok(heading >= 0 && heading < narrative && narrative < metrics && metrics < profile && profile < map);
-  assert.match(sectionBrowser, /presentRouteSectionNarrativeV2\(gradientIntelligence, routeSections, section, narrativeContext\)/);
+  assert.match(sectionBrowser, /presentRouteSectionNarrativeV2\(gradientIntelligence, routeSections, section, narrativeContext, units\)/);
   assert.doesNotMatch(sectionBrowser, /Detailed elevation changes|Measured route changes|sortRouteEmbeddedEventsForDisplay/);
   assert.doesNotMatch(sectionBrowser, /expectation\.paragraphs\.slice\(1\)/);
 });
@@ -111,19 +116,32 @@ test("Race and Route Mode share compact measured Key Moment cards and a complete
   assert.match(helper, /isAlreadyCovered/);
 });
 
-test("route character takeaways are shared by both modes and remain component local", async () => {
-  const [raceView, routeView, component] = await Promise.all([
+test("Course Takeaways are not rendered as a separate section in the V1 analysis views", async () => {
+  const [raceView, routeView] = await Promise.all([
     readFile(new URL("./CourseSection.tsx", import.meta.url), "utf8"),
     readFile(new URL("./RouteAnalysisView.tsx", import.meta.url), "utf8"),
-    readFile(new URL("./RouteTakeaways.tsx", import.meta.url), "utf8"),
   ]);
-  assert.match(raceView, /<RouteTakeaways analysis=\{routeAnalysis\}/);
-  assert.match(routeView, /<RouteTakeaways analysis=\{analysis\}/);
-  assert.match(component, /Course Takeaways/);
-  assert.match(component, /Don’t just analyze the route\. Understand it\./);
-  assert.match(component, /if \(!takeaways\.length\) return null/);
-  assert.ok(routeView.indexOf("<RouteSectionBrowser") < routeView.indexOf("<KeyRouteMoments") && routeView.indexOf("<KeyRouteMoments") < routeView.indexOf("<RouteTakeaways"));
-  assert.ok(raceSection.indexOf("<RouteSectionBrowser") < raceSection.indexOf("<KeyRouteMoments") && raceSection.indexOf("<KeyRouteMoments") < raceSection.indexOf("<RouteTakeaways"));
+  assert.doesNotMatch(raceView, /RouteTakeaways|Course Takeaways/);
+  assert.doesNotMatch(routeView, /RouteTakeaways|Course Takeaways/);
+  assert.match(raceView, /<KeyRouteMoments/);
+  assert.match(routeView, /<KeyRouteMoments/);
+  assert.match(routeView, /<CourseBriefView/);
+});
+
+test("Route Analysis is isolated from landing colors and Key Route Moments keeps an explicit dark heading", async () => {
+  const [routeMode, keyMoments, styles, explorerView] = await Promise.all([
+    readFile(new URL("./RouteMode.tsx", import.meta.url), "utf8"),
+    readFile(new URL("./KeyRouteMoments.tsx", import.meta.url), "utf8"),
+    readFile(new URL("./globals.css", import.meta.url), "utf8"),
+    readFile(new URL("./CourseExplorer.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.equal((routeMode.match(/className="route-analysis-surface"/g) ?? []).length, 1);
+  assert.match(routeMode, /<RouteUnitPreferenceProvider>[\s\S]*<RouteAnalysisView/);
+  assert.match(styles, /\.route-analysis-surface\s*\{[\s\S]*?color:\s*var\(--analysis-ink\)[\s\S]*?background-color:\s*#f4f2ed/);
+  assert.match(keyMoments, /<h2 id="key-route-moments-title"[^>]*text-\[#17211c\]/);
+  assert.match(explorerView, /text-\[10px\] uppercase tracking-\[0\.16em\] text-white\/70/);
+  assert.match(explorerView, /<details[^>]*>[\s\S]*?<summary[^>]*>\s*How elevation is calculated\s*<\/summary>[\s\S]*?\{getRouteElevationMetricDescription\(units\)\}/);
+  assert.doesNotMatch(explorerView, /<details[^>]*open/);
 });
 
 test("main and section maps retain full-route context and only overlay component-scoped selected geometry", async () => {
@@ -154,15 +172,20 @@ test("section mini-profile uses absolute route bounds, elevation axes, actual sa
   ]);
   assert.match(browser, /routePoints=\{routePoints\}/);
   assert.match(profile, /point\.segmentIndex === section\.segmentIndex/);
-  assert.match(profile, /Elevation \(m\)/);
+  assert.match(profile, /Elevation \(\{elevationUnit\(units\)\}\)/);
   assert.match(profile, /onPointerMove/);
   assert.match(profile, /event\.pointerType === "touch"/);
   assert.match(profile, /press and hold/);
   const presentation = loadProfilePresentationHelper();
   const helperUrl = new URL("./routeSectionProfilePresentation.ts", import.meta.url);
   const helperJs = ts.transpile(helperSource, { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 });
+  const unitsUrl = new URL("./routeUnits.ts", import.meta.url);
+  const unitsSource = require("node:fs").readFileSync(unitsUrl, "utf8");
+  const unitsJs = ts.transpile(unitsSource, { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 });
+  const unitsModule = { exports: {} };
+  new Function("exports", "require", "module", "__filename", "__dirname", unitsJs)(unitsModule.exports, require, unitsModule, unitsUrl.pathname, new URL(".", unitsUrl).pathname);
   const helperModule = { exports: {} };
-  new Function("exports", "require", "module", "__filename", "__dirname", helperJs)(helperModule.exports, (specifier) => specifier === "./routeProfilePresentation" || specifier === "./routeProfilePresentation.ts" ? presentation : require(specifier), helperModule, helperUrl.pathname, new URL(".", helperUrl).pathname);
+  new Function("exports", "require", "module", "__filename", "__dirname", helperJs)(helperModule.exports, (specifier) => specifier === "./routeProfilePresentation" || specifier === "./routeProfilePresentation.ts" ? presentation : specifier === "./routeUnits" || specifier === "./routeUnits.ts" ? unitsModule.exports : require(specifier), helperModule, helperUrl.pathname, new URL(".", helperUrl).pathname);
   const layout = helperModule.exports.createRouteSectionProfileLayout(30_450, 42_750, 100, 900, 360, 224);
   assert.ok(layout);
   assert.equal(layout.xForDistance(30_450), 62);
@@ -170,4 +193,8 @@ test("section mini-profile uses absolute route bounds, elevation axes, actual sa
   assert.equal(layout.distanceTicks[0].label, "30.45 km");
   assert.equal(layout.distanceTicks.at(-1).label, "42.75 km");
   assert.ok(layout.distanceTicks.every((tick) => tick.x >= 62 && tick.x <= 344));
+  const usLayout = helperModule.exports.createRouteSectionProfileLayout(30_450, 42_750, 100, 900, 360, 224, "us-customary");
+  assert.ok(usLayout);
+  assert.equal(usLayout.distanceTicks[0].label, "18.92 mi");
+  assert.equal(usLayout.distanceTicks.at(-1).label, "26.56 mi");
 });

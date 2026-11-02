@@ -392,6 +392,16 @@ test("narrative prose limits repeated numeric ranges and qualifies a grade once 
   assert.match(text, /averaging [−+].*over this interval/);
 });
 
+test("What to Expect presents intervals in the selected unit system without changing gradient percentages", () => {
+  const result = setup([["climb", 22, 5000], ["descent", -7, 3000]]);
+  const usNarrative = presentRouteSectionNarrativeV2(result.gradient, [result.section], result.section, undefined, "us-customary");
+  const text = usNarrative.paragraphs.join(" ");
+  assert.match(text, /mile(?:s)? \d+(?:\.\d)?/);
+  assert.doesNotMatch(text, /\bmi \d/);
+  assert.doesNotMatch(text, /km \d|\d km/);
+  assert.match(text, /%/);
+});
+
 test("short steep climb and descent remain direction-specific without unsupported surface claims", () => {
   const climb = analyze([["climb", 22, 500]]);
   const descent = analyze([["descent", -22, 500]]);

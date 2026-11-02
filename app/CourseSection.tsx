@@ -22,7 +22,6 @@ import { routeSectionSelectionKey } from "./routeSectionSelection";
 import { TERRAIN_INTELLIGENCE_V1_ENABLED } from "./featureFlags";
 import { buildSustainedGradientKeyMoments } from "./routeGradientMoments";
 import { expandKeyMomentsForDisplay } from "./routeKeyMomentPresentation";
-import RouteTakeaways from "./RouteTakeaways";
 
 export default function CourseSection({
   raceRecord,
@@ -209,7 +208,6 @@ export default function CourseSection({
         </section>
       )}
       {routeAnalysis && <KeyRouteMoments moments={keyMoments} routePoints={routeAnalysis.points} totalDistanceM={routeAnalysis.metrics.distanceKm * 1000} selectedMoment={selectedMoment} onSelect={selectMoment} />}
-      {routeAnalysis && <RouteTakeaways analysis={routeAnalysis} />}
     </div>
   );
 }

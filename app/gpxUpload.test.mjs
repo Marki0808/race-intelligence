@@ -88,8 +88,9 @@ test("request gate prevents overlap and ignores stale asynchronous completions",
 
 test("Route Mode starts its gate before reading the selected file and checks identity before publishing", async () => {
   const source = await readFile(new URL("./RouteMode.tsx", import.meta.url), "utf8");
-  const handler = source.slice(source.indexOf("async function handleFileChange"), source.indexOf("return (", source.indexOf("async function handleFileChange")));
+  const handler = source.slice(source.indexOf("async function handleSelectedFile"), source.indexOf("async function handleFileChange"));
   assert.ok(handler.indexOf("beginRouteRequest()") < handler.indexOf("readGpxUpload(file)"));
+  assert.match(source, /input\.value = ""/);
   assert.match(source, /disabled=\{isProcessing\}/);
   assert.match(source, /if \(requestGate\.current\.isCurrent\(requestId\)\)/);
   assert.match(source, /if \(requestGate\.current\.finish\(requestId\)\) setIsProcessing\(false\)/);

@@ -19,7 +19,7 @@ export function AvailabilityNotice({
   note?: string;
 }) {
   return (
-    <p className="rounded-xl bg-[#f4f2ed] px-4 py-3 text-sm leading-6 text-black/50">
+    <p className="rounded-xl bg-[#f4f2ed] px-4 py-3 text-sm leading-6 text-[var(--analysis-muted)]">
       {note ?? getUnavailableInformationMessage(state, subject)}
     </p>
   );
@@ -53,7 +53,7 @@ export function RaceInformationSources({
             href={source.url}
             target={isExternal ? "_blank" : undefined}
             rel={isExternal ? "noreferrer" : undefined}
-            className="inline-flex items-center gap-2 text-xs text-[#71805d] underline decoration-[#71805d]/30 underline-offset-4 transition hover:text-[#536b2e]"
+            className="inline-flex items-center gap-2 text-xs text-[#536b3e] underline decoration-[#536b3e]/30 underline-offset-4 transition hover:text-[#3e542b]"
           >
             {source.title}
             <RaceProvenanceBadge type={source.type} />

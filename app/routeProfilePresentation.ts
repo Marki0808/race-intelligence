@@ -1,5 +1,6 @@
 import type { RouteSection } from "./routeSectionEngine";
 import { routeSectionSelectionKey } from "./routeSectionSelection";
+import { formatDistanceMeters, type RouteUnitSystem } from "./routeUnits";
 
 export type NiceAxisScale = {
   minimum: number;
@@ -74,14 +75,12 @@ export function getRouteDistanceTicks(totalDistanceM: number, desiredTickCount =
   return [...new Set(ticks)].sort((left, right) => left - right);
 }
 
-export function formatRouteDistanceTick(distanceM: number, totalDistanceM: number): string {
-  const stepKm = getNiceAxisScale(0, Math.max(0, totalDistanceM), 7).step / 1000;
-  const stepDigits = Math.max(0, Math.ceil(-Math.log10(stepKm)));
-  const finishDigits = distanceM === totalDistanceM && stepKm >= 1 ? 1 : 0;
+export function formatRouteDistanceTick(distanceM: number, totalDistanceM: number, units: RouteUnitSystem = "metric"): string {
+  const step = getNiceAxisScale(0, Math.max(0, totalDistanceM), 7).step / (units === "metric" ? 1000 : 1000 * 1.609344);
+  const stepDigits = Math.max(0, Math.ceil(-Math.log10(step)));
+  const finishDigits = distanceM === totalDistanceM && step >= 1 ? 1 : 0;
   const digits = Math.min(4, Math.max(stepDigits, finishDigits));
-  const fixed = (distanceM / 1000).toFixed(digits);
-  const formatted = fixed.includes(".") ? fixed.replace(/0+$/, "").replace(/\.$/, "") : fixed;
-  return `${formatted || "0"} km`;
+  return formatDistanceMeters(distanceM, units, digits);
 }
 
 export type PositionedRouteDistanceTick = {
@@ -102,10 +101,11 @@ export function getPositionedRouteDistanceTicks(
   startX: number,
   endX: number,
   desiredTickCount = 7,
+  units: RouteUnitSystem = "metric",
 ): PositionedRouteDistanceTick[] {
   return getRouteDistanceTicks(totalDistanceM, desiredTickCount).map((distanceM) => ({
     distanceM,
-    label: formatRouteDistanceTick(distanceM, totalDistanceM),
+    label: formatRouteDistanceTick(distanceM, totalDistanceM, units),
     x: getRouteDistancePosition(distanceM, totalDistanceM, startX, endX),
     isFinish: distanceM === totalDistanceM,
   }));

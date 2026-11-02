@@ -1,5 +1,6 @@
 import type { GradientIntelligenceV1 } from "./gradientIntelligence.ts";
 import type { RouteSection } from "./routeSectionEngine.ts";
+import { formatNarrativeDistance, type RouteUnitSystem } from "./routeUnits.ts";
 import { buildRouteNarrativePhasesV2, type RouteNarrativePhaseV2, type RouteNarrativePhasesV2, type RouteNarrativeRouteContextV2 } from "./routeNarrativePhases.ts";
 
 export const ROUTE_SECTION_NARRATIVE_V2_PRESENTATION_VERSION = 2;
@@ -24,6 +25,7 @@ export function presentRouteSectionNarrativeV2(
   routeSections: readonly RouteSection[],
   target: RouteSection,
   routeContext?: RouteNarrativeRouteContextV2,
+  units: RouteUnitSystem = "metric",
 ): RouteSectionNarrativeV2 {
   const phases = buildRouteNarrativePhasesV2(gradient, routeSections, target);
   const base = { presentationVersion: 2 as const, algorithmVersion: 9 as const, sectionId: target.id, segmentIndex: target.segmentIndex };
@@ -31,7 +33,7 @@ export function presentRouteSectionNarrativeV2(
     return { ...base, status: phases.status, phases, paragraphs: fallback(phases.status), trace: [] };
   }
   const continuity = routeContext ? describeBoundaryContinuity(routeContext, target, phases) : [];
-  const story = composeStory(phases, target, routeSections, continuity);
+  const story = composeStory(phases, target, routeSections, continuity, units);
   const text = story.text;
   return {
     ...base,
@@ -50,7 +52,7 @@ export function presentRouteSectionNarrativeV2(
 
 type BoundaryClaim = { edge: "start" | "end"; direction: "climb" | "descent"; intervalIds: string[] };
 
-function composeStory(model: RouteNarrativePhasesV2, target: RouteSection, _routeSections: readonly RouteSection[], continuity: BoundaryClaim[]) {
+function composeStory(model: RouteNarrativePhasesV2, target: RouteSection, _routeSections: readonly RouteSection[], continuity: BoundaryClaim[], units: RouteUnitSystem) {
   const events = selectStoryEvents(model).slice(0, 3);
   const relevant = new Set<number>();
   const details: Array<{ startDistanceM: number; text: string; intervalIds: string[]; phase: RouteNarrativePhaseV2; continuity?: "start" | "end"; composed?: boolean }> = [];
@@ -61,14 +63,14 @@ function composeStory(model: RouteNarrativePhasesV2, target: RouteSection, _rout
     const phase = event.phase;
     const claim = continuity.find((item) => item.direction === phase.direction &&
       (item.edge === "start" ? phase.startDistanceM <= model.bounds!.startDistanceM + 100 : phase.endDistanceM >= model.bounds!.endDistanceM - 100));
-    details.push({ startDistanceM: phase.startDistanceM, text: featureSentence(phase, undefined, claim?.edge), intervalIds: phase.intervalIds, phase, continuity: claim?.edge });
+    details.push({ startDistanceM: phase.startDistanceM, text: featureSentence(phase, undefined, claim?.edge, undefined, units), intervalIds: phase.intervalIds, phase, continuity: claim?.edge });
   }
 
   // Mention only the longest materially uncertain stretch; all unknown intervals remain in structured phases.
   const unknown = model.phases.filter((phase) => phase.direction === "unknown")
     .sort((a, b) => b.distanceM - a.distanceM || a.startDistanceM - b.startDistanceM)[0];
   if (unknown && unknown.distanceM + 1 >= Math.max(1000, model.measurements!.distanceM * 0.1)) {
-    details.push({ startDistanceM: unknown.startDistanceM, text: `The profile is unclear from ${range(unknown.startDistanceM, unknown.endDistanceM)}.`, intervalIds: unknown.intervalIds, phase: unknown });
+    details.push({ startDistanceM: unknown.startDistanceM, text: `The profile is unclear from ${range(unknown.startDistanceM, unknown.endDistanceM, units)}.`, intervalIds: unknown.intervalIds, phase: unknown });
     model.phases.forEach((phase, index) => { if (phase === unknown) relevant.add(index); });
   }
   details.sort((a, b) => a.startDistanceM - b.startDistanceM);
@@ -90,16 +92,16 @@ function composeStory(model: RouteNarrativePhasesV2, target: RouteSection, _rout
     const endClaim = continuity.find((item) => item.edge === "end" && item.direction === last.phase.direction);
     const startText = startClaim
       ? `The ${mainDirection} carries into this section`
-      : `The ${mainDirection} from ${range(first.phase.startDistanceM, first.phase.endDistanceM)}`;
+      : `The ${mainDirection} from ${range(first.phase.startDistanceM, first.phase.endDistanceM, units)}`;
     const resumeGrade = notableGradeSegments(last.phase).sort((a, b) => Math.abs(b.averageNetGradePct) - Math.abs(a.averageNetGradePct))[0];
     const endText = endClaim
       ? "then continues into the next section"
       : phaseAverageIsSteep(last.phase)
-        ? `then resumes with a short, steep ${mainDirection} from ${range(last.phase.startDistanceM, last.phase.endDistanceM)}${resumeGrade ? ` averaging ${signedGrade(resumeGrade.averageNetGradePct)}` : ""}`
-        : `then resumes from ${range(last.phase.startDistanceM, last.phase.endDistanceM)}`;
+        ? `then resumes with a short, steep ${mainDirection} from ${range(last.phase.startDistanceM, last.phase.endDistanceM, units)}${resumeGrade ? ` averaging ${signedGrade(resumeGrade.averageNetGradePct)}` : ""}`
+        : `then resumes from ${range(last.phase.startDistanceM, last.phase.endDistanceM, units)}`;
     details.splice(index, 3, {
       startDistanceM: first.startDistanceM,
-      text: `${startText} is interrupted by ${reversePhrase} around km ${kmValue((interruption.phase.startDistanceM + interruption.phase.endDistanceM) / 2)}; it ${endText}.`,
+      text: `${startText} is interrupted by ${reversePhrase} around ${formatNarrativeDistance((interruption.phase.startDistanceM + interruption.phase.endDistanceM) / 2, units)}; it ${endText}.`,
       intervalIds: [...first.intervalIds, ...interruption.intervalIds, ...last.intervalIds],
       phase: first.phase,
       continuity: startClaim ? "start" : endClaim ? "end" : undefined,
@@ -131,8 +133,8 @@ function composeStory(model: RouteNarrativePhasesV2, target: RouteSection, _rout
       continue;
     }
     const sentence = !hasDescribedFeature
-      ? openingSentence(target, model, item.phase, item.continuity, unknownShare >= 0.3)
-      : featureSentence(item.phase, previousFeature, item.continuity, model.bounds);
+      ? openingSentence(target, model, item.phase, item.continuity, unknownShare >= 0.3, units)
+      : featureSentence(item.phase, previousFeature, item.continuity, model.bounds, units);
     text.push(sentence);
     previousFeature = item.phase;
     hasDescribedFeature = true;
@@ -163,8 +165,8 @@ const storyMeasuredFields = [
   "measurements.ascentM", "measurements.descentM", "measurements.netElevationChangeM",
 ];
 
-function openingSentence(target: RouteSection, model: RouteNarrativePhasesV2, phase: RouteNarrativePhaseV2, continuity?: "start" | "end", limitedCoverage = false) {
-  if (phase.direction === "rolling") return `The section rolls between climbs and descents from ${range(phase.startDistanceM, phase.endDistanceM)}.`;
+function openingSentence(target: RouteSection, model: RouteNarrativePhasesV2, phase: RouteNarrativePhaseV2, continuity: "start" | "end" | undefined, limitedCoverage: boolean, units: RouteUnitSystem) {
+  if (phase.direction === "rolling") return `The section rolls between climbs and descents from ${range(phase.startDistanceM, phase.endDistanceM, units)}.`;
   if (phase.direction === "low-vertical-movement") return "The opening stretch has little change in elevation.";
   const direction = phase.direction === "climb" ? "climb" : "descent";
   const adjective = phase.distanceM >= 4000 ? "a long " : phase.distanceM >= 1500 ? "a sustained " : phaseAverageIsSteep(phase) ? "a short, steep " : "a brief ";
@@ -172,34 +174,34 @@ function openingSentence(target: RouteSection, model: RouteNarrativePhasesV2, ph
   const isOpening = phase.startDistanceM <= model.bounds!.startDistanceM + 100;
   let movement: string;
   if (continuity === "start") movement = overallDirection && overallDirection !== (direction === "climb" ? "uphill" : "downhill")
-    ? `Although mostly ${overallDirection}, the ${direction} continues into this section through ${range(phase.startDistanceM, phase.endDistanceM)}`
+    ? `Although mostly ${overallDirection}, the ${direction} continues into this section through ${range(phase.startDistanceM, phase.endDistanceM, units)}`
     : overallDirection
-      ? `The route trends ${overallDirection}, with the ${direction} continuing into this section through ${range(phase.startDistanceM, phase.endDistanceM)}`
-      : `The ${direction} continues into this section through ${range(phase.startDistanceM, phase.endDistanceM)}`;
+      ? `The route trends ${overallDirection}, with the ${direction} continuing into this section through ${range(phase.startDistanceM, phase.endDistanceM, units)}`
+      : `The ${direction} continues into this section through ${range(phase.startDistanceM, phase.endDistanceM, units)}`;
   else if (continuity === "end") movement = overallDirection && overallDirection !== (direction === "climb" ? "uphill" : "downhill")
-    ? `Although mostly ${overallDirection}, a ${direction} from ${range(phase.startDistanceM, phase.endDistanceM)} continues into the next section`
-    : `The ${direction} from ${range(phase.startDistanceM, phase.endDistanceM)} continues into the next section`;
+    ? `Although mostly ${overallDirection}, a ${direction} from ${range(phase.startDistanceM, phase.endDistanceM, units)} continues into the next section`
+    : `The ${direction} from ${range(phase.startDistanceM, phase.endDistanceM, units)} continues into the next section`;
   else if (!limitedCoverage && overallDirection && overallDirection !== (direction === "climb" ? "uphill" : "downhill")) {
     movement = isOpening
-      ? `Although mostly ${overallDirection}, the section opens with ${adjective}${direction} from ${range(phase.startDistanceM, phase.endDistanceM)}`
-      : `Although mostly ${overallDirection}, a ${direction} interrupts the section from ${range(phase.startDistanceM, phase.endDistanceM)}`;
+      ? `Although mostly ${overallDirection}, the section opens with ${adjective}${direction} from ${range(phase.startDistanceM, phase.endDistanceM, units)}`
+      : `Although mostly ${overallDirection}, a ${direction} interrupts the section from ${range(phase.startDistanceM, phase.endDistanceM, units)}`;
   } else if (limitedCoverage) {
     movement = isOpening
-      ? `Measured portions open with ${adjective}${direction} from ${range(phase.startDistanceM, phase.endDistanceM)}`
-      : `A measured ${direction} stands out from ${range(phase.startDistanceM, phase.endDistanceM)}`;
+      ? `Measured portions open with ${adjective}${direction} from ${range(phase.startDistanceM, phase.endDistanceM, units)}`
+      : `A measured ${direction} stands out from ${range(phase.startDistanceM, phase.endDistanceM, units)}`;
   } else if (target.dominantRhythm === "rolling") {
-    movement = `The section rolls between climbs and descents, with ${adjective}${direction} from ${range(phase.startDistanceM, phase.endDistanceM)}`;
+    movement = `The section rolls between climbs and descents, with ${adjective}${direction} from ${range(phase.startDistanceM, phase.endDistanceM, units)}`;
   } else if (target.dominantRhythm === "flat") {
-    movement = `Most of the section has little elevation change, though ${adjective}${direction} runs from ${range(phase.startDistanceM, phase.endDistanceM)}`;
+    movement = `Most of the section has little elevation change, though ${adjective}${direction} runs from ${range(phase.startDistanceM, phase.endDistanceM, units)}`;
   } else if (overallDirection) movement = isOpening
-    ? `The route trends ${overallDirection}, opening with ${adjective}${direction} from ${range(phase.startDistanceM, phase.endDistanceM)}`
-    : `The route trends ${overallDirection}, with ${adjective}${direction} from ${range(phase.startDistanceM, phase.endDistanceM)}`;
-  else if (isOpening) movement = `The section opens with ${adjective}${direction} from ${range(phase.startDistanceM, phase.endDistanceM)}`;
-  else movement = `A ${direction} stands out from ${range(phase.startDistanceM, phase.endDistanceM)}`;
+    ? `The route trends ${overallDirection}, opening with ${adjective}${direction} from ${range(phase.startDistanceM, phase.endDistanceM, units)}`
+    : `The route trends ${overallDirection}, with ${adjective}${direction} from ${range(phase.startDistanceM, phase.endDistanceM, units)}`;
+  else if (isOpening) movement = `The section opens with ${adjective}${direction} from ${range(phase.startDistanceM, phase.endDistanceM, units)}`;
+  else movement = `A ${direction} stands out from ${range(phase.startDistanceM, phase.endDistanceM, units)}`;
   const gradeSegment = notableGradeSegments(phase).sort((a, b) =>
     Math.abs(b.averageNetGradePct) - Math.abs(a.averageNetGradePct) || b.distanceM - a.distanceM)[0];
   const grade = gradeSegment
-    ? `, including a steeper stretch from ${range(gradeSegment.startDistanceM, gradeSegment.endDistanceM)} averaging ${signedGrade(gradeSegment.averageNetGradePct)}`
+    ? `, including a steeper stretch from ${range(gradeSegment.startDistanceM, gradeSegment.endDistanceM, units)} averaging ${signedGrade(gradeSegment.averageNetGradePct)}`
     : Math.abs(phase.averageNetGradePct ?? 0) >= 10 ? `, averaging ${signedGrade(phase.averageNetGradePct!)} over this interval` : "";
   return `${movement}${grade}.`;
 }
@@ -209,11 +211,12 @@ function featureSentence(
   previous?: RouteNarrativePhaseV2,
   continuity?: "start" | "end",
   bounds?: RouteNarrativePhasesV2["bounds"],
+  units: RouteUnitSystem = "metric",
 ) {
-  if (phase.direction === "rolling") return `From there, the route alternates between climbs and descents through ${range(phase.startDistanceM, phase.endDistanceM)}.`;
-  if (phase.direction === "low-vertical-movement") return `The route briefly levels out from ${range(phase.startDistanceM, phase.endDistanceM)}.`;
+  if (phase.direction === "rolling") return `From there, the route alternates between climbs and descents through ${range(phase.startDistanceM, phase.endDistanceM, units)}.`;
+  if (phase.direction === "low-vertical-movement") return `The route briefly levels out from ${range(phase.startDistanceM, phase.endDistanceM, units)}.`;
   const direction = phase.direction === "climb" ? "climb" : "descent";
-  const location = range(phase.startDistanceM, phase.endDistanceM);
+  const location = range(phase.startDistanceM, phase.endDistanceM, units);
   const gapM = previous ? phase.startDistanceM - previous.endDistanceM : Number.POSITIVE_INFINITY;
   const adjacent = previous && previous.direction !== "unknown" && gapM >= -100 && gapM <= 100;
   let movement: string;
@@ -233,7 +236,7 @@ function featureSentence(
   const gradeSegment = notableGradeSegments(phase).sort((a, b) =>
     Math.abs(b.averageNetGradePct) - Math.abs(a.averageNetGradePct) || b.distanceM - a.distanceM)[0];
   const grade = gradeSegment
-    ? `, including a steeper stretch from ${range(gradeSegment.startDistanceM, gradeSegment.endDistanceM)} averaging ${signedGrade(gradeSegment.averageNetGradePct)}`
+    ? `, including a steeper stretch from ${range(gradeSegment.startDistanceM, gradeSegment.endDistanceM, units)} averaging ${signedGrade(gradeSegment.averageNetGradePct)}`
     : Math.abs(phase.averageNetGradePct ?? 0) >= 10 ? `, averaging ${signedGrade(phase.averageNetGradePct!)} over this interval` : "";
   return `${movement}${grade}.`;
 }
@@ -338,15 +341,15 @@ function describeBoundaryContinuity(
   return claims;
 }
 
-function range(startDistanceM: number, endDistanceM: number) {
-  return `km ${kmValue(startDistanceM)}–${kmValue(endDistanceM)}`;
+function range(startDistanceM: number, endDistanceM: number, units: RouteUnitSystem) {
+  if (units === "metric") return `km ${(startDistanceM / 1000).toFixed(1)}–${(endDistanceM / 1000).toFixed(1)}`;
+  return `${formatNarrativeDistance(startDistanceM, units)} to ${formatNarrativeDistance(endDistanceM, units)}`;
 }
 
 function signedGrade(grade: number) {
   return `${grade >= 0 ? "+" : "−"}${Math.abs(grade).toFixed(1)}%`;
 }
 
-function kmValue(distanceM: number) { return (distanceM / 1000).toFixed(1); }
 function fallback(status: RouteSectionNarrativeV2["status"]): string[] {
   if (status === "missing-data") return ["A section narrative is not available for this analysis."];
   if (status === "unsupported-version") return ["A section narrative is not available for this version of the elevation analysis."];

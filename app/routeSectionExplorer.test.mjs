@@ -14,8 +14,13 @@ const { clipRoutePointsToKeyMoment, clipRoutePointsToSection, findSelectedRouteS
 const profileUrl = new URL("./routeProfilePresentation.ts", import.meta.url);
 const profileSource = await readFile(profileUrl, "utf8");
 const profileJs = ts.transpile(profileSource, { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 });
+const unitsUrl = new URL("./routeUnits.ts", import.meta.url);
+const unitsSource = await readFile(unitsUrl, "utf8");
+const unitsJs = ts.transpile(unitsSource, { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 });
+const unitsModule = { exports: {} };
+new Function("exports", "require", "module", "__filename", "__dirname", unitsJs)(unitsModule.exports, require, unitsModule, unitsUrl.pathname, new URL(".", unitsUrl).pathname);
 const profileModule = { exports: {} };
-const profileRequire = (specifier) => specifier === "./routeSectionSelection" ? selectionModule.exports : require(specifier);
+const profileRequire = (specifier) => specifier === "./routeSectionSelection" ? selectionModule.exports : specifier === "./routeUnits" ? unitsModule.exports : require(specifier);
 new Function("exports", "require", "module", "__filename", "__dirname", profileJs)(profileModule.exports, profileRequire, profileModule, profileUrl.pathname, new URL(".", profileUrl).pathname);
 const { avoidRouteDistanceTickLabelOverlap, formatRouteDistanceTick, getNiceAxisScale, getPositionedRouteDistanceTicks, getRouteSectionBoundaryMarkers } = profileModule.exports;
 const evidenceUrl = new URL("./routeSectionEvidence.ts", import.meta.url);
@@ -192,7 +197,7 @@ test("the shared browser exposes accessible inline details without unexpected pr
   assert.ok(source.indexOf("{isSelected && (") < source.indexOf("<SectionDetail"));
   assert.ok(source.indexOf("<SectionDetail") < source.indexOf("</li>"));
   assert.equal((source.match(/<SectionDetail\s/g) ?? []).length, 1);
-  assert.match(source, /distanceKm\} km · \+\{section\.ascentM\} m \/ −\{section\.descentM\} m/);
+  assert.match(source, /formatRouteDistanceKm\(section\.distanceKm, units, 2\)[\s\S]*formatElevationMeters\(section\.ascentM, units\)[\s\S]*formatElevationMeters\(section\.descentM, units\)/);
   assert.match(source, /min-h-\[68px\]/);
   assert.match(source, /onSelectSection\(isSelected \? null : section\)/);
   assert.doesNotMatch(source, /scrollIntoView/);
@@ -286,7 +291,7 @@ test("Route Mode and Race Mode share the browser and clear the opposite map sele
   assert.match(browser, /whatToExpect\.map\(/);
   assert.doesNotMatch(browser, /Detailed elevation changes|Measured route changes|sortRouteEmbeddedEventsForDisplay/);
   assert.doesNotMatch(browser, /expectation\.paragraphs\.slice\(1\)/);
-  assert.match(browser, /presentRouteSectionNarrativeV2\(gradientIntelligence, routeSections, section, narrativeContext\)/);
+  assert.match(browser, /presentRouteSectionNarrativeV2\(gradientIntelligence, routeSections, section, narrativeContext, units\)/);
   assert.match(browser, /TERRAIN_INTELLIGENCE_V1_ENABLED && sectionKind === "Route Section" && <section[\s\S]*?<SectionSubheading>Mapped terrain<\/SectionSubheading>/);
   assert.match(browser, /getTerrainSectionPresentation\(section, terrainEvidenceState\)/);
   assert.match(browser, /unknownLabel/);

@@ -2,13 +2,17 @@
 
 import { useEffect } from "react";
 import type { MapillaryImageEvidence } from "./mapillaryTerrainProof";
+import type { RouteUnitSystem } from "./routeUnits";
+import { formatDistanceMeters } from "./routeUnits";
 
 export default function TerrainImageViewer({
   image,
   onClose,
+  units = "metric",
 }: {
   image: MapillaryImageEvidence | null;
   onClose: () => void;
+  units?: RouteUnitSystem;
 }) {
   useEffect(() => {
     if (!image) return;
@@ -39,7 +43,7 @@ export default function TerrainImageViewer({
         <div className="flex items-center justify-between gap-4 border-b border-black/10 px-5 py-4">
           <div>
             <h2 id="terrain-image-title" className="font-semibold">Terrain photo</h2>
-            <p className="mt-1 text-xs text-black/45">© Mapillary</p>
+            <p className="mt-1 text-xs text-[var(--analysis-muted)]">© Mapillary</p>
           </div>
           <button type="button" onClick={onClose} aria-label="Close terrain photo" className="rounded-full border border-black/10 px-3 py-1.5 text-sm hover:bg-black/5">Close</button>
         </div>
@@ -48,13 +52,13 @@ export default function TerrainImageViewer({
           // eslint-disable-next-line @next/next/no-img-element
           <img src={image.thumbnailUrl} alt="Mapillary terrain view" className="max-h-[65vh] w-full bg-black object-contain" />
         ) : (
-          <div className="flex min-h-56 items-center justify-center bg-[#f4f2ed] px-6 text-center text-sm text-black/50">
+          <div className="flex min-h-56 items-center justify-center bg-[#f4f2ed] px-6 text-center text-sm text-[var(--analysis-muted)]">
             Preview image is unavailable. The original Mapillary image can still be opened.
           </div>
         )}
         <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-4">
           <div className="text-sm text-black/60">
-            <p>~{image.distanceAlongRouteKm.toFixed(2)} km along route</p>
+            <p>~{formatDistanceMeters(image.distanceAlongRouteKm * 1000, units)} along route</p>
             {capturedDate && <p className="mt-1">Captured {capturedDate}</p>}
             <p className="mt-1">© Mapillary</p>
           </div>

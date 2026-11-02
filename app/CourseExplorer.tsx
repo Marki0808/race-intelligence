@@ -11,7 +11,9 @@ import { avoidRouteDistanceTickLabelOverlap, getNiceAxisScale, getPositionedRout
 import { nearestRouteProfilePoint } from "./routeProfileInspection";
 import { layoutKeyMomentProfileMarkers } from "./routeKeyMomentProfileMarkers";
 import { ROUTE_MAP_STYLES } from "./routeMapStyles";
-import { getElevationRange, ROUTE_ELEVATION_METRIC_DESCRIPTION } from "./routeElevationMetrics";
+import { getElevationRange, getRouteElevationMetricDescription } from "./routeElevationMetrics";
+import { RouteUnitToggle, useRouteUnits } from "./RouteUnitPreference";
+import { distanceUnit, elevationUnit, formatDistanceMeters, formatElevationMeters, formatElevationNumber } from "./routeUnits";
 
 export default function CourseExplorer({
   selectedMoment,
@@ -31,6 +33,7 @@ export default function CourseExplorer({
   eyebrow = "Course profile · GPX-derived",
   supportingText = "The elevation profile and route metrics are calculated from this GPX track.",
   showExtendedMetrics = false,
+  showUnitToggle = false,
   headingRef,
 }: {
   selectedMoment: string | null;
@@ -50,8 +53,10 @@ export default function CourseExplorer({
   eyebrow?: string;
   supportingText?: string;
   showExtendedMetrics?: boolean;
+  showUnitToggle?: boolean;
   headingRef?: Ref<HTMLHeadingElement>;
 }) {
+  const { units } = useRouteUnits();
   const [mapExpanded, setMapExpanded] = useState(false);
   const [mapReady, setMapReady] = useState(false);
   const mapRef = useRef<HTMLDivElement | null>(null);
@@ -239,6 +244,7 @@ export default function CourseExplorer({
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-white/55">{eyebrow}</p>
           <h2 ref={headingRef} tabIndex={-1} className="mt-3 break-words text-3xl font-semibold focus:outline-none sm:text-4xl">{heading}</h2>
           <p className="mt-3 text-sm leading-6 text-white/60">{supportingText}</p>
+          {showUnitToggle && points.length > 0 && <RouteUnitToggle />}
         </div>
 
         <div className="mt-7 rounded-2xl bg-[#202c26] px-3 py-5 sm:mt-9 sm:px-6 sm:py-7">
@@ -248,6 +254,7 @@ export default function CourseExplorer({
               selectedPoints={selectedSection ? selectedSectionPoints : selectedMomentPoints}
               minElevation={minimumElevation}
               maxElevation={maximumElevation}
+              units={units}
               selectedSection={selectedSection}
               selectedMomentInterval={selectedSection ? null : selectedMomentInterval}
               sections={sections}
@@ -277,13 +284,18 @@ export default function CourseExplorer({
               </button>}
             </div>
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-              <Metric label="Distance" value={`${displayedMetrics.distanceKm.toFixed(2)} km`} />
-              <Metric label="Elevation gain" value={`${displayedMetrics.elevationGainM.toLocaleString("en-US")} m+`} />
-              {showExtendedMetrics && <Metric label="Elevation loss" value={`${displayedMetrics.elevationLossM.toLocaleString("en-US")} m−`} />}
-              <Metric label="Highest point" value={`${Math.round(displayedMetrics.highestPointM).toLocaleString("en-US")} m`} />
-              {showExtendedMetrics && <Metric label="Lowest point" value={`${Math.round(displayedMetrics.lowestPointM).toLocaleString("en-US")} m`} />}
+              <Metric label="Distance" value={formatDistanceMeters(displayedMetrics.distanceKm * 1000, units)} />
+              <Metric label="Elevation gain" value={`${formatElevationMeters(displayedMetrics.elevationGainM, units)}+`} />
+              {showExtendedMetrics && <Metric label="Elevation loss" value={`${formatElevationMeters(displayedMetrics.elevationLossM, units)}−`} />}
+              <Metric label="Highest point" value={formatElevationMeters(displayedMetrics.highestPointM, units)} />
+              {showExtendedMetrics && <Metric label="Lowest point" value={formatElevationMeters(displayedMetrics.lowestPointM, units)} />}
             </div>
-            <p className="mt-3 max-w-3xl text-xs leading-5 text-white/45">{ROUTE_ELEVATION_METRIC_DESCRIPTION}</p>
+            <details className="mt-4 max-w-3xl rounded-xl border border-white/15 bg-white/[0.04] px-4 py-3 text-white/75">
+              <summary className="min-h-7 cursor-pointer text-sm font-semibold text-white marker:text-[#a7c957] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#a7c957]">
+                How elevation is calculated
+              </summary>
+              <p className="mt-3 text-xs leading-5 text-white/75">{getRouteElevationMetricDescription(units)}</p>
+            </details>
           </div>
         )}
       </div>
@@ -298,13 +310,13 @@ export default function CourseExplorer({
           disabled={points.length === 0}
           className="flex min-h-14 w-full items-center justify-between gap-4 px-5 text-left text-sm font-semibold transition hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[#a7c957] disabled:cursor-not-allowed disabled:opacity-50 sm:px-8"
         >
-          <span>{mapExpanded ? "Reduce map" : "Expand map"} <span className="ml-2 text-xs font-normal text-white/45">{mapExpanded ? "Large view" : "Compact view"}</span></span>
+          <span>{mapExpanded ? "Reduce map" : "Expand map"} <span className="ml-2 text-xs font-normal text-white/70">{mapExpanded ? "Large view" : "Compact view"}</span></span>
           <span aria-hidden="true" className="text-lg text-[#a7c957]">{mapExpanded ? "−" : "+"}</span>
         </button>
         <div id="course-explorer-map" className={`relative border-t border-white/10 bg-[#dfe3d8] transition-[height] duration-200 ${mapExpanded ? "h-[26rem] sm:h-[32rem] lg:h-[38rem]" : "h-56 sm:h-[17.5rem] lg:h-[17.5rem]"}`}>
           {(loading || error) && (
             <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#dfe3d8] p-6">
-              <div className="max-w-sm text-center text-sm leading-6 text-black/55">{loading ? "Loading course map…" : error}</div>
+              <div className="max-w-sm text-center text-sm leading-6 text-[var(--analysis-muted)]">{loading ? "Loading course map…" : error}</div>
             </div>
           )}
           <div ref={mapRef} className="absolute inset-0" />
@@ -320,7 +332,7 @@ export default function CourseExplorer({
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
-  return <div><p className="text-[10px] uppercase tracking-[0.16em] text-white/40 sm:text-xs">{label}</p><p className="mt-2 text-lg font-semibold sm:text-xl">{value}</p></div>;
+  return <div><p className="text-[10px] uppercase tracking-[0.16em] text-white/70 sm:text-xs">{label}</p><p className="mt-2 text-lg font-semibold sm:text-xl">{value}</p></div>;
 }
 
 export function ElevationProfile({
@@ -328,6 +340,7 @@ export function ElevationProfile({
   selectedPoints,
   minElevation,
   maxElevation,
+  units = "metric",
   selectedSection,
   selectedMomentInterval,
   sections,
@@ -341,6 +354,7 @@ export function ElevationProfile({
   selectedPoints: readonly RouteAnalysisData["points"][number][];
   minElevation: number;
   maxElevation: number;
+  units?: import("./routeUnits").RouteUnitSystem;
   selectedSection: RouteSection | null;
   selectedMomentInterval: ReturnType<typeof resolveKeyMomentInterval>;
   sections: readonly RouteSection[];
@@ -377,7 +391,7 @@ export function ElevationProfile({
   const totalDistance = Math.max(1, points.at(-1)?.distanceM ?? 1);
   const elevationScale = getNiceAxisScale(minElevation, maxElevation, 6);
   const desiredDistanceTickCount = Math.min(7, Math.max(3, Math.floor((width - plot.left - plot.right) / 48)));
-  const distanceTicks = avoidRouteDistanceTickLabelOverlap(getPositionedRouteDistanceTicks(totalDistance, plot.left, width - plot.right, desiredDistanceTickCount));
+  const distanceTicks = avoidRouteDistanceTickLabelOverlap(getPositionedRouteDistanceTicks(totalDistance, plot.left, width - plot.right, desiredDistanceTickCount, units));
   const boundaries = getRouteSectionBoundaryMarkers(sections);
   const positionedMomentMarkers = layoutKeyMomentProfileMarkers(momentMarkers, points, totalDistance, width, height);
   const xForDistance = (distanceM: number) => getRouteDistancePosition(distanceM, totalDistance, plot.left, width - plot.right);
@@ -460,13 +474,13 @@ export function ElevationProfile({
 
   return (
     <div className="relative">
-    <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} className="h-56 w-full touch-pan-y sm:h-64 lg:h-72" preserveAspectRatio="none" aria-label={momentMarkers.length ? "Full-route elevation profile with numbered, keyboard-accessible Key Moment markers." : "GPX-derived elevation profile. Hover to inspect elevation, or press and hold on touch. Select a section interval to update its metrics; selected Key Moments are highlighted."} role="group" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerLeave} onPointerLeave={onPointerLeave}>
-      <title>Elevation profile in meters across the route distance in kilometers</title>
+    <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} className="h-56 w-full touch-pan-y sm:h-64 lg:h-72" preserveAspectRatio="none" aria-label={`GPX elevation profile. Elevation is shown in ${units === "metric" ? "meters" : "feet"} and distance in ${units === "metric" ? "kilometers" : "miles"}. Hover to inspect values, or press and hold on touch. Select a section interval to update its metrics; selected Key Moments are highlighted.`} role="group" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerLeave} onPointerLeave={onPointerLeave}>
+      <title>Elevation profile in {elevationUnit(units)} across the route distance in {distanceUnit(units)}</title>
       {elevationScale.ticks.map((tick) => {
         const y = yForElevation(tick);
         return <g key={`elevation-${tick}`}>
           <line x1={plot.left} x2={width - plot.right} y1={y} y2={y} stroke="white" strokeOpacity="0.12" strokeWidth="1.5" />
-          <text x={plot.left - 6} y={y + 4} fill="white" fillOpacity="0.68" fontSize="11" textAnchor="end">{tick.toLocaleString("en-US", { maximumFractionDigits: Math.min(2, Math.max(0, Math.ceil(-Math.log10(elevationScale.step)))) })}</text>
+          <text x={plot.left - 6} y={y + 4} fill="white" fillOpacity="0.68" fontSize="11" textAnchor="end">{formatElevationNumber(tick, units)}</text>
         </g>;
       })}
       {distanceTicks.map(({ distanceM, label, x, isFinish }) => {
@@ -478,7 +492,7 @@ export function ElevationProfile({
       })}
       <line x1={plot.left} x2={plot.left} y1={plot.top} y2={height - plot.bottom} stroke="white" strokeOpacity="0.38" strokeWidth="2" />
       <line x1={plot.left} x2={width - plot.right} y1={height - plot.bottom} y2={height - plot.bottom} stroke="white" strokeOpacity="0.38" strokeWidth="2" />
-      <text x="12" y={plot.top + plotHeight / 2} transform={`rotate(-90 12 ${plot.top + plotHeight / 2})`} fill="white" fillOpacity="0.66" fontSize="11" textAnchor="middle">Elevation (m)</text>
+      <text x="12" y={plot.top + plotHeight / 2} transform={`rotate(-90 12 ${plot.top + plotHeight / 2})`} fill="white" fillOpacity="0.66" fontSize="11" textAnchor="middle">Elevation ({elevationUnit(units)})</text>
       {(selectedSection || selectedMomentInterval) && <rect
         x={xForDistance(selectedSection?.startPosition.distanceM ?? selectedMomentInterval!.startDistanceM)}
         y={plot.top}
@@ -523,7 +537,7 @@ export function ElevationProfile({
           pointerEvents="all"
           role="button"
           tabIndex={0}
-          aria-label={`Select ${sectionKind} ${ordinal}, track segment ${section.segmentIndex + 1}, ${section.startKm} to ${section.endKm} kilometers`}
+          aria-label={`Select ${sectionKind} ${ordinal}, track segment ${section.segmentIndex + 1}, ${formatDistanceMeters(section.startPosition.distanceM, units)} to ${formatDistanceMeters(section.endPosition.distanceM, units)}`}
           aria-pressed={selectedSection?.id === section.id && selectedSection.segmentIndex === section.segmentIndex}
           onClick={(event) => {
             if (event.detail > 0) {
@@ -557,7 +571,7 @@ export function ElevationProfile({
       </g>}
     </svg>
     {inspectedPoint && <div aria-live="polite" className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded-lg bg-white px-3 py-2 text-xs font-semibold text-[#17211c] shadow-lg" style={{ left: `${Math.max(30, Math.min(70, (xForDistance(inspectedPoint.distanceM) / width) * 100))}%`, top: `${Math.max(18, Math.min(86, (yForElevation(inspectedPoint.elevationM) / height) * 100))}%` }}>
-      {`${(inspectedPoint.distanceM / 1000).toFixed(2)} km · ${Math.round(inspectedPoint.elevationM)} m`}
+      {`${formatDistanceMeters(inspectedPoint.distanceM, units)} · ${formatElevationMeters(inspectedPoint.elevationM, units)}`}
     </div>}
     </div>
   );

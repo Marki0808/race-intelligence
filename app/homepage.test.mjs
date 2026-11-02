@@ -11,25 +11,48 @@ const [homePage, raceSearch, routeMode, resolver, featureFlags, raceEditionPage]
   readFile(new URL("./race/[raceId]/[year]/page.tsx", import.meta.url), "utf8"),
 ]);
 
-test("homepage is a generic product introduction with no Istria-specific presentation", () => {
+test("homepage presents the GPX product with a clearly illustrative route preview", () => {
   assert.match(homePage, /Don&apos;t just analyze the route\. Understand it\./);
   assert.doesNotMatch(homePage, /Istria|Buzet|Umag|2027 Edition|homepageRaceRecord|CourseCharacter|CourseSection|CourseAnalysis|RaceSources/);
-  assert.match(homePage, /Illustrative visual only\. No route or measured values are shown\./);
-  assert.match(homePage, /Illustrative elevation profile with no measured route data/);
+  assert.match(homePage, /Illustrative example/);
+  assert.match(homePage, /Fictional profile and description\. No real route or measured values are shown\./);
+  assert.match(homePage, /Illustrative trail elevation profile/);
+  assert.match(homePage, /Why analyze your route\?/);
 });
 
 test("Route Analysis is the only public V1 entry and Race Mode is centrally gated off", () => {
   assert.match(featureFlags, /RACE_MODE_V1_ENABLED = false/);
-  assert.match(homePage, /RACE_MODE_V1_ENABLED && <article[\s\S]*?<RaceGpxDiscovery\s*\/>/);
-  assert.match(homePage, /RACE_MODE_V1_ENABLED && <details[\s\S]*?<RaceSearch records=\{raceRegistry\}\s*\/>/);
-  assert.match(homePage, /Analyze a route/);
-  assert.match(homePage, /Route Analysis/);
-  assert.match(homePage, /Explore a GPX route/);
+  assert.doesNotMatch(homePage, /RaceGpxDiscovery|RaceSearch|Analyze a race|Race Mode/);
+  assert.match(homePage, /Analyze your route/);
   assert.doesNotMatch(homePage, /Will every race webpage provide a route\?/);
   assert.doesNotMatch(homePage, /Choose a race page or GPX file/);
   assert.doesNotMatch(homePage, /race or GPX course/);
-  assert.match(homePage, /Upload your GPX/);
+  assert.match(homePage, /<RouteMode embedded\s*\/>/);
+  assert.match(homePage, /href="#analyze"/);
+  assert.match(homePage, /href="#faq"/);
+  assert.match(homePage, /Understand the climbs|Explore meaningful sections|Know what to expect/);
   assert.doesNotMatch(homePage, /Choose how to start|Choose your starting point/);
+});
+
+test("landing sections are ordered with benefits before upload and the header CTA remains accessible", async () => {
+  const styles = await readFile(new URL("./globals.css", import.meta.url), "utf8");
+  const heroPosition = homePage.indexOf("Don&apos;t just analyze the route.");
+  const benefitsPosition = homePage.indexOf("Why analyze your route?");
+  const uploadPosition = homePage.indexOf("<RouteMode embedded");
+  const faqPosition = homePage.indexOf('id="faq"');
+  assert.ok(heroPosition >= 0 && heroPosition < benefitsPosition);
+  assert.ok(benefitsPosition < uploadPosition && uploadPosition < faqPosition);
+  assert.match(homePage, /href="#analyze" className="inline-flex[^"]*bg-\[#26382f\][^"]*text-white[^"]*hover:bg-\[#354b3f\][^"]*focus-visible:outline/);
+  assert.match(routeMode, /Choose GPX file/);
+  assert.match(routeMode, /bg-\[#b9d975\]/);
+  assert.match(routeMode, /id="analyze" className="topo-upload scroll-mt-24/);
+  assert.match(homePage, /id="faq" className="scroll-mt-24/);
+  assert.match(styles, /scroll-padding-top: 5\.5rem/);
+  assert.match(styles, /\.topo-hero[\s\S]*?linear-gradient\(105deg,[\s\S]*?url\("\/topographic-contours\.svg"\)/);
+  assert.match(styles, /\.topo-upload[\s\S]*?linear-gradient\(112deg,[\s\S]*?url\("\/topographic-contours\.svg"\)/);
+  const contours = await readFile(new URL("../public/topographic-contours.svg", import.meta.url), "utf8");
+  assert.match(contours, /stroke-opacity="\.48" stroke-width="1\.35"/);
+  assert.ok((contours.match(/<path/g) ?? []).length >= 10, "contour groups retain nested cartographic shapes");
 });
 
 test("old registered Race Mode URLs redirect to the primary GPX upload experience", () => {
@@ -37,8 +60,28 @@ test("old registered Race Mode URLs redirect to the primary GPX upload experienc
   assert.match(raceEditionPage, /resolveByRaceEdition/);
 });
 
-test("GPX upload remains the primary route analysis entry point", () => {
-  assert.match(homePage, /href="\/route"[\s\S]*?Upload a GPX route/);
+test("the homepage embeds the existing Route Mode upload and analysis workflow directly", () => {
+  assert.match(routeMode, /export default function RouteMode\(\{ embedded = false \}/);
+  assert.match(routeMode, /if \(embedded\)[\s\S]*?<section id="analyze"/);
+  assert.match(routeMode, /type="file"/);
+  assert.match(routeMode, /onChange=\{handleFileChange\}/);
+  assert.match(routeMode, /onDrop=/);
+  assert.match(routeMode, /readGpxUpload\(file\)/);
+  assert.match(routeMode, /<RouteAnalysisView/);
+  assert.match(routeMode, /input\.value = ""/);
+  assert.match(routeMode, /Your GPX is analyzed in this browser/);
+  assert.match(routeMode, /Free to use\. No account required\./);
+});
+
+test("homepage upload retains valid selection, invalid file feedback, and re-upload safeguards", async () => {
+  const uploadTests = await readFile(new URL("./gpxUpload.test.mjs", import.meta.url), "utf8");
+  assert.match(uploadTests, /valid GPX|valid file|accepts valid/i);
+  assert.match(uploadTests, /unsupported-file-name|invalid/i);
+  assert.match(routeMode, /handleSelectedFile\(file\)/);
+  assert.match(routeMode, /beginRouteRequest\(\)/);
+  assert.match(routeMode, /aria-live="polite"/);
+  assert.match(routeMode, /role="alert"/);
+  assert.match(routeMode, /requestGate\.current\.isCurrent\(requestId\)/);
 });
 
 test("preserved Race Mode modules remain available behind the V1 feature flag", () => {
@@ -61,7 +104,11 @@ test("Route Mode keeps the existing GPX file analysis flow", () => {
 
 test("homepage FAQ is data-driven and limited to supported application behavior", () => {
   assert.match(homePage, /const faqs = \[/);
+  assert.equal((homePage.match(/question: "/g) ?? []).length, 7);
   assert.match(homePage, /Frequently asked questions/);
-  assert.match(homePage, /Does the analysis predict my finish time\?/);
-  assert.match(homePage, /does not predict an individual runner’s performance/);
+  assert.match(homePage, /Can this predict how difficult a race will be for me\?/);
+  assert.match(homePage, /does not predict race time, trail surface, conditions or your personal effort/);
+  assert.match(homePage, /A derived route fingerprint may be checked against shared route records/);
+  assert.match(homePage, /Map tiles are requested for the geographic area you view/);
+  assert.doesNotMatch(homePage, /Brevo|Subscribe|newsletter/i);
 });

@@ -5,6 +5,7 @@ import {
 } from "./courseBriefNarrativeFacts.ts";
 import type { CourseBriefOutputV2 } from "./courseBriefCandidates.ts";
 import type { CourseBriefCandidate } from "./courseBriefCandidates.ts";
+import { formatNarrativeDistance, KILOMETERS_PER_MILE, METERS_PER_FOOT, type RouteUnitSystem } from "./routeUnits.ts";
 
 export const COURSE_BRIEF_WHOLE_ROUTE_NARRATIVE_VERSION = 1 as const;
 
@@ -27,6 +28,7 @@ export function composeCourseBriefWholeRouteNarrative(
   inputValue: unknown,
   structuralOutputValue: unknown,
   selectedCandidates: readonly CourseBriefCandidate[] = [],
+  units: RouteUnitSystem = "metric",
 ): CourseBriefWholeRouteNarrativeV1 | null {
   const validation = validateCourseBriefInputV2(inputValue);
   if (!validation.ok || !isValidStructuralOutput(structuralOutputValue, validation.input)) return null;
@@ -45,13 +47,13 @@ export function composeCourseBriefWholeRouteNarrative(
     if (timeline.length === 0) return [];
     const componentFacts = input.facts.filter((fact) => fact.segmentIndex === component.segmentIndex);
     const anchors = componentFacts.filter(isUsefulAnchor).sort((a, b) => a.startKm - b.startKm || a.factId.localeCompare(b.factId));
-    const texts = renderComponentStory(timeline, anchors, component.segmentIndex, input.route.components.length > 1);
+    const texts = renderComponentStory(timeline, anchors, component.segmentIndex, input.route.components.length > 1, units);
     const transitionFactIds = componentFacts.filter((fact): fact is Extract<NarrativeFact, { type: "STRUCTURAL_TRANSITION" }> =>
       fact.type === "STRUCTURAL_TRANSITION" && fact.eligibility.selectable).map(({ factId }) => factId);
     const sourceFactIds = [...new Set([
       ...timeline.flatMap((part) => part.sourceFactIds),
       ...transitionFactIds,
-      ...anchors.filter((anchor) => texts.some((text) => text.includes(anchorPhrase(anchor)))).map(({ factId }) => factId),
+      ...anchors.filter((anchor) => texts.some((text) => text.includes(anchorPhrase(anchor, units)))).map(({ factId }) => factId),
     ])];
     return texts.map((text, paragraphIndex) => ({ componentIndex: component.segmentIndex, paragraphIndex, text, sourceFactIds }));
   });
@@ -147,7 +149,7 @@ function coalesceAndGroupRhythm(parts: TimelinePart[], rhythmUnitIds: ReadonlySe
   return result;
 }
 
-function renderComponentStory(parts: TimelinePart[], anchors: NarrativeFact[], segmentIndex: number, disconnected: boolean): string[] {
+function renderComponentStory(parts: TimelinePart[], anchors: NarrativeFact[], segmentIndex: number, disconnected: boolean, units: RouteUnitSystem): string[] {
   const anchorByPart = new Map<number, NarrativeFact[]>();
   for (const anchor of anchors) {
     if (!isUsefulAnchor(anchor)) continue;
@@ -161,32 +163,37 @@ function renderComponentStory(parts: TimelinePart[], anchors: NarrativeFact[], s
   const first = parts[0];
   const sentences: string[] = [];
   if (parts.length === 1) {
-    sentences.push(`${componentLabel}${describeCharacter(first.character, true)}${disconnected ? " across this segment" : " across the route"}.`);
+      sentences.push(`${componentLabel}${describeCharacter(first.character)}${disconnected ? " across this track segment" : " across the route"}.`);
   } else {
-    sentences.push(`${componentLabel}${openingPhrase(first.character, disconnected)}${partEndPhrase(first)}${anchorPhraseForPart(anchorByPart.get(0) ?? [])}.`);
+    sentences.push(`${componentLabel}${openingPhrase(first.character, disconnected, first.endKm, units)}${anchorPhraseForPart(anchorByPart.get(0) ?? [], units)}.`);
     const rhythmIndexes = parts.flatMap((part, index) => part.character === "repeated-vertical" ? [index] : []);
     for (let index = 1; index < parts.length; index += 1) {
       const part = parts[index];
       if (parts.length === 4 && index === 1 && parts.every((item) => isDirectional(item.character)) &&
         parts.every((item, itemIndex) => itemIndex === 0 || item.character !== parts[itemIndex - 1].character)) {
         const following = parts[index + 1];
-        sentences.push(`The opening ${characterNoun(parts[0].character)} gives way to a ${characterNoun(part.character)}${partEndPhrase(part)}; from there, another ${characterNoun(following.character)} follows${partEndPhrase(following)}${anchorPhraseForPart(anchorByPart.get(index + 1) ?? [])}.`);
+        sentences.push(`The opening ${characterNoun(parts[0].character)} is followed by a ${characterNoun(part.character)} to around ${formatCoursePosition(part.endKm, units)}; from there, the route ${following.character === "climb-dominant" ? "climbs" : "descends"} again until around ${formatCoursePosition(following.endKm, units)}${anchorPhraseForPart(anchorByPart.get(index + 1) ?? [], units)}.`);
         index += 1;
         continue;
       }
       if (index === parts.length - 2 && part.character === "descent-dominant" && parts[index + 1].character === "low-vertical") {
-        const finish = parts[index + 1];
-        sentences.push(`A descent-led phase returns through about km ${formatKm(part.endKm)}, before the final stretch, with relatively little climbing and descending per kilometre${partEndPhrase(finish)}.`);
+        const endPhrase = disconnected ? "the end of this track segment" : "the finish";
+        sentences.push(`The route turns downhill again near ${formatCoursePosition(part.startKm, units)} and continues to around ${formatCoursePosition(part.endKm, units)}. After that, there is little elevation change to ${endPhrase}.`);
         index += 1;
         continue;
       }
       if (rhythmIndexes.includes(index)) {
-        const phrase = `${index === parts.length - 1 ? "Toward the finish" : `From around km ${formatKm(part.startKm)}`}, climbs and descents recur${partEndPhrase(part)}${anchorPhraseForPart(anchorByPart.get(index) ?? [])}.`;
+        const lead = index === parts.length - 1
+          ? disconnected ? "Near the end of this track segment" : "Toward the finish"
+          : `From around ${formatCoursePosition(part.startKm, units)}`;
+        const phrase = `${lead}, the route moves through repeated climbs and descents until around ${formatCoursePosition(part.endKm, units)}${anchorPhraseForPart(anchorByPart.get(index) ?? [], units)}.`;
         sentences.push(phrase);
       } else {
         const isLast = index === parts.length - 1;
-        const lead = isLast ? "Toward the finish" : `Around km ${formatKm(part.startKm)}`;
-        sentences.push(`${lead}, ${transitionPhrase(parts[index - 1].character, part.character, part)}${anchorPhraseForPart(anchorByPart.get(index) ?? [])}.`);
+        const lead = isLast
+          ? disconnected ? "Near the end of this track segment" : "Toward the finish"
+          : `Around ${formatCoursePosition(part.startKm, units)}`;
+        sentences.push(`${lead}, ${transitionPhrase(parts[index - 1].character, part.character, part, units)}${anchorPhraseForPart(anchorByPart.get(index) ?? [], units)}.`);
       }
     }
   }
@@ -196,52 +203,49 @@ function renderComponentStory(parts: TimelinePart[], anchors: NarrativeFact[], s
   return paragraphs;
 }
 
-function openingPhrase(character: string, componentLocal: boolean): string {
+function openingPhrase(character: string, componentLocal: boolean, endKm: number, units: RouteUnitSystem): string {
+  const endpoint = `until around ${formatCoursePosition(endKm, units)}`;
   if (componentLocal) {
     switch (character) {
-      case "climb-dominant": return "This segment begins with predominantly uphill travel";
-      case "descent-dominant": return "This segment begins with predominantly downhill travel";
-      case "repeated-vertical": return "Climbing and descending repeat from this segment's start";
-      case "low-vertical": return "This segment begins with relatively little climbing and descending";
-      default: return "This segment begins with a mix of climbing and descending";
+      case "climb-dominant": return `It begins with a climb that continues to around ${formatCoursePosition(endKm, units)}`;
+      case "descent-dominant": return `It begins with a descent that continues to around ${formatCoursePosition(endKm, units)}`;
+      case "repeated-vertical": return `Climbs and descents repeat from the start ${endpoint}`;
+      case "low-vertical": return `It starts with little elevation change ${endpoint}`;
+      default: return `It starts with a mix of climbing and descending ${endpoint}`;
     }
   }
   switch (character) {
-    case "climb-dominant": return "The route opens with predominantly uphill travel";
-    case "descent-dominant": return "The route opens with predominantly downhill travel";
-    case "repeated-vertical": return "Climbing and descending repeat from the start";
-    case "low-vertical": return "The route starts with relatively little climbing and descending";
-    default: return "The route opens with a mix of climbing and descending";
+    case "climb-dominant": return `The route opens with a climb that continues to around ${formatCoursePosition(endKm, units)}`;
+    case "descent-dominant": return `The route opens with a descent that continues to around ${formatCoursePosition(endKm, units)}`;
+    case "repeated-vertical": return `Climbs and descents repeat from the start ${endpoint}`;
+    case "low-vertical": return `The route starts with little elevation change ${endpoint}`;
+    default: return `The route opens with a mix of climbing and descending ${endpoint}`;
   }
 }
 
-function describeCharacter(character: string, wholeRoute: boolean): string {
+function describeCharacter(character: string): string {
   switch (character) {
-    case "climb-dominant": return wholeRoute ? "Climbing predominates" : "uphill travel predominates";
-    case "descent-dominant": return wholeRoute ? "Descending predominates" : "downhill travel predominates";
-    case "repeated-vertical": return "climbing and descending recur";
-    case "low-vertical": return "there is relatively little climbing and descending per kilometre";
-    default: return "climbing and descending are mixed";
+    case "climb-dominant": return "Climbing dominates";
+    case "descent-dominant": return "Descending dominates";
+    case "repeated-vertical": return "Climbs and descents repeat";
+    case "low-vertical": return "There is little elevation change";
+    default: return "Climbing and descending are mixed";
   }
 }
 
-function transitionPhrase(previous: string, next: string, part: TimelinePart): string {
-  const end = partEndPhrase(part);
-  if (previous === "climb-dominant" && next === "descent-dominant") return `the climb gives way to downhill travel${end}`;
-  if (previous === "descent-dominant" && next === "climb-dominant") return `the descent gives way to uphill travel${end}`;
-  if (next === "low-vertical") return `elevation changes become relatively small${end}`;
-  if (next === "repeated-vertical") return `climbs and descents begin to recur${end}`;
-  if (previous === "repeated-vertical" && next === "descent-dominant") return `the repeated ups and downs give way to a descent-led stretch${end}`;
-  if (next === "mixed") return `the profile becomes more mixed${end}`;
-  return `climbing or descending predominates${end}`;
+function transitionPhrase(previous: string, next: string, part: TimelinePart, units: RouteUnitSystem): string {
+  const endpoint = `around ${formatCoursePosition(part.endKm, units)}`;
+  if (previous === "climb-dominant" && next === "descent-dominant") return `the route turns downhill and continues to ${endpoint}`;
+  if (previous === "descent-dominant" && next === "climb-dominant") return `the route begins climbing again and continues to ${endpoint}`;
+  if (next === "low-vertical") return `the climbs and descents become smaller until ${endpoint}`;
+  if (next === "repeated-vertical") return `the route settles into repeated climbs and descents until ${endpoint}`;
+  if (previous === "repeated-vertical" && next === "descent-dominant") return `after repeated climbs and descents, the route settles into a longer descent that continues to ${endpoint}`;
+  if (next === "mixed") return `the profile becomes more varied until ${endpoint}`;
+  return `climbing and descending remain mixed until ${endpoint}`;
 }
 
 function characterNoun(character: string): string {
   return character === "climb-dominant" ? "climb" : "descent";
-}
-
-function partEndPhrase(part: TimelinePart): string {
-  return ` through about km ${formatKm(part.endKm)}`;
 }
 
 function isUsefulAnchor(fact: NarrativeFact): fact is Extract<NarrativeFact, { type: "ANCHOR_WITHIN_UNIT" }> {
@@ -250,18 +254,21 @@ function isUsefulAnchor(fact: NarrativeFact): fact is Extract<NarrativeFact, { t
     fact.measurements.distanceKm !== null && fact.measurements.elevationChangeM !== null;
 }
 
-function anchorPhrase(anchor: Extract<NarrativeFact, { type: "ANCHOR_WITHIN_UNIT" }>): string {
+function anchorPhrase(anchor: Extract<NarrativeFact, { type: "ANCHOR_WITHIN_UNIT" }>, units: RouteUnitSystem): string {
   const length = anchor.measurements.distanceKm!;
   const change = anchor.measurements.elevationChangeM!;
-  const description = anchor.eventKind === "climb" ? "climb" : "descent";
-  const distinction = anchor.roles.includes("longest") && anchor.roles.includes("largest") ? "longest and largest detected" :
-    anchor.roles.includes("longest") ? "longest detected" : "largest detected";
-  return `, including the route's ${distinction} ${description} (${formatKm(length)} km, ${Math.round(change)} m ${anchor.eventKind === "climb" ? "ascent" : "descent"})`;
+  const changeWord = anchor.eventKind === "climb" ? "ascent" : "descent";
+  const changeVerb = changeWord === "ascent" ? "gaining" : "losing";
+  const feature = anchor.eventKind === "climb" ? "climb" : "descent";
+  const distinction = anchor.roles.includes("longest")
+    ? `the route's longest ${feature}`
+    : changeWord === "ascent" ? "the climb with the greatest ascent" : "the descent with the greatest elevation loss";
+  return `, including ${distinction} (${units === "metric" ? `${formatKm(length)} km` : `${formatKm(length / KILOMETERS_PER_MILE)} mi`}, ${changeVerb} ${units === "metric" ? `${Math.round(change)} m` : `${Math.round(change / METERS_PER_FOOT)} ft`})`;
 }
 
-function anchorPhraseForPart(anchors: NarrativeFact[]): string {
+function anchorPhraseForPart(anchors: NarrativeFact[], units: RouteUnitSystem): string {
   const anchor = anchors.filter(isUsefulAnchor).sort((a, b) => anchorPriority(b) - anchorPriority(a))[0];
-  return anchor ? anchorPhrase(anchor) : "";
+  return anchor ? anchorPhrase(anchor, units) : "";
 }
 
 function anchorPriority(fact: Extract<NarrativeFact, { type: "ANCHOR_WITHIN_UNIT" }>): number {
@@ -272,6 +279,8 @@ function isDirectional(character: string): boolean {
   return character === "climb-dominant" || character === "descent-dominant";
 }
 
-function formatKm(value: number): string {
-  return (Math.round(value * 10) / 10).toFixed(1);
+function formatCoursePosition(km: number, units: RouteUnitSystem): string {
+  return units === "metric" ? `km ${formatKm(km)}` : formatNarrativeDistance(km * 1000, units);
 }
+
+function formatKm(value: number): string { return (Math.round(value * 10) / 10).toFixed(1); }

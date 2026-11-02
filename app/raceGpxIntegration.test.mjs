@@ -15,8 +15,8 @@ const [home, discoveryUi, routeMode, downloadModule, downloadRoute, downloadHand
 
 test("race discovery remains implemented but is gated off from the public V1 homepage", () => {
   assert.match(featureFlags, /RACE_MODE_V1_ENABLED = false/);
-  assert.match(home, /RACE_MODE_V1_ENABLED && <article[\s\S]*?<RaceGpxDiscovery\s*\/>/);
-  assert.match(home, /href="\/route"[\s\S]*?Upload a GPX route/);
+  assert.doesNotMatch(home, /RaceGpxDiscovery|RaceSearch|Race Mode|Analyze a race/);
+  assert.match(home, /<RouteMode embedded\s*\/>/);
   assert.match(discoveryUi, /\/api\/race-gpx-discovery/);
 });
 
@@ -47,7 +47,7 @@ test("discovery loading is bounded, duplicate submits are blocked, and errors re
 });
 
 test("supported-race registry lookup remains independent from official-page discovery state", () => {
-  assert.match(home, /RACE_MODE_V1_ENABLED && <details[\s\S]*?<RaceSearch records=\{raceRegistry\}\s*\/>/);
+  assert.doesNotMatch(home, /RaceSearch|raceRegistry/);
   assert.doesNotMatch(home, /RaceGpxDiscovery[^<]*busy|RaceSearch[^<]*busy/);
   assert.match(discoveryUi, /const \[raceUrl, setRaceUrl\] = useState\(""\)/);
   assert.match(discoveryUi, /const \[status, setStatus\] = useState/);

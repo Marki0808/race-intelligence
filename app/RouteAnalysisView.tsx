@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useState, type Ref } from "react";
 import CourseExplorer from "./CourseExplorer";
+import ClimbingProfile from "./ClimbingProfile";
 import CourseBriefView from "./CourseBriefView";
 import RouteSectionBrowser, { RouteSectionBrowserHeading } from "./RouteSectionBrowser";
 import TerrainEvidenceAction from "./TerrainEvidenceAction";
@@ -34,13 +35,13 @@ import { TERRAIN_INTELLIGENCE_V1_ENABLED } from "./featureFlags";
 import { toggleKeyMomentSelection } from "./routeSectionSelection";
 import { buildSustainedGradientKeyMoments } from "./routeGradientMoments";
 import { expandKeyMomentsForDisplay } from "./routeKeyMomentPresentation";
-import RouteTakeaways from "./RouteTakeaways";
 import FeedbackForm from "./FeedbackForm";
 import { buildAidStationSections } from "./aidStationSections";
 import CustomSectionControls from "./CustomSectionControls";
 import { appendCustomSectionBoundary, buildCustomRouteSections, createCustomSectionPlan, type CustomSectionPlan } from "./customRouteSections";
 import { buildGradientIntelligenceV1 } from "./gradientIntelligence";
 import { buildRouteNarrativeRouteContextV2 } from "./routeNarrativePhases";
+import { useRouteUnits } from "./RouteUnitPreference";
 
 export default function RouteAnalysisView({
   analysis,
@@ -55,6 +56,7 @@ export default function RouteAnalysisView({
   sharedCache?: SharedRouteCache | null;
   analysisHeadingRef?: Ref<HTMLHeadingElement>;
 }) {
+  const { units } = useRouteUnits();
   type ViewState = { analysis: RouteAnalysisData; selectedMoment: string | null; selectedSectionKey: string | null; segmentationMode: "terrain" | "custom" | "aid-station"; selectedImage: MapillaryImageEvidence | null };
   const [viewState, setViewState] = useState<ViewState>(() => ({ analysis, selectedMoment: null, selectedSectionKey: null, segmentationMode: "terrain", selectedImage: null }));
   const currentViewState = viewState.analysis === analysis ? viewState : { analysis, selectedMoment: null, selectedSectionKey: null, segmentationMode: "terrain" as const, selectedImage: null };
@@ -77,7 +79,7 @@ export default function RouteAnalysisView({
   const [customPlanState, setCustomPlanState] = useState(() => ({ analysis, plan: createCustomSectionPlan() }));
   const customPlan = useMemo(() => customPlanState.analysis === analysis ? customPlanState.plan : createCustomSectionPlan(), [customPlanState, analysis]);
   const routeDistanceM = analysis.points.at(-1)?.distanceM ?? 0;
-  const customSections = useMemo(() => buildCustomRouteSections(analysis, customPlan), [analysis, customPlan]);
+  const customSections = useMemo(() => buildCustomRouteSections(analysis, customPlan, units), [analysis, customPlan, units]);
   const showingCustomSections = segmentationMode === "custom";
   const showingAidStationSections = segmentationMode === "aid-station" && aidStationSections.available;
   const activeSections = showingCustomSections
@@ -248,8 +250,10 @@ export default function RouteAnalysisView({
             loading={false}
             error=""
             showExtendedMetrics
+            showUnitToggle
           />
-          <CourseBriefView routeAnalysis={analysis} routeKey={routeFingerprint?.routeFingerprint ?? analysis.name} />
+          <ClimbingProfile routeDynamics={analysis.routeDynamics} />
+          <CourseBriefView routeAnalysis={analysis} routeKey={routeFingerprint?.routeFingerprint ?? analysis.name} units={units} />
         </div>
       </section>
 
@@ -258,10 +262,10 @@ export default function RouteAnalysisView({
           <RouteSectionBrowserHeading controls={(
             <>
               <div className="mt-4 inline-flex flex-wrap rounded-full border border-black/10 bg-[#f4f2ed] p-1" role="group" aria-label="Route section view">
-                <button type="button" aria-pressed={segmentationMode === "terrain" || (segmentationMode === "aid-station" && !showingAidStationSections)} onClick={() => updateViewState({ segmentationMode: "terrain", selectedSectionKey: null })} className={`min-h-10 rounded-full px-4 text-sm font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d] ${segmentationMode === "terrain" || (segmentationMode === "aid-station" && !showingAidStationSections) ? "bg-[#17211c] text-white" : "text-black/55 hover:bg-white"}`}>Terrain Sections</button>
-                <button type="button" aria-pressed={showingCustomSections} onClick={() => updateViewState({ segmentationMode: "custom", selectedSectionKey: null })} className={`min-h-10 rounded-full px-4 text-sm font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d] ${showingCustomSections ? "bg-[#17211c] text-white" : "text-black/55 hover:bg-white"}`}>Custom Sections</button>
-                {aidStationSections.available && <button type="button" aria-label={aidStationSections.positionMode === "official-kilometer-approximate" ? "Aid Station Sections, boundaries use approximate official kilometer positions" : "Aid Station Sections"} aria-pressed={showingAidStationSections} onClick={() => updateViewState({ segmentationMode: "aid-station", selectedSectionKey: null })} className={`min-h-10 rounded-full px-4 text-sm font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d] ${showingAidStationSections ? "bg-[#17211c] text-white" : "text-black/55 hover:bg-white"}`}>
-                  {aidStationSections.positionMode === "official-kilometer-approximate" ? "Aid Station Sections · approx. km" : "Aid Station Sections"}
+                <button type="button" aria-pressed={segmentationMode === "terrain" || (segmentationMode === "aid-station" && !showingAidStationSections)} onClick={() => updateViewState({ segmentationMode: "terrain", selectedSectionKey: null })} className={`min-h-10 rounded-full px-4 text-sm font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d] ${segmentationMode === "terrain" || (segmentationMode === "aid-station" && !showingAidStationSections) ? "bg-[#17211c] text-white" : "text-[var(--analysis-muted)] hover:bg-white"}`}>Terrain Sections</button>
+                <button type="button" aria-pressed={showingCustomSections} onClick={() => updateViewState({ segmentationMode: "custom", selectedSectionKey: null })} className={`min-h-10 rounded-full px-4 text-sm font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d] ${showingCustomSections ? "bg-[#17211c] text-white" : "text-[var(--analysis-muted)] hover:bg-white"}`}>Custom Sections</button>
+                {aidStationSections.available && <button type="button" aria-label={aidStationSections.positionMode === "official-kilometer-approximate" ? `Aid Station Sections, boundaries use approximate official source positions displayed in ${units === "metric" ? "kilometers" : "miles"}` : "Aid Station Sections"} aria-pressed={showingAidStationSections} onClick={() => updateViewState({ segmentationMode: "aid-station", selectedSectionKey: null })} className={`min-h-10 rounded-full px-4 text-sm font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d] ${showingAidStationSections ? "bg-[#17211c] text-white" : "text-[var(--analysis-muted)] hover:bg-white"}`}>
+                  {aidStationSections.positionMode === "official-kilometer-approximate" ? `Aid Station Sections · approx. ${units === "metric" ? "km" : "mi"}` : "Aid Station Sections"}
                 </button>}
               </div>
               {showingCustomSections && <CustomSectionControls plan={customPlan} routeDistanceM={routeDistanceM} errors={customSections.available ? [] : customSections.errors} onChange={updateCustomPlan} onAdd={addCustomBoundary} />}
@@ -274,10 +278,9 @@ export default function RouteAnalysisView({
       </section>
 
       <KeyRouteMoments moments={keyMoments} routePoints={analysis.points} totalDistanceM={analysis.metrics.distanceKm * 1000} selectedMoment={selectedMoment} onSelect={selectMoment} />
-      <RouteTakeaways analysis={analysis} />
       <FeedbackForm />
 
-      <TerrainImageViewer image={selectedImage} onClose={() => updateViewState({ selectedImage: null })} />
+      <TerrainImageViewer image={selectedImage} onClose={() => updateViewState({ selectedImage: null })} units={units} />
     </>
   );
 }

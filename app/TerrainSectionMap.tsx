@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Layer, Map as LeafletMap } from "leaflet";
 import type { GpxRoutePointData } from "./gpxAnalysis";
 import type { RouteSection } from "./routeSectionEngine";
+import type { RouteUnitSystem } from "./routeUnits";
+import { formatRouteDistanceKm } from "./routeUnits";
 import { clipRoutePointsToSection } from "./routeSectionSelection";
 import { groupAnalyzedPointsBySegment } from "./gpxAnalysis";
 import { ROUTE_MAP_STYLES } from "./routeMapStyles";
@@ -13,11 +15,13 @@ export default function TerrainSectionMap({
   section,
   startDistanceKm,
   endDistanceKm,
+  units = "metric",
 }: {
   points: readonly GpxRoutePointData[];
   section: Pick<RouteSection, "id" | "segmentIndex" | "startPosition" | "endPosition">;
   startDistanceKm: number;
   endDistanceKm: number;
+  units?: RouteUnitSystem;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<LeafletMap | null>(null);
@@ -76,6 +80,6 @@ export default function TerrainSectionMap({
   }, [mapReady, points, section]);
 
   return points.length >= 2 ? (
-    <div ref={containerRef} className="mt-3 h-56 w-full min-w-0 overflow-hidden rounded-xl border border-black/10 bg-[#e7e8e2] sm:h-64" role="region" aria-label={`Full route map with Route Section ${startDistanceKm} to ${endDistanceKm} kilometres highlighted in dark line. OpenStreetMap basemap.`} />
-  ) : <div className="mt-3 flex h-56 w-full items-center justify-center rounded-xl border border-black/10 bg-[#e7e8e2] px-4 text-center text-sm text-black/45" role="note">The full route map is unavailable because this analysis has fewer than two location points.</div>;
+    <div ref={containerRef} className="mt-3 h-56 w-full min-w-0 overflow-hidden rounded-xl border border-black/10 bg-[#e7e8e2] sm:h-64" role="region" aria-label={`Full route map with Route Section ${formatRouteDistanceKm(startDistanceKm, units, 2)} to ${formatRouteDistanceKm(endDistanceKm, units, 2)} highlighted in dark line. OpenStreetMap basemap.`} />
+  ) : <div className="mt-3 flex h-56 w-full items-center justify-center rounded-xl border border-black/10 bg-[#e7e8e2] px-4 text-center text-sm text-[var(--analysis-muted)]" role="note">The full route map is unavailable because this analysis has fewer than two location points.</div>;
 }
