@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import RouteAnalysisView from "./RouteAnalysisView";
+import FeedbackForm from "./FeedbackForm";
 import {
   analyzeGpxRoute,
   GpxAnalysisError,
@@ -200,7 +202,7 @@ export default function RouteMode({ embedded = false }: { embedded?: boolean }) 
     </div>
   );
 
-  const analysisView = analysis && <RouteUnitPreferenceProvider><div className="route-analysis-surface"><RouteAnalysisView
+  const analysisView = analysis && <RouteUnitPreferenceProvider><div className={`route-analysis-surface${embedded ? " route-analysis-frame" : ""}`}><RouteAnalysisView
     key={routeFingerprint?.routeFingerprint ?? analysis.name}
     analysis={analysis}
     analysisHeadingRef={analysisHeadingRef}
@@ -211,21 +213,24 @@ export default function RouteMode({ embedded = false }: { embedded?: boolean }) 
 
   if (embedded) {
     return (
-      <section id="analyze" className="topo-upload scroll-mt-24 text-white">
-        <div className="mx-auto max-w-7xl px-6 py-16 sm:py-20 lg:px-10">
-          <div className="grid gap-9 lg:grid-cols-[.8fr_1fr] lg:items-center">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#c2df7a]">Start with your GPX</p>
-              <h2 className="mt-3 text-3xl font-semibold tracking-[-0.035em] sm:text-4xl">Analyze your route</h2>
-              <p className="mt-4 max-w-lg text-sm leading-6 text-white/75 sm:text-base">
-                Choose a route file to explore its elevation profile, meaningful sections and key moments.
-              </p>
+      <>
+        <section id="analyze" className="topo-upload scroll-mt-24 text-white">
+          <div className="mx-auto max-w-7xl px-6 py-16 sm:py-20 lg:px-10">
+            <div className="grid gap-9 lg:grid-cols-[.8fr_1fr] lg:items-center">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#c2df7a]">Start with your GPX</p>
+                <h2 className="mt-3 text-3xl font-semibold tracking-[-0.035em] sm:text-4xl">Analyze your route</h2>
+                <p className="mt-4 max-w-lg text-sm leading-6 text-white/75 sm:text-base">
+                  Choose a route file to explore its elevation profile, meaningful sections and key moments.
+                </p>
+              </div>
+              {uploadPanel}
             </div>
-            {uploadPanel}
+            {analysisView}
           </div>
-          {analysisView}
-        </div>
-      </section>
+        </section>
+        {analysis && <FeedbackForm />}
+      </>
     );
   }
 
@@ -233,8 +238,9 @@ export default function RouteMode({ embedded = false }: { embedded?: boolean }) 
     <main className="min-h-screen bg-[#f4f2ed] text-[#17211c]">
       <nav className="border-b border-white/10 bg-[#17211c]">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6 lg:px-10">
-          <Link href="/" className="text-sm font-bold tracking-[0.18em] text-white">
-            RACE<span className="text-[#a7c957]">{"//"}</span>SCOPE
+          <Link href="/" className="rounded bg-[#f4f2ed] px-2 py-1" aria-label="Endurset home">
+            <Image src="/brand/endurset-e.png" alt="" width={417} height={314} priority sizes="36px" className="block h-auto w-9 min-[380px]:hidden" />
+            <Image src="/brand/endurset-wordmark.png" alt="" width={2015} height={314} priority sizes="(max-width: 640px) 34vw, 160px" className="hidden h-auto w-[clamp(102px,34vw,160px)] min-[380px]:block" />
           </Link>
           <Link href="/" className="text-sm text-white/60 transition hover:text-white">
             Home
@@ -259,6 +265,7 @@ export default function RouteMode({ embedded = false }: { embedded?: boolean }) 
       </section>
 
       {analysisView}
+      {analysis && <FeedbackForm />}
     </main>
   );
 }

@@ -166,35 +166,16 @@ function renderComponentStory(parts: TimelinePart[], anchors: NarrativeFact[], s
       sentences.push(`${componentLabel}${describeCharacter(first.character)}${disconnected ? " across this track segment" : " across the route"}.`);
   } else {
     sentences.push(`${componentLabel}${openingPhrase(first.character, disconnected, first.endKm, units)}${anchorPhraseForPart(anchorByPart.get(0) ?? [], units)}.`);
-    const rhythmIndexes = parts.flatMap((part, index) => part.character === "repeated-vertical" ? [index] : []);
     for (let index = 1; index < parts.length; index += 1) {
       const part = parts[index];
-      if (parts.length === 4 && index === 1 && parts.every((item) => isDirectional(item.character)) &&
-        parts.every((item, itemIndex) => itemIndex === 0 || item.character !== parts[itemIndex - 1].character)) {
-        const following = parts[index + 1];
-        sentences.push(`The opening ${characterNoun(parts[0].character)} is followed by a ${characterNoun(part.character)} to around ${formatCoursePosition(part.endKm, units)}; from there, the route ${following.character === "climb-dominant" ? "climbs" : "descends"} again until around ${formatCoursePosition(following.endKm, units)}${anchorPhraseForPart(anchorByPart.get(index + 1) ?? [], units)}.`);
-        index += 1;
-        continue;
-      }
       if (index === parts.length - 2 && part.character === "descent-dominant" && parts[index + 1].character === "low-vertical") {
         const endPhrase = disconnected ? "the end of this track segment" : "the finish";
-        sentences.push(`The route turns downhill again near ${formatCoursePosition(part.startKm, units)} and continues to around ${formatCoursePosition(part.endKm, units)}. After that, there is little elevation change to ${endPhrase}.`);
+        sentences.push(`A final descent carries the route to around ${formatCoursePosition(part.endKm, units)}${anchorPhraseForPart(anchorByPart.get(index) ?? [], units)}. Little elevation change remains from there to ${endPhrase} at ${formatCoursePosition(parts[index + 1].endKm, units)}.`);
         index += 1;
         continue;
       }
-      if (rhythmIndexes.includes(index)) {
-        const lead = index === parts.length - 1
-          ? disconnected ? "Near the end of this track segment" : "Toward the finish"
-          : `From around ${formatCoursePosition(part.startKm, units)}`;
-        const phrase = `${lead}, the route moves through repeated climbs and descents until around ${formatCoursePosition(part.endKm, units)}${anchorPhraseForPart(anchorByPart.get(index) ?? [], units)}.`;
-        sentences.push(phrase);
-      } else {
-        const isLast = index === parts.length - 1;
-        const lead = isLast
-          ? disconnected ? "Near the end of this track segment" : "Toward the finish"
-          : `Around ${formatCoursePosition(part.startKm, units)}`;
-        sentences.push(`${lead}, ${transitionPhrase(parts[index - 1].character, part.character, part, units)}${anchorPhraseForPart(anchorByPart.get(index) ?? [], units)}.`);
-      }
+      sentences.push(transitionSentence(parts[index - 1], part, index === parts.length - 1,
+        disconnected && index === parts.length - 1, anchorPhraseForPart(anchorByPart.get(index) ?? [], units), units));
     }
   }
   if (sentences.length <= 3) return [sentences.join(" ")];
@@ -209,7 +190,7 @@ function openingPhrase(character: string, componentLocal: boolean, endKm: number
     switch (character) {
       case "climb-dominant": return `It begins with a climb that continues to around ${formatCoursePosition(endKm, units)}`;
       case "descent-dominant": return `It begins with a descent that continues to around ${formatCoursePosition(endKm, units)}`;
-      case "repeated-vertical": return `Climbs and descents repeat from the start ${endpoint}`;
+      case "repeated-vertical": return `Climbs and descents alternate from the start ${endpoint}`;
       case "low-vertical": return `It starts with little elevation change ${endpoint}`;
       default: return `It starts with a mix of climbing and descending ${endpoint}`;
     }
@@ -217,7 +198,7 @@ function openingPhrase(character: string, componentLocal: boolean, endKm: number
   switch (character) {
     case "climb-dominant": return `The route opens with a climb that continues to around ${formatCoursePosition(endKm, units)}`;
     case "descent-dominant": return `The route opens with a descent that continues to around ${formatCoursePosition(endKm, units)}`;
-    case "repeated-vertical": return `Climbs and descents repeat from the start ${endpoint}`;
+    case "repeated-vertical": return `Climbs and descents alternate from the start ${endpoint}`;
     case "low-vertical": return `The route starts with little elevation change ${endpoint}`;
     default: return `The route opens with a mix of climbing and descending ${endpoint}`;
   }
@@ -233,19 +214,54 @@ function describeCharacter(character: string): string {
   }
 }
 
-function transitionPhrase(previous: string, next: string, part: TimelinePart, units: RouteUnitSystem): string {
-  const endpoint = `around ${formatCoursePosition(part.endKm, units)}`;
-  if (previous === "climb-dominant" && next === "descent-dominant") return `the route turns downhill and continues to ${endpoint}`;
-  if (previous === "descent-dominant" && next === "climb-dominant") return `the route begins climbing again and continues to ${endpoint}`;
-  if (next === "low-vertical") return `the climbs and descents become smaller until ${endpoint}`;
-  if (next === "repeated-vertical") return `the route settles into repeated climbs and descents until ${endpoint}`;
-  if (previous === "repeated-vertical" && next === "descent-dominant") return `after repeated climbs and descents, the route settles into a longer descent that continues to ${endpoint}`;
-  if (next === "mixed") return `the profile becomes more varied until ${endpoint}`;
-  return `climbing and descending remain mixed until ${endpoint}`;
+function transitionSentence(previous: TimelinePart, part: TimelinePart, isLast: boolean, componentEnd: boolean, anchor: string, units: RouteUnitSystem): string {
+  const location = formatCoursePosition(part.endKm, units);
+  if (Math.abs(previous.endKm - part.startKm) > 0.01) {
+    return `The next measured stretch (${formatCoursePosition(part.startKm, units)}–${location}) ${describeIntervalCharacter(part.character)}${anchor}.`;
+  }
+  if (isLast && part.character === "descent-dominant") {
+    const endpoint = componentEnd ? `the end of this track segment (${location})` : `the finish (${location})`;
+    return `The final stretch trends downhill to ${endpoint}${anchor}.`;
+  }
+  if (previous.character === "repeated-vertical" && part.character === "descent-dominant") {
+    return `After the ups and downs, a downhill stretch follows, reaching about ${location}${anchor}.`;
+  }
+  if (previous.character === "descent-dominant" && part.character === "climb-dominant") {
+    return `Climbing returns and dominates toward ${location}${anchor}.`;
+  }
+  if (previous.character === "climb-dominant" && part.character === "descent-dominant") {
+    return `A descent follows the climb and runs to around ${location}${anchor}.`;
+  }
+  if (part.character === "repeated-vertical") {
+    return `The ups and downs continue to about ${location}${anchor}.`;
+  }
+  if (part.character === "low-vertical") {
+    return isLast
+      ? `Little elevation change remains to the finish at ${location}${anchor}.`
+      : `After that, elevation changes become smaller through around ${location}${anchor}.`;
+  }
+  if (part.character === "mixed") {
+    return `The profile becomes more varied through around ${location}${anchor}.`;
+  }
+  if (part.character === "climb-dominant") {
+    return isLast
+      ? `The climb carries on toward the finish at ${location}${anchor}.`
+      : `Climbing takes over again, continuing toward ${location}${anchor}.`;
+  }
+  if (part.character === "descent-dominant") {
+    return `A descent follows, carrying on toward ${location}${anchor}.`;
+  }
+  return `Climbing and descending stay mixed through around ${location}${anchor}.`;
 }
 
-function characterNoun(character: string): string {
-  return character === "climb-dominant" ? "climb" : "descent";
+function describeIntervalCharacter(character: string): string {
+  switch (character) {
+    case "climb-dominant": return "is dominated by climbing";
+    case "descent-dominant": return "is dominated by descending";
+    case "repeated-vertical": return "has alternating climbs and descents";
+    case "low-vertical": return "has little elevation change";
+    default: return "has a mix of climbing and descending";
+  }
 }
 
 function isUsefulAnchor(fact: NarrativeFact): fact is Extract<NarrativeFact, { type: "ANCHOR_WITHIN_UNIT" }> {
@@ -261,8 +277,8 @@ function anchorPhrase(anchor: Extract<NarrativeFact, { type: "ANCHOR_WITHIN_UNIT
   const changeVerb = changeWord === "ascent" ? "gaining" : "losing";
   const feature = anchor.eventKind === "climb" ? "climb" : "descent";
   const distinction = anchor.roles.includes("longest")
-    ? `the route's longest ${feature}`
-    : changeWord === "ascent" ? "the climb with the greatest ascent" : "the descent with the greatest elevation loss";
+    ? `the longest ${feature} on the route`
+    : changeWord === "ascent" ? "the climb with the greatest elevation gain" : "the descent with the greatest elevation loss";
   return `, including ${distinction} (${units === "metric" ? `${formatKm(length)} km` : `${formatKm(length / KILOMETERS_PER_MILE)} mi`}, ${changeVerb} ${units === "metric" ? `${Math.round(change)} m` : `${Math.round(change / METERS_PER_FOOT)} ft`})`;
 }
 

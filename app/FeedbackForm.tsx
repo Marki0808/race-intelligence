@@ -38,8 +38,8 @@ export default function FeedbackForm() {
   }
 
   return (
-    <section className="border-t border-black/10 bg-[#f4f2ed]" aria-labelledby="route-feedback-title">
-      <div className="mx-auto max-w-3xl px-6 py-12 sm:py-16">
+    <section className="topo-benefits border-t border-[#e0e5dc] py-12 sm:py-16" aria-labelledby="route-feedback-title">
+      <div className="mx-auto max-w-3xl rounded-3xl border border-[#dce2d6] bg-[#f4f2ed] px-5 py-8 sm:px-7 sm:py-10">
         <h2 id="route-feedback-title" className="text-2xl font-semibold tracking-[-0.025em]">Help us improve Route Analysis</h2>
         <p className="mt-3 max-w-2xl text-sm leading-6 text-black/60">
           Did this analysis help you understand the route? Tell us what worked, what was confusing, or what you&apos;d like to see improved.

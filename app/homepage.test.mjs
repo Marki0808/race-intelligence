@@ -18,6 +18,11 @@ test("homepage presents the GPX product with a clearly illustrative route previe
   assert.match(homePage, /Fictional profile and description\. No real route or measured values are shown\./);
   assert.match(homePage, /Illustrative trail elevation profile/);
   assert.match(homePage, /Why analyze your route\?/);
+  assert.match(homePage, /className="topo-hero relative overflow-hidden/);
+  assert.match(homePage, /className="topo-benefits border-y/);
+  assert.match(homePage, /rounded-2xl border border-\[#e0e5dc\] bg-white\/95/);
+  assert.match(homePage, /rounded-\[1\.75rem\] border border-\[#dce2d6\] bg-white\/81/);
+  assert.doesNotMatch(homePage.match(/function AnalysisPreview\(\) \{[\s\S]*?\n\}/)?.[0] ?? "", /opacity-/);
 });
 
 test("Route Analysis is the only public V1 entry and Race Mode is centrally gated off", () => {
@@ -46,10 +51,18 @@ test("landing sections are ordered with benefits before upload and the header CT
   assert.match(routeMode, /Choose GPX file/);
   assert.match(routeMode, /bg-\[#b9d975\]/);
   assert.match(routeMode, /id="analyze" className="topo-upload scroll-mt-24/);
-  assert.match(homePage, /id="faq" className="scroll-mt-24/);
+  assert.match(homePage, /id="faq" className="topo-benefits scroll-mt-24/);
   assert.match(styles, /scroll-padding-top: 5\.5rem/);
-  assert.match(styles, /\.topo-hero[\s\S]*?linear-gradient\(105deg,[\s\S]*?url\("\/topographic-contours\.svg"\)/);
+  assert.match(styles, /\.topo-hero[\s\S]*?linear-gradient\(100deg,[\s\S]*?url\("\/hero-trail-runner\.webp"\)/);
+  assert.match(styles, /\.topo-benefits[\s\S]*?url\("\/topographic-contours\.svg"\)/);
+  assert.match(styles, /@media \(max-width: 640px\)[\s\S]*?\.topo-hero[\s\S]*?background-position: center, 25% center/);
+  assert.match(styles, /rgba\(245, 246, 239, \.94\) 0%[\s\S]*?rgba\(239, 242, 233, \.12\) 67%/);
+  assert.match(homePage, /bg-white\/81/);
   assert.match(styles, /\.topo-upload[\s\S]*?linear-gradient\(112deg,[\s\S]*?url\("\/topographic-contours\.svg"\)/);
+  const heroImage = await readFile(new URL("../public/hero-trail-runner.webp", import.meta.url));
+  assert.equal(heroImage.toString("ascii", 0, 4), "RIFF");
+  assert.equal(heroImage.toString("ascii", 8, 12), "WEBP");
+  assert.ok(heroImage.length < 300_000, "optimized hero image should remain web-efficient");
   const contours = await readFile(new URL("../public/topographic-contours.svg", import.meta.url), "utf8");
   assert.match(contours, /stroke-opacity="\.48" stroke-width="1\.35"/);
   assert.ok((contours.match(/<path/g) ?? []).length >= 10, "contour groups retain nested cartographic shapes");
@@ -103,6 +116,7 @@ test("Route Mode keeps the existing GPX file analysis flow", () => {
 });
 
 test("homepage FAQ is data-driven and limited to supported application behavior", () => {
+  assert.match(homePage, /<section id="faq" className="topo-benefits scroll-mt-24/);
   assert.match(homePage, /const faqs = \[/);
   assert.equal((homePage.match(/question: "/g) ?? []).length, 7);
   assert.match(homePage, /Frequently asked questions/);

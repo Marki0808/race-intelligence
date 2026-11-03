@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Image from "next/image";
 import RouteMode from "./RouteMode";
 
 const faqs = [
@@ -52,7 +53,7 @@ const benefits = [
 
 function AnalysisPreview() {
   return (
-    <div className="rounded-[1.75rem] border border-[#dce2d6] bg-white/90 p-4 shadow-[0_20px_60px_-36px_rgba(31,51,39,.35)] sm:p-6" aria-label="Illustrative route analysis preview">
+    <div className="rounded-[1.75rem] border border-[#dce2d6] bg-white/81 p-4 shadow-[0_20px_60px_-36px_rgba(31,51,39,.35)] sm:p-6" aria-label="Illustrative route analysis preview">
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#667a58]">Route overview</p>
@@ -96,8 +97,9 @@ export default function Home() {
     <main className="min-h-screen bg-[#f5f5ef] text-[#203329]">
       <header className="sticky top-0 z-50 border-b border-[#dce2d6]/80 bg-[#f8f8f2]/95 text-[#203329] backdrop-blur supports-[backdrop-filter]:bg-[#f8f8f2]/85">
         <nav aria-label="Main navigation" className="mx-auto flex h-[4.25rem] max-w-7xl items-center justify-between gap-4 px-5 sm:px-8 lg:px-10">
-          <Link href="/" className="shrink-0 text-sm font-extrabold tracking-[0.16em]" aria-label="Race Scope home">
-            RACE<span className="text-[#789344]">{"//"}</span>SCOPE
+          <Link href="/" className="shrink-0" aria-label="Endurset home">
+            <Image src="/brand/endurset-e.png" alt="" width={417} height={314} priority sizes="36px" className="block h-auto w-9 min-[380px]:hidden" />
+            <Image src="/brand/endurset-wordmark.png" alt="" width={2015} height={314} priority sizes="(max-width: 640px) 34vw, 168px" className="hidden h-auto w-[clamp(102px,34vw,168px)] min-[380px]:block" />
           </Link>
           <div className="flex items-center gap-5 sm:gap-8">
             <a href="#faq" className="hidden text-sm font-medium text-[#526253] transition hover:text-[#203329] sm:inline-flex">FAQ</a>
@@ -115,10 +117,10 @@ export default function Home() {
             <h1 className="mt-5 max-w-2xl text-[2.75rem] font-semibold leading-[1.02] tracking-[-0.05em] text-[#203329] sm:text-6xl lg:text-[4.25rem]">
               Don&apos;t just analyze the route. Understand it.
             </h1>
-            <p className="mt-6 max-w-xl text-lg font-medium leading-7 text-[#455448] sm:text-xl">
+            <p className="mt-6 max-w-xl text-lg font-medium leading-7 text-[#203329] sm:text-xl">
               Every trail has a story. Know it before the start line.
             </p>
-            <p className="mt-4 max-w-xl text-sm leading-6 text-[#58665b] sm:text-base sm:leading-7">
+            <p className="mt-4 max-w-xl text-sm leading-6 text-[#263a30] sm:text-base sm:leading-7">
               Distance and elevation only tell part of the story. See how a course unfolds: where long climbs begin, how descents are distributed, and which sections shape its profile. Turn your GPX into a clearer picture of the route and prepare with more confidence.
             </p>
           </div>
@@ -126,7 +128,7 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="border-y border-[#e0e5dc] bg-[#fbfcf8]">
+      <section className="topo-benefits border-y border-[#e0e5dc]">
         <div className="mx-auto max-w-7xl px-5 py-14 sm:px-8 sm:py-16 lg:px-10">
           <div className="max-w-2xl">
             <p className="text-xs font-bold uppercase tracking-[0.19em] text-[#71835c]">A clearer view before race day</p>
@@ -134,7 +136,7 @@ export default function Home() {
           </div>
           <div className="mt-8 grid gap-4 md:grid-cols-3">
             {benefits.map((benefit) => (
-              <article key={benefit.number} className="rounded-2xl border border-[#e0e5dc] bg-white p-5 shadow-[0_10px_30px_-28px_rgba(31,51,39,.45)] sm:p-6">
+              <article key={benefit.number} className="rounded-2xl border border-[#e0e5dc] bg-white/95 p-5 shadow-[0_10px_30px_-28px_rgba(31,51,39,.45)] sm:p-6">
                 <p className="text-xs font-bold tracking-[0.15em] text-[#819a50]">{benefit.number}</p>
                 <h3 className="mt-4 text-lg font-semibold tracking-tight">{benefit.title}</h3>
                 <p className="mt-2 text-sm leading-6 text-[#5a685d]">{benefit.body}</p>
@@ -146,7 +148,7 @@ export default function Home() {
 
       <RouteMode embedded />
 
-      <section id="faq" className="scroll-mt-24 mx-auto max-w-4xl px-5 py-14 sm:px-8 sm:py-20">
+      <section id="faq" className="topo-benefits scroll-mt-24 mx-auto max-w-4xl px-5 py-14 sm:px-8 sm:py-20">
         <p className="text-xs font-bold uppercase tracking-[0.19em] text-[#71835c]">Frequently asked questions</p>
         <h2 className="mt-3 text-3xl font-semibold tracking-[-0.04em] sm:text-4xl">Before you begin</h2>
         <div className="mt-7 divide-y divide-[#dfe5dc] border-y border-[#dfe5dc]">
@@ -162,9 +164,11 @@ export default function Home() {
         </div>
       </section>
 
-      <footer className="bg-[#203329] px-5 py-8 text-white sm:px-8 lg:px-10">
-        <div className="mx-auto flex max-w-7xl flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <Link href="/" className="w-fit text-sm font-extrabold tracking-[0.16em]">RACE<span className="text-[#b9d975]">{"//"}</span>SCOPE</Link>
+      <footer className="bg-[#203329] py-8 text-white">
+        <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-5 sm:flex-row sm:items-center sm:justify-between sm:px-8 lg:px-10">
+          <Link href="/" className="w-fit" aria-label="Endurset home">
+            <Image src="/brand/endurset-wordmark-dark.png" alt="" width={2015} height={314} className="h-auto w-[145px]" />
+          </Link>
           <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-white/70">
             <a href="#analyze" className="transition hover:text-white">Analyze your route</a>
             <a href="#faq" className="transition hover:text-white">FAQ</a>

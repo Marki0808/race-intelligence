@@ -35,7 +35,6 @@ import { TERRAIN_INTELLIGENCE_V1_ENABLED } from "./featureFlags";
 import { toggleKeyMomentSelection } from "./routeSectionSelection";
 import { buildSustainedGradientKeyMoments } from "./routeGradientMoments";
 import { expandKeyMomentsForDisplay } from "./routeKeyMomentPresentation";
-import FeedbackForm from "./FeedbackForm";
 import { buildAidStationSections } from "./aidStationSections";
 import CustomSectionControls from "./CustomSectionControls";
 import { appendCustomSectionBoundary, buildCustomRouteSections, createCustomSectionPlan, type CustomSectionPlan } from "./customRouteSections";
@@ -232,9 +231,10 @@ export default function RouteAnalysisView({
 
   return (
     <>
-      <section className="bg-[#f4f2ed]">
-        <div className="mx-auto max-w-7xl px-6 py-16 lg:px-10 lg:py-20">
+      <section className="bg-transparent">
+        <div className="route-analysis-content py-3 sm:py-4 lg:py-5">
           <CourseExplorer
+            className="mt-4 sm:mt-6"
             selectedMoment={selectedMoment}
             selectedSectionKey={selectedSectionKey}
             selectionSections={activeSections}
@@ -257,8 +257,9 @@ export default function RouteAnalysisView({
         </div>
       </section>
 
-      <section className="bg-white">
-        <div className="mx-auto max-w-7xl px-6 py-16 lg:px-10 lg:py-20">
+      <section className="bg-transparent">
+        <div className="route-analysis-content py-3 sm:py-4 lg:py-5">
+          <div className="rounded-3xl bg-[#f8f7f3] px-4 py-6 sm:px-6 sm:py-8 lg:px-8 lg:py-10">
           <RouteSectionBrowserHeading controls={(
             <>
               <div className="mt-4 inline-flex flex-wrap rounded-full border border-black/10 bg-[#f4f2ed] p-1" role="group" aria-label="Route section view">
@@ -274,12 +275,11 @@ export default function RouteAnalysisView({
             <TerrainEvidenceAction state={terrainEvidenceState} onCheck={() => void loadEvidence()} />
           ) : undefined} />
           <RouteSectionBrowser sections={activeSections} routePoints={analysis.points} gradientIntelligence={activeGradientIntelligence} narrativeContext={routeNarrativeContext} selectedSectionKey={selectedSectionKey} onSelectSection={selectSection} imageEvidence={showingAidStationSections || showingCustomSections ? new Map() : imageEvidence} onSelectImage={(image) => updateViewState({ selectedImage: image })} terrainEvidenceState={terrainEvidenceState} sectionKind={showingAidStationSections ? "Aid Station Section" : showingCustomSections ? "Custom Section" : "Route Section"} sectionLabels={showingAidStationSections ? aidStationSections.labels : showingCustomSections && customSections.available ? customSections.labels : undefined} emptyMessage={showingCustomSections && !customSections.available ? "Enter valid custom boundaries to display sections." : undefined} />
+          </div>
         </div>
       </section>
 
       <KeyRouteMoments moments={keyMoments} routePoints={analysis.points} totalDistanceM={analysis.metrics.distanceKm * 1000} selectedMoment={selectedMoment} onSelect={selectMoment} />
-      <FeedbackForm />
-
       <TerrainImageViewer image={selectedImage} onClose={() => updateViewState({ selectedImage: null })} units={units} />
     </>
   );

@@ -28,8 +28,9 @@ export default function KeyRouteMoments({ moments, routePoints, totalDistanceM, 
   const elevations = routePoints.map((point) => point.elevationM).filter(Number.isFinite);
   const elevationRange = getElevationRange(elevations);
   const markerInputs = displayable.map(({ moment, card, number }) => ({ moment, card, number }));
-  return <section className="bg-[#f4f2ed]" aria-labelledby="key-route-moments-title">
-    <div className="mx-auto max-w-7xl px-6 py-16 lg:px-10 lg:py-20">
+  return <section className="bg-transparent" aria-labelledby="key-route-moments-title">
+    <div className="route-analysis-content py-3 sm:py-4 lg:py-5">
+      <div className="rounded-3xl bg-[#f4f2ed] px-4 py-8 sm:px-6 sm:py-10 lg:px-8 lg:py-12">
       <p className="text-xs font-semibold uppercase tracking-[0.25em] text-[#536b3e]">GPX-derived facts · independent of section boundaries</p>
       <h2 id="key-route-moments-title" className="mt-3 mb-8 text-3xl font-semibold tracking-[-0.035em] text-[#17211c] sm:text-4xl">Key Route Moments</h2>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -39,6 +40,7 @@ export default function KeyRouteMoments({ moments, routePoints, totalDistanceM, 
         <p className="mb-2 px-2 text-xs font-semibold uppercase tracking-[0.16em] text-white/60">Key Moments along the full route</p>
       <ElevationProfile points={routePoints} selectedPoints={selectedPoints} minElevation={elevationRange?.minimum ?? 0} maxElevation={elevationRange?.maximum ?? 0} units={units}
           selectedSection={null} selectedMomentInterval={selectedMomentInterval} sections={[]} momentMarkers={markerInputs} selectedMoment={selectedMoment} onSelectMoment={onSelect} />
+      </div>
       </div>
     </div>
   </section>;

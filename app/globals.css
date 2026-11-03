@@ -32,7 +32,14 @@ html {
 
 .topo-hero {
   background-color: #eff2e9;
-  background-image: linear-gradient(105deg, rgba(245, 246, 239, .68) 0%, rgba(239, 242, 233, .47) 48%, rgba(239, 242, 233, .4) 100%), url("/topographic-contours.svg");
+  background-image: linear-gradient(100deg, rgba(245, 246, 239, .94) 0%, rgba(239, 242, 233, .88) 27%, rgba(239, 242, 233, .62) 42%, rgba(239, 242, 233, .12) 67%, rgba(239, 242, 233, .02) 100%), url("/hero-trail-runner.webp");
+  background-position: center, 54% center;
+  background-size: cover, cover;
+}
+
+.topo-benefits {
+  background-color: #f5f5ef;
+  background-image: linear-gradient(rgba(245, 245, 239, .78), rgba(245, 245, 239, .78)), url("/topographic-contours.svg");
   background-position: center, 54% center;
   background-size: cover, cover;
 }
@@ -48,12 +55,35 @@ html {
 .route-analysis-surface {
   --analysis-ink: #17211c;
   color: var(--analysis-ink);
-  background-color: #f4f2ed;
+  min-width: 0;
+}
+
+.route-analysis-frame {
+  width: 100%;
+  max-width: 80rem;
+  margin-top: 1.25rem;
+  margin-inline: auto;
+  border: 3px solid #f4f2ed;
+  border-radius: 1.75rem;
+  background: transparent;
+}
+
+.route-analysis-content {
+  width: 100%;
+  max-width: 80rem;
+  margin-inline: auto;
+  padding-inline: clamp(.65rem, 1.2vw, 1rem);
 }
 
 @media (max-width: 640px) {
   .topo-hero {
-    background-position: center, 57% center;
+    background-image: linear-gradient(180deg, rgba(245, 246, 239, .92) 0%, rgba(239, 242, 233, .86) 34%, rgba(239, 242, 233, .58) 58%, rgba(239, 242, 233, .2) 100%), url("/hero-trail-runner.webp");
+    background-position: center, 25% center;
+  }
+
+  .topo-benefits {
+    background-image: linear-gradient(rgba(245, 245, 239, .82), rgba(245, 245, 239, .82)), url("/topographic-contours.svg");
+    background-position: center, 58% center;
   }
 
   .topo-upload {

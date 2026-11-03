@@ -34,6 +34,7 @@ export default function CourseExplorer({
   supportingText = "The elevation profile and route metrics are calculated from this GPX track.",
   showExtendedMetrics = false,
   showUnitToggle = false,
+  className = "mt-10 sm:mt-14",
   headingRef,
 }: {
   selectedMoment: string | null;
@@ -54,6 +55,7 @@ export default function CourseExplorer({
   supportingText?: string;
   showExtendedMetrics?: boolean;
   showUnitToggle?: boolean;
+  className?: string;
   headingRef?: Ref<HTMLHeadingElement>;
 }) {
   const { units } = useRouteUnits();
@@ -238,7 +240,7 @@ export default function CourseExplorer({
   }, [mapReady, points, selectedMomentData, selectedMomentFocusPoints, selectedMomentInterval, selectedMomentPoints, selectedSection, selectedSectionPoints]);
 
   return (
-    <div className="mt-10 overflow-hidden rounded-[2rem] border border-black/10 bg-[#17211c] text-white sm:mt-14">
+    <div className={`${className} overflow-hidden rounded-[2rem] border border-black/10 bg-[#17211c] text-white`}>
       <div className="p-5 sm:p-8 lg:p-10">
         <div className="max-w-3xl">
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-white/55">{eyebrow}</p>

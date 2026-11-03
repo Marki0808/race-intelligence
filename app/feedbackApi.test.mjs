@@ -77,9 +77,10 @@ test("submission gate blocks rapid duplicate activation and unlocks after comple
 });
 
 test("feedback UI is isolated from analysis data and preserves text after request failure", async () => {
-  const [form, view] = await Promise.all([
+  const [form, view, routeMode] = await Promise.all([
     readFile(new URL("./FeedbackForm.tsx", import.meta.url), "utf8"),
     readFile(new URL("./RouteAnalysisView.tsx", import.meta.url), "utf8"),
+    readFile(new URL("./RouteMode.tsx", import.meta.url), "utf8"),
   ]);
   assert.match(form, /maxLength=\{MAX_FEEDBACK_CHARACTERS\}/);
   assert.match(form, /if \(!feedback \|\| !submissionGate\.current\.begin\(\)\) return/);
@@ -87,7 +88,11 @@ test("feedback UI is isolated from analysis data and preserves text after reques
   assert.match(form, /setSubmitted\(true\);\s*setMessage\(""\);/);
   assert.match(form, /label htmlFor="route-feedback-message"/);
   assert.match(form, /role="status" aria-live="polite"/);
-  assert.match(view, /<FeedbackForm\s*\/>/);
+  assert.match(form, /<section className="topo-benefits border-t border-\[#e0e5dc\]/);
+  assert.match(form, /rounded-3xl border border-\[#dce2d6\] bg-\[#f4f2ed\]/);
+  assert.doesNotMatch(view, /FeedbackForm/);
+  assert.match(routeMode, /<section id="analyze"[\s\S]*?<\/section>\s*\{analysis && <FeedbackForm \/>\}/);
+  assert.match(routeMode, /\{analysisView\}[\s\S]*?\{analysis && <FeedbackForm \/>\}/);
   assert.doesNotMatch(form, /routeFingerprint|routeName|filename|coordinates|email/i);
 });
 

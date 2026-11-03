@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Image from "next/image";
 import CourseAnalysis from "./CourseAnalysis";
 import CourseCharacter from "./CourseCharacter";
 import CourseSection from "./CourseSection";
@@ -15,8 +16,8 @@ export default function RacePageContent({
     <main className="min-h-screen bg-[#f4f2ed] text-[#17211c]">
       <nav className="fixed left-0 right-0 top-0 z-50 border-b border-white/10 bg-[#17211c]/95 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6 lg:px-10">
-          <Link href="/" className="text-sm font-bold tracking-[0.18em] text-white">
-            RACE<span className="text-[#a7c957]">{"//"}</span>SCOPE
+          <Link href="/" className="shrink-0 rounded bg-[#f4f2ed] px-2 py-1" aria-label="Endurset home">
+            <Image src="/brand/endurset-wordmark.png" alt="" width={2015} height={314} priority className="h-auto w-[clamp(88px,25vw,140px)]" />
           </Link>
           <div className="flex items-center gap-8 text-sm text-white/60">
             <a href="#course" className="transition hover:text-white">
@@ -114,10 +115,10 @@ export default function RacePageContent({
       <RaceSources sources={record.sources} />
       <CourseAnalysis analysis={record.courseAnalysis} />
 
-      <footer className="border-t border-white/10 bg-[#17211c] px-6 py-10 text-white lg:px-10">
-        <div className="mx-auto flex max-w-7xl flex-col justify-between gap-4 text-sm sm:flex-row">
-          <Link href="/" className="font-semibold tracking-[0.18em]">
-            RACE<span className="text-[#a7c957]">{"//"}</span>SCOPE
+      <footer className="border-t border-white/10 bg-[#17211c] py-10 text-white">
+        <div className="mx-auto flex w-full max-w-7xl flex-col justify-between gap-4 px-6 text-sm sm:flex-row sm:items-center lg:px-10">
+          <Link href="/" className="w-fit" aria-label="Endurset home">
+            <Image src="/brand/endurset-wordmark-dark.png" alt="" width={2015} height={314} className="h-auto w-[145px]" />
           </Link>
           <p className="text-white/35">We analyze the race. You know yourself.</p>
         </div>

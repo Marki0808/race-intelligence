@@ -135,10 +135,17 @@ test("Route Analysis is isolated from landing colors and Key Route Moments keeps
     readFile(new URL("./globals.css", import.meta.url), "utf8"),
     readFile(new URL("./CourseExplorer.tsx", import.meta.url), "utf8"),
   ]);
-  assert.equal((routeMode.match(/className="route-analysis-surface"/g) ?? []).length, 1);
+  assert.equal((routeMode.match(/className=\{`route-analysis-surface\$\{embedded \? " route-analysis-frame" : ""\}`\}/g) ?? []).length, 1);
   assert.match(routeMode, /<RouteUnitPreferenceProvider>[\s\S]*<RouteAnalysisView/);
-  assert.match(styles, /\.route-analysis-surface\s*\{[\s\S]*?color:\s*var\(--analysis-ink\)[\s\S]*?background-color:\s*#f4f2ed/);
+  assert.match(styles, /\.route-analysis-surface\s*\{[\s\S]*?color:\s*var\(--analysis-ink\)[\s\S]*?min-width:\s*0/);
+  assert.match(styles, /\.route-analysis-frame\s*\{[\s\S]*?width:\s*100%[\s\S]*?max-width:\s*80rem[\s\S]*?margin-inline:\s*auto[\s\S]*?border:\s*3px solid #f4f2ed[\s\S]*?border-radius:\s*1\.75rem[\s\S]*?background:\s*transparent/);
+  assert.match(routeAnalysisView, /<section className="bg-transparent">[\s\S]*?route-analysis-content py-3 sm:py-4 lg:py-5/);
+  assert.match(routeAnalysisView, /className="route-analysis-content py-3 sm:py-4 lg:py-5"[\s\S]*?<CourseExplorer\s+className="mt-4 sm:mt-6"/);
+  assert.match(routeAnalysisView, /route-analysis-content py-3 sm:py-4 lg:py-5[\s\S]*?rounded-3xl bg-\[#f8f7f3\]/);
+  assert.equal((routeAnalysisView.match(/route-analysis-content/g) ?? []).length, 2);
   assert.match(keyMoments, /<h2 id="key-route-moments-title"[^>]*text-\[#17211c\]/);
+  assert.match(keyMoments, /bg-transparent" aria-labelledby="key-route-moments-title"[\s\S]*?route-analysis-content py-3 sm:py-4 lg:py-5[\s\S]*?rounded-3xl bg-\[#f4f2ed\]/);
+  assert.match(styles, /\.route-analysis-content\s*\{[\s\S]*?max-width:\s*80rem[\s\S]*?padding-inline:\s*clamp\(\.65rem, 1\.2vw, 1rem\)/);
   assert.match(explorerView, /text-\[10px\] uppercase tracking-\[0\.16em\] text-white\/70/);
   assert.match(explorerView, /<details[^>]*>[\s\S]*?<summary[^>]*>\s*How elevation is calculated\s*<\/summary>[\s\S]*?\{getRouteElevationMetricDescription\(units\)\}/);
   assert.doesNotMatch(explorerView, /<details[^>]*open/);
