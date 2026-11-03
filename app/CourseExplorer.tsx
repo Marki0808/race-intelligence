@@ -365,24 +365,31 @@ export function ElevationProfile({
   onSelectMoment?: (momentId: string) => void;
 }) {
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const profileScrollerRef = useRef<HTMLDivElement | null>(null);
+  const profileScrollLeftRef = useRef(0);
   const [chartSize, setChartSize] = useState({ width: 1200, height: 288 });
   const pointerGesture = useRef<{ pointerId: number; startX: number; startY: number; moved: boolean; longPressed: boolean } | null>(null);
   const longPressTimer = useRef<number | null>(null);
   const touchInspection = useRef(false);
   const [inspectedPoint, setInspectedPoint] = useState<RouteAnalysisData["points"][number] | null>(null);
+  const [profileScrollLeft, setProfileScrollLeft] = useState(0);
+  const [profileScrollerWidth, setProfileScrollerWidth] = useState(0);
   useEffect(() => {
     const svg = svgRef.current;
     if (!svg) return;
     const measure = () => {
       const bounds = svg.getBoundingClientRect();
+      const scrollerBounds = profileScrollerRef.current?.getBoundingClientRect();
       if (bounds.width > 0 && bounds.height > 0) {
         const next = { width: Math.round(bounds.width), height: Math.round(bounds.height) };
         setChartSize((current) => current.width === next.width && current.height === next.height ? current : next);
       }
+      if (scrollerBounds && scrollerBounds.width > 0) setProfileScrollerWidth(Math.round(scrollerBounds.width));
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(svg);
+    if (profileScrollerRef.current) observer.observe(profileScrollerRef.current);
     return () => observer.disconnect();
   }, []);
   const { width, height } = chartSize;
@@ -413,6 +420,7 @@ export function ElevationProfile({
     }
     const distanceM = ((viewX - plot.left) / (width - plot.left - plot.right)) * totalDistance;
     const elevationM = elevationScale.maximum - ((viewY - plot.top) / plotHeight) * (elevationScale.maximum - elevationScale.minimum);
+    setProfileScrollLeft(profileScrollLeftRef.current);
     setInspectedPoint(nearestRouteProfilePoint(points, distanceM, elevationM));
   };
   const onPointerDown = (event: PointerEvent<SVGSVGElement>) => {
@@ -474,7 +482,8 @@ export function ElevationProfile({
 
   return (
     <div className="relative">
-    <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} className="h-56 w-full touch-pan-y sm:h-64 lg:h-72" preserveAspectRatio="none" aria-label={`GPX elevation profile. Elevation is shown in ${units === "metric" ? "meters" : "feet"} and distance in ${units === "metric" ? "kilometers" : "miles"}. Hover to inspect values, or press and hold on touch. Select a section interval to update its metrics; selected Key Moments are highlighted.`} role="group" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerLeave} onPointerLeave={onPointerLeave}>
+      <div ref={profileScrollerRef} role="region" aria-label="Scrollable full-route elevation profile" tabIndex={0} onScroll={(event) => { profileScrollLeftRef.current = event.currentTarget.scrollLeft; if (inspectedPoint) { setProfileScrollLeft(event.currentTarget.scrollLeft); setInspectedPoint(null); } }} className="relative w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#a7c957]">
+    <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} className="h-56 w-full min-w-[720px] touch-auto sm:min-w-0 sm:touch-pan-y sm:h-64 lg:h-72" preserveAspectRatio="none" aria-label={`GPX elevation profile. Elevation is shown in ${units === "metric" ? "meters" : "feet"} and distance in ${units === "metric" ? "kilometers" : "miles"}. Hover to inspect values, or press and hold on touch. Select a section interval to update its metrics; selected Key Moments are highlighted.`} role="group" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerLeave} onPointerLeave={onPointerLeave}>
       <title>Elevation profile in {elevationUnit(units)} across the route distance in {distanceUnit(units)}</title>
       {elevationScale.ticks.map((tick) => {
         const y = yForElevation(tick);
@@ -570,9 +579,11 @@ export function ElevationProfile({
         <circle cx={xForDistance(inspectedPoint.distanceM)} cy={yForElevation(inspectedPoint.elevationM)} r="8" fill="#f2d675" stroke="#17211c" strokeWidth="3" />
       </g>}
     </svg>
-    {inspectedPoint && <div aria-live="polite" className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded-lg bg-white px-3 py-2 text-xs font-semibold text-[#17211c] shadow-lg" style={{ left: `${Math.max(30, Math.min(70, (xForDistance(inspectedPoint.distanceM) / width) * 100))}%`, top: `${Math.max(18, Math.min(86, (yForElevation(inspectedPoint.elevationM) / height) * 100))}%` }}>
+    {inspectedPoint && <div aria-live="polite" className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded-lg bg-white px-3 py-2 text-xs font-semibold text-[#17211c] shadow-lg" style={{ left: `${Math.max(60, Math.min(profileScrollerWidth - 60, xForDistance(inspectedPoint.distanceM) - profileScrollLeft))}px`, top: `${Math.max(18, Math.min(86, (yForElevation(inspectedPoint.elevationM) / height) * 100))}%` }}>
       {`${formatDistanceMeters(inspectedPoint.distanceM, units)} · ${formatElevationMeters(inspectedPoint.elevationM, units)}`}
     </div>}
+      </div>
+      <p className="mt-2 px-1 text-xs text-white/55 sm:hidden">Swipe horizontally to explore the elevation profile.</p>
     </div>
   );
 }
