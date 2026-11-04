@@ -11,6 +11,15 @@ test("full-route profile keeps a readable mobile width in a keyboard-accessible 
   assert.match(explorer, /className="mt-2 px-1 text-xs text-white\/55 sm:hidden">Swipe horizontally to explore the elevation profile\./);
 });
 
+test("section-capable elevation profile explains click and tap selection accessibly", () => {
+  assert.match(explorer, /aria-describedby=\{onSelectSection && sections\.length > 0 \? "full-route-profile-selection-hint" : undefined\}/);
+  assert.match(explorer, /onSelectSection && sections\.length > 0 && <p id="full-route-profile-selection-hint"/);
+  assert.match(explorer, /Click an interval on the elevation profile to explore route sections\./);
+  assert.match(explorer, /Tap an interval on the elevation profile to explore route sections\./);
+  assert.match(explorer, /<span className="hidden sm:inline">Click an interval/);
+  assert.match(explorer, /<span className="sm:hidden">Tap an interval/);
+});
+
 test("mobile scrolling preserves profile inspection, section and Key Moment interactions", () => {
   assert.match(explorer, /onPointerDown=\{onPointerDown\} onPointerMove=\{onPointerMove\} onPointerUp=\{onPointerUp\}/);
   assert.match(explorer, /onSelectSection\(isSelected \? null : section\)/);

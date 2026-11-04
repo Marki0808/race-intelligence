@@ -485,7 +485,7 @@ export function ElevationProfile({
   return (
     <div className="relative">
       <div ref={profileScrollerRef} role="region" aria-label="Scrollable full-route elevation profile" tabIndex={0} onScroll={(event) => { profileScrollLeftRef.current = event.currentTarget.scrollLeft; if (inspectedPoint) { setProfileScrollLeft(event.currentTarget.scrollLeft); setInspectedPoint(null); } }} className="relative w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#a7c957]">
-    <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} className="h-56 w-full min-w-[720px] touch-auto sm:min-w-0 sm:touch-pan-y sm:h-64 lg:h-72" preserveAspectRatio="none" aria-label={`GPX elevation profile. Elevation is shown in ${units === "metric" ? "meters" : "feet"} and distance in ${units === "metric" ? "kilometers" : "miles"}. Hover to inspect values, or press and hold on touch. Select a section interval to update its metrics; selected Key Moments are highlighted.`} role="group" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerLeave} onPointerLeave={onPointerLeave}>
+    <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} className="h-56 w-full min-w-[720px] touch-auto sm:min-w-0 sm:touch-pan-y sm:h-64 lg:h-72" preserveAspectRatio="none" aria-label={`GPX elevation profile. Elevation is shown in ${units === "metric" ? "meters" : "feet"} and distance in ${units === "metric" ? "kilometers" : "miles"}. Hover to inspect values, or press and hold on touch. Select a section interval to update its metrics; selected Key Moments are highlighted.`} aria-describedby={onSelectSection && sections.length > 0 ? "full-route-profile-selection-hint" : undefined} role="group" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerLeave} onPointerLeave={onPointerLeave}>
       <title>Elevation profile in {elevationUnit(units)} across the route distance in {distanceUnit(units)}</title>
       {elevationScale.ticks.map((tick) => {
         const y = yForElevation(tick);
@@ -585,6 +585,10 @@ export function ElevationProfile({
       {`${formatDistanceMeters(inspectedPoint.distanceM, units)} · ${formatElevationMeters(inspectedPoint.elevationM, units)}`}
     </div>}
       </div>
+      {onSelectSection && sections.length > 0 && <p id="full-route-profile-selection-hint" className="mt-2 px-1 text-xs text-white/65">
+        <span className="hidden sm:inline">Click an interval on the elevation profile to explore route sections.</span>
+        <span className="sm:hidden">Tap an interval on the elevation profile to explore route sections.</span>
+      </p>}
       <p className="mt-2 px-1 text-xs text-white/55 sm:hidden">Swipe horizontally to explore the elevation profile.</p>
     </div>
   );
