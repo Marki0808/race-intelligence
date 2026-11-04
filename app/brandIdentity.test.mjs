@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const [home, routeMode, racePage, layout] = await Promise.all([
+const [home, routeMode, racePage, layout, privacy] = await Promise.all([
   readFile(new URL("./page.tsx", import.meta.url), "utf8"),
   readFile(new URL("./RouteMode.tsx", import.meta.url), "utf8"),
   readFile(new URL("./RacePageContent.tsx", import.meta.url), "utf8"),
   readFile(new URL("./layout.tsx", import.meta.url), "utf8"),
+  readFile(new URL("./privacy/page.tsx", import.meta.url), "utf8"),
 ]);
 
 function pngDimensions(buffer) {
@@ -25,6 +26,12 @@ test("public brand locations use the supplied wordmark with accessible home link
   assert.match(routeMode, /src="\/brand\/endurset-e\.png"/);
   assert.match(racePage, /src="\/brand\/endurset-wordmark\.png"/);
   assert.match(racePage, /aria-label="Endurset home"/);
+  assert.match(privacy, /src="\/brand\/endurset-wordmark\.png"/);
+  assert.match(privacy, /src="\/brand\/endurset-e\.png"/);
+  assert.match(privacy, /min-\[380px\]:block/);
+  assert.match(privacy, /Back to Endurset/);
+  assert.match(privacy, /src="\/brand\/endurset-wordmark-dark\.png"/);
+  assert.doesNotMatch(privacy, /<Link href="\/" className="text-lg font-black tracking-\[\.12em\] text-\[#203329\]"[^>]*>ENDURSET/);
 });
 
 test("approved supplied brand assets and native icon sizes are installed without upscaling", async () => {

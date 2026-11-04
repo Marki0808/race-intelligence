@@ -20,6 +20,7 @@ import {
 import { getSharedRouteEligibility } from "./sharedRouteEligibility.ts";
 import { isSharedRouteDatabaseConfigured, sharedRouteStore } from "./server/sharedRouteStore.ts";
 import { validatePersistenceRequest } from "./routePersistenceValidation.ts";
+import { SHARED_ROUTE_PERSISTENCE_V1_ENABLED } from "./featureFlags.ts";
 
 const MAX_BODY_BYTES = 64_000;
 
@@ -29,6 +30,9 @@ type SharedLookupDependencies = {
 };
 
 export async function handleRoutePersistenceRequest(request: Request) {
+  if (!SHARED_ROUTE_PERSISTENCE_V1_ENABLED) {
+    return Response.json({ error: "not_found" }, { status: 404, headers: { "Cache-Control": "no-store" } });
+  }
   const body = await readRequestBody(request);
   if (!body) return Response.json({ error: "Invalid route persistence request." }, { status: 400 });
   const parsed = validatePersistenceRequest(body);

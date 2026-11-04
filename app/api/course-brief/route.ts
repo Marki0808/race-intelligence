@@ -1,9 +1,9 @@
-import { createCourseBriefPostHandler } from "../../courseBriefApi.ts";
-import { OpenAiCourseBriefProvider } from "../../server/openAiCourseBriefProvider.ts";
-
 export const runtime = "nodejs";
-export const maxDuration = 30;
 
-export const POST = createCourseBriefPostHandler(
-  () => new OpenAiCourseBriefProvider({ apiKey: process.env.OPENAI_API_KEY }),
-);
+/** Course Brief is generated locally in V1; the former external API is disabled. */
+export async function POST(): Promise<Response> {
+  return Response.json(
+    { error: "not_found" },
+    { status: 404, headers: { "Cache-Control": "no-store" } },
+  );
+}

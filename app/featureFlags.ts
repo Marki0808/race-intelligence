@@ -3,3 +3,6 @@ export const TERRAIN_INTELLIGENCE_V1_ENABLED = false;
 
 /** Race-page discovery remains implemented but is deferred from the public V1 experience. */
 export const RACE_MODE_V1_ENABLED = false;
+
+/** Shared-route fingerprint lookup and remote route storage are deferred from the public V1 experience. */
+export const SHARED_ROUTE_PERSISTENCE_V1_ENABLED = false;

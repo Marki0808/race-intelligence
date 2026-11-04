@@ -17,11 +17,22 @@ import { focusCompletedRouteAnalysis } from "./routeAnalysisFocus";
 import { createRouteFingerprint } from "./routeFingerprint";
 import { createAnalysisInputFingerprint } from "./analysisInputFingerprint";
 import { browserRoutePersistence, cacheRouteAnalysis, getOrCreateRouteAnalysis } from "./routePersistence";
-import { lookupSharedRoute, runOptionalRouteLookup, type SharedRouteCache } from "./routePersistenceClient";
+import { lookupSharedRoute, runOptionalRouteLookup, type SharedRouteCache, type SharedRouteLookup } from "./routePersistenceClient";
 import type { RouteFingerprintResult } from "./routeFingerprint";
 import { consumePendingDiscoveredGpx } from "./discoveredGpxTransfer";
-import { TERRAIN_INTELLIGENCE_V1_ENABLED } from "./featureFlags";
+import { SHARED_ROUTE_PERSISTENCE_V1_ENABLED, TERRAIN_INTELLIGENCE_V1_ENABLED } from "./featureFlags";
 import { RouteUnitPreferenceProvider } from "./RouteUnitPreference";
+import { trackSafeAnalyticsEvent } from "./analyticsClient";
+
+function getAnalyticsFailureCategory(error: unknown): "invalid_gpx" | "missing_elevation" | "file_limit" | "processing_error" {
+  if (error instanceof GpxUploadError) return error.code === "file-too-large" ? "file_limit" : "invalid_gpx";
+  if (error instanceof GpxAnalysisError) {
+    if (error.code === "insufficient-elevation") return "missing_elevation";
+    if (error.code === "too-many-points") return "file_limit";
+    if (["invalid-gpx", "no-track-points", "multiple-tracks", "invalid-coordinate", "invalid-route"].includes(error.code)) return "invalid_gpx";
+  }
+  return "processing_error";
+}
 
 export default function RouteMode({ embedded = false }: { embedded?: boolean }) {
   const [analysis, setAnalysis] = useState<RouteAnalysisData | null>(null);
@@ -51,6 +62,7 @@ export default function RouteMode({ embedded = false }: { embedded?: boolean }) 
       await operation();
     } catch (caught) {
       if (requestGate.current.isCurrent(requestId)) {
+        trackSafeAnalyticsEvent({ type: "gpx_analysis_failure", category: getAnalyticsFailureCategory(caught) });
         setError(caught instanceof GpxUploadError
           ? getGpxUploadErrorMessage(caught.code)
           : caught instanceof GpxAnalysisError
@@ -69,46 +81,44 @@ export default function RouteMode({ embedded = false }: { embedded?: boolean }) 
     aidStationDiscoveryV1?: RouteAnalysisData["aidStationDiscoveryV1"],
   ) => {
       try {
-        const lookupResult = await runOptionalRouteLookup(async (signal) => {
-          const [fingerprint, analysisInputFingerprint] = await Promise.all([
-            createRouteFingerprint(parsed.segments.map((segment) => segment.map(({ latitude, longitude }) => ({ latitude, longitude })))),
-            createAnalysisInputFingerprint(parsed.segments),
-          ]);
-          if (!requestGate.current.isCurrent(requestId)) return null;
-          const shared = await lookupSharedRoute(fingerprint, analysisInputFingerprint, {
+        const [fingerprint, analysisInputFingerprint] = await Promise.all([
+          createRouteFingerprint(parsed.segments.map((segment) => segment.map(({ latitude, longitude }) => ({ latitude, longitude })))),
+          createAnalysisInputFingerprint(parsed.segments),
+        ]);
+        if (!requestGate.current.isCurrent(requestId)) return;
+        let shared: SharedRouteLookup | null = null;
+        if (SHARED_ROUTE_PERSISTENCE_V1_ENABLED) {
+          shared = await runOptionalRouteLookup((signal) => lookupSharedRoute(fingerprint, analysisInputFingerprint, {
             includeOsm: TERRAIN_INTELLIGENCE_V1_ENABLED,
             signal,
-          });
-          return { fingerprint, analysisInputFingerprint, shared };
-        });
+          }));
+        }
         if (!requestGate.current.isCurrent(requestId)) return;
         let routeAnalysis: RouteAnalysisData;
-        if (lookupResult?.shared.cache?.analysis) {
-          routeAnalysis = { ...lookupResult.shared.cache.analysis, name: displayName };
-          await cacheRouteAnalysis(browserRoutePersistence, lookupResult.fingerprint, routeAnalysis, lookupResult.analysisInputFingerprint);
-        } else if (lookupResult) {
+        if (shared?.cache?.analysis) {
+          routeAnalysis = { ...shared.cache.analysis, name: displayName };
+          await cacheRouteAnalysis(browserRoutePersistence, fingerprint, routeAnalysis, analysisInputFingerprint);
+        } else {
           const localResult = await getOrCreateRouteAnalysis(
             browserRoutePersistence,
-            lookupResult.fingerprint,
-            lookupResult.analysisInputFingerprint,
+            fingerprint,
+            analysisInputFingerprint,
             displayName,
             () => analyzeGpxRoute(parsed),
           );
           routeAnalysis = localResult.analysis;
-        } else {
-          routeAnalysis = { ...analyzeGpxRoute(parsed), name: displayName };
         }
         if (!requestGate.current.isCurrent(requestId)) return;
-        if (lookupResult) {
-          setRouteFingerprint(lookupResult.fingerprint);
-          setPersistenceScope(lookupResult.shared.persistenceScope);
-          setSharedCache(lookupResult.shared.cache);
-        }
+        setRouteFingerprint(fingerprint);
+        setPersistenceScope(shared?.persistenceScope ?? "local");
+        setSharedCache(shared?.cache ?? null);
         setAnalysis({ ...routeAnalysis, aidStationDiscoveryV1: aidStationDiscoveryV1 ?? null });
+        trackSafeAnalyticsEvent({ type: "gpx_analysis_success" });
       } catch {
         // Fingerprinting and persistence are optimizations; retain the existing local analysis path.
         if (!requestGate.current.isCurrent(requestId)) return;
         setAnalysis({ ...analyzeGpxRoute(parsed), name: displayName, aidStationDiscoveryV1: aidStationDiscoveryV1 ?? null });
+        trackSafeAnalyticsEvent({ type: "gpx_analysis_success" });
       }
   }, []);
 
@@ -143,6 +153,7 @@ export default function RouteMode({ embedded = false }: { embedded?: boolean }) 
 
   async function handleSelectedFile(file: File | undefined) {
     if (!file) return;
+    trackSafeAnalyticsEvent({ type: "gpx_upload_attempt" });
     const requestId = beginRouteRequest();
     if (requestId === null) return;
     await runRouteRequest(requestId, async () => {
@@ -190,7 +201,7 @@ export default function RouteMode({ embedded = false }: { embedded?: boolean }) 
       </p>
       <p className="mt-3 text-sm font-semibold text-[#d5eba2]">Free to use. No account required.</p>
       <p id="route-privacy-note" className="mt-2 text-xs leading-5 text-white/60">
-        Your GPX is analyzed in this browser and is not uploaded or stored. A derived route fingerprint may be checked against shared route records, and map tiles are requested for the area you view.
+        Your GPX file is analyzed in this browser. No route fingerprint or route geometry is sent to Endurset servers or checked against shared-route records. Maps request tiles for the area you view. <Link href="/privacy" className="underline underline-offset-2">Privacy details</Link>.
       </p>
       {isProcessing && (
         <p role="status" aria-live="polite" aria-atomic="true" className="mt-4 rounded-xl border border-[#b9d975]/35 bg-[#a7c957]/10 px-4 py-3 text-sm font-medium text-[#e1f2bc]">

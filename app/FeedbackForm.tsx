@@ -3,6 +3,7 @@
 import { useRef, useState, type FormEvent } from "react";
 import { MAX_FEEDBACK_CHARACTERS } from "./feedbackContract";
 import { FeedbackSubmissionGate } from "./feedbackSubmissionGate";
+import { trackSafeAnalyticsEvent } from "./analyticsClient";
 
 export default function FeedbackForm() {
   const [message, setMessage] = useState("");
@@ -26,6 +27,7 @@ export default function FeedbackForm() {
       if (response.status === 429) throw new Error("feedback-rate-limited");
       if (!response.ok) throw new Error("feedback-unavailable");
       setSubmitted(true);
+      trackSafeAnalyticsEvent({ type: "feedback_submit_success" });
       setMessage("");
     } catch (caught) {
       setError(caught instanceof Error && caught.message === "feedback-rate-limited"

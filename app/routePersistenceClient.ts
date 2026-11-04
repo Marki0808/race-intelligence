@@ -3,6 +3,7 @@ import type { RouteAnalysisData } from "./gpxAnalysis.ts";
 import type { MapillaryTerrainProofData } from "./mapillaryTerrainProof.ts";
 import type { RouteFingerprintResult } from "./routeFingerprint.ts";
 import type { PersistedMapillaryEnrichmentRecord, PersistedOsmEnrichmentRecord } from "./routePersistence.ts";
+import { SHARED_ROUTE_PERSISTENCE_V1_ENABLED } from "./featureFlags.ts";
 
 export type SharedRouteCache = {
   analysis: RouteAnalysisData | null;
@@ -51,6 +52,7 @@ export async function lookupSharedRoute(
   analysisInputFingerprint: string,
   options: { includeOsm?: boolean; signal?: AbortSignal } = {},
 ): Promise<SharedRouteLookup> {
+  if (!SHARED_ROUTE_PERSISTENCE_V1_ENABLED) return localOnlyResult();
   try {
     const response = await fetch("/api/route-persistence", {
       method: "POST",
@@ -94,6 +96,7 @@ export async function enrichSharedRoute(
   osm: PersistedOsmEnrichmentRecord | GeoEnrichmentData | null;
   mapillary: PersistedMapillaryEnrichmentRecord | MapillaryTerrainProofData | null;
 }> {
+  if (!SHARED_ROUTE_PERSISTENCE_V1_ENABLED) throw new Error("Shared route persistence is disabled.");
   const response = await fetch("/api/route-persistence", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

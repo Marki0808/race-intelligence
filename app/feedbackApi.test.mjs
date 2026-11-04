@@ -85,7 +85,7 @@ test("feedback UI is isolated from analysis data and preserves text after reques
   assert.match(form, /maxLength=\{MAX_FEEDBACK_CHARACTERS\}/);
   assert.match(form, /if \(!feedback \|\| !submissionGate\.current\.begin\(\)\) return/);
   assert.match(form, /catch \(caught\) \{\s*setError\(caught instanceof Error[\s\S]*?Feedback could not be sent right now/);
-  assert.match(form, /setSubmitted\(true\);\s*setMessage\(""\);/);
+  assert.match(form, /setSubmitted\(true\);\s*trackSafeAnalyticsEvent\(\{ type: "feedback_submit_success" \}\);\s*setMessage\(""\);/);
   assert.match(form, /label htmlFor="route-feedback-message"/);
   assert.match(form, /role="status" aria-live="polite"/);
   assert.match(form, /<section className="topo-benefits border-t border-\[#e0e5dc\]/);

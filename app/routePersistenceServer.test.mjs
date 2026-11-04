@@ -4,7 +4,7 @@ import test from "node:test";
 import { createRouteFingerprint } from "./routeFingerprint.ts";
 import { createAnalysisInputFingerprint } from "./analysisInputFingerprint.ts";
 import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis.ts";
-import { lookupSharedRoute } from "./routePersistenceHandler.ts";
+import { handleRoutePersistenceRequest, lookupSharedRoute } from "./routePersistenceHandler.ts";
 import { getOrCreateRouteAnalysis, ROUTE_ANALYSIS_VERSION } from "./routePersistence.ts";
 import { getSharedRouteEligibility } from "./sharedRouteEligibility.ts";
 import { validatePersistenceRequest } from "./routePersistenceValidation.ts";
@@ -223,6 +223,17 @@ test("V1 shared route lookup skips OSM cache reads while preserving shared analy
   assert.equal(lookup.calls.osmReads, 0);
   assert.equal(lookup.calls.mapillaryReads, 1);
   assert.equal(lookup.calls.analysisReads, 1);
+});
+
+test("public V1 route-persistence endpoint is not-found before parsing or touching shared storage", async () => {
+  const response = await handleRoutePersistenceRequest(new Request("https://endurset.example/api/route-persistence", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ operation: "lookup", routeFingerprint: "route-v2-sha256-test" }),
+  }));
+  assert.equal(response.status, 404);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await response.json(), { error: "not_found" });
 });
 
 test("client persistence entry points do not reference privileged database variables", async () => {

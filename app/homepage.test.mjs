@@ -82,7 +82,9 @@ test("the homepage embeds the existing Route Mode upload and analysis workflow d
   assert.match(routeMode, /readGpxUpload\(file\)/);
   assert.match(routeMode, /<RouteAnalysisView/);
   assert.match(routeMode, /input\.value = ""/);
-  assert.match(routeMode, /Your GPX is analyzed in this browser/);
+  assert.match(routeMode, /Your GPX file is analyzed in this browser/);
+  assert.match(routeMode, /No route fingerprint or route geometry is sent to Endurset servers/);
+  assert.match(routeMode, /href="\/privacy"/);
   assert.match(routeMode, /Free to use\. No account required\./);
 });
 
@@ -122,7 +124,9 @@ test("homepage FAQ is data-driven and limited to supported application behavior"
   assert.match(homePage, /Frequently asked questions/);
   assert.match(homePage, /Can this predict how difficult a race will be for me\?/);
   assert.match(homePage, /does not predict race time, trail surface, conditions or your personal effort/);
-  assert.match(homePage, /A derived route fingerprint may be checked against shared route records/);
-  assert.match(homePage, /Map tiles are requested for the geographic area you view/);
-  assert.doesNotMatch(homePage, /Brevo|Subscribe|newsletter/i);
+  assert.match(homePage, /derived route fingerprints are not sent to Endurset servers/);
+  assert.match(homePage, /Map tiles are requested for the area you view/);
+  assert.match(homePage, /Privacy Policy/);
+  assert.match(homePage, /<RouteMode embedded\s*\/>\s*<NewsletterSignup\s*\/>\s*<section id="faq"/);
+  assert.match(homePage, /import NewsletterSignup from "\.\/NewsletterSignup"/);
 });

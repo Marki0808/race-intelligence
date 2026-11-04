@@ -42,6 +42,14 @@ Before enabling feedback in a deployment, review and apply `supabase/migrations/
 
 Feedback has a 12-month retention period; the API prunes older rows on feedback requests. For guaranteed scheduled deletion even during long periods without new submissions, configure a monthly database cleanup with `delete from public.route_feedback_submissions where created_at < now() - interval '12 months';`. Operators can remove a single message with `delete from public.route_feedback_submissions where id = '<submission-uuid>';` or remove all messages with `delete from public.route_feedback_submissions;`. No scheduled cleanup is configured automatically by the application.
 
+## Newsletter signup
+
+The homepage newsletter form records voluntary product-update requests in `public.newsletter_subscribers`. It stores a random UUID, normalized email, signup and consent timestamps, consent text version, status, and nullable future confirmation/withdrawal timestamps. New signups are always `pending_confirmation`; the application has no email sender and does not mark addresses as subscribed. Duplicate active or pending addresses receive the same generic success response as new addresses. The subscriber table has RLS enabled, no browser policies, and explicit revocation of `public`, `anon`, and `authenticated` access. Writes use server-only `POSTGRES_URL`.
+
+Apply `supabase/migrations/202611040001_endurset_newsletter.sql` to the intended Supabase project before enabling signup. Configure `NEWSLETTER_RATE_LIMIT_SECRET` server-side with at least 32 random bytes; it is separate from `FEEDBACK_RATE_LIMIT_SECRET`. Newsletter requests use Vercel's edge-provided `x-vercel-forwarded-for` only to calculate a keyed HMAC limiter digest; raw addresses are not stored in the limiter. The durable database limiter permits 3 requests per client per hour, 30 globally per hour, and 100 globally per day. Never add either secret to a `NEXT_PUBLIC_` variable.
+
+Operational, retention, withdrawal and future export procedures are documented in [`docs/newsletter-operations.md`](docs/newsletter-operations.md). There is no public subscriber list or export endpoint. Because there is no confirmation flow yet, the current public application produces no `subscribed` or export-eligible records.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

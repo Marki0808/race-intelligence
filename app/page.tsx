@@ -1,6 +1,8 @@
 import Link from "next/link";
 import Image from "next/image";
 import RouteMode from "./RouteMode";
+import PrivacySettingsLink from "./PrivacySettingsLink";
+import NewsletterSignup from "./NewsletterSignup";
 
 const faqs = [
   {
@@ -17,7 +19,7 @@ const faqs = [
   },
   {
     question: "Is my GPX file uploaded or stored?",
-    answer: "The GPX file is read and analyzed in your browser and is not uploaded or stored by this app. A derived route fingerprint may be checked against shared route records. Map tiles are requested for the geographic area you view, and route analysis is kept in this browser’s local cache when it does not match a shared route.",
+    answer: "Your GPX is read and analyzed in this browser. GPX content, route geometry, and derived route fingerprints are not sent to Endurset servers or checked against shared-route records. Route analysis may be cached locally in your browser. Map tiles are requested for the area you view. See our Privacy Policy for details.",
   },
   {
     question: "Can I create my own route sections?",
@@ -148,6 +150,8 @@ export default function Home() {
 
       <RouteMode embedded />
 
+      <NewsletterSignup />
+
       <section id="faq" className="topo-benefits scroll-mt-24 mx-auto max-w-4xl px-5 py-14 sm:px-8 sm:py-20">
         <p className="text-xs font-bold uppercase tracking-[0.19em] text-[#71835c]">Frequently asked questions</p>
         <h2 className="mt-3 text-3xl font-semibold tracking-[-0.04em] sm:text-4xl">Before you begin</h2>
@@ -172,6 +176,8 @@ export default function Home() {
           <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-white/70">
             <a href="#analyze" className="transition hover:text-white">Analyze your route</a>
             <a href="#faq" className="transition hover:text-white">FAQ</a>
+            <Link href="/privacy" className="transition hover:text-white">Privacy Policy</Link>
+            <PrivacySettingsLink />
           </div>
           <p className="text-xs leading-5 text-white/55">Understand the route in your GPX.</p>
         </div>
