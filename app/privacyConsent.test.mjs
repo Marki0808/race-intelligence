@@ -14,6 +14,7 @@ import {
   stopBasicAnalytics,
   toSafeAnalyticsPayload,
 } from "./analyticsConsent.ts";
+import { filterVercelAnalyticsEvent } from "./vercelAnalyticsConsent.ts";
 
 const memoryStorage = () => {
   const values = new Map();
@@ -167,6 +168,22 @@ test("analytics events and page views are not dispatched without a stored opt-in
   assert.equal(calls, 2);
 });
 
+test("Vercel Analytics events require current consent and use only sanitized same-origin page paths", () => {
+  const event = { type: "pageview", url: "https://endurset.com/route?filename=private.gpx#track" };
+  assert.equal(filterVercelAnalyticsEvent(event, null, "https://endurset.com"), null, "first visit sends no Vercel event");
+  assert.equal(filterVercelAnalyticsEvent(event, "rejected", "https://endurset.com"), null, "rejection and withdrawal block future events");
+  assert.deepEqual(filterVercelAnalyticsEvent(event, "accepted", "https://endurset.com"), {
+    type: "pageview", url: "https://endurset.com/route",
+  }, "affirmative consent allows the public route-analysis page without query or fragment data");
+  assert.deepEqual(filterVercelAnalyticsEvent({ type: "pageview", url: "https://endurset.com/race/private-event/2026" }, "accepted", "https://endurset.com"), {
+    type: "pageview", url: "https://endurset.com/other",
+  }, "unrecognized paths cannot leak dynamic route identifiers");
+  assert.equal(filterVercelAnalyticsEvent({ type: "pageview", url: "https://attacker.example/route" }, "accepted", "https://endurset.com"), null);
+  assert.deepEqual(filterVercelAnalyticsEvent(event, "accepted", "https://endurset.com"), {
+    type: "pageview", url: "https://endurset.com/route",
+  }, "a later affirmative choice re-enables sanitized events");
+});
+
 test("privacy route, footer/settings entry points, and consent UI are accessible and responsive", async () => {
   const [page, home, manager, route] = await Promise.all([
     readFile(new URL("./privacy/page.tsx", import.meta.url), "utf8"),
@@ -205,4 +222,9 @@ test("privacy route, footer/settings entry points, and consent UI are accessible
   assert.match(manager, /fixed inset-x-3 bottom-14[\s\S]*?flex flex-col gap-2 sm:flex-row/);
   assert.match(manager, /startBasicAnalytics\(document, window, measurementId, choice/);
   assert.match(manager, /choice === "accepted"/);
+  assert.match(manager, /Allow Google Analytics and Vercel Web Analytics/);
+  assert.match(manager, /choice === "accepted" && <Analytics beforeSend=\{gateVercelAnalyticsEvent\} \/>/);
+  assert.match(page, /Vercel Web Analytics also loads only after you accept analytics/);
+  assert.match(page, /visitor identifier from the incoming request/);
+  assert.match(page, /stops future analytics events from both systems/);
 });

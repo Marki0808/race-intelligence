@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useState, useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
+import { Analytics, type BeforeSendEvent } from "@vercel/analytics/next";
 import {
   isValidGaMeasurementId,
   getAnalyticsConsentSnapshot,
@@ -13,9 +14,14 @@ import {
   stopBasicAnalytics,
   type AnalyticsConsent,
 } from "./analyticsConsent";
+import { filterVercelAnalyticsEvent } from "./vercelAnalyticsConsent";
 
 const measurementId = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID;
 const OPEN_SETTINGS_EVENT = "endurset:open-privacy-settings";
+
+function gateVercelAnalyticsEvent(event: BeforeSendEvent): BeforeSendEvent | null {
+  return filterVercelAnalyticsEvent(event, getAnalyticsConsentSnapshot(), window.location.origin);
+}
 
 export default function AnalyticsConsentManager() {
   return <Suspense fallback={null}><ConsentExperience /></Suspense>;
@@ -72,9 +78,9 @@ function ConsentExperience() {
             <div>
               <h2 id="analytics-consent-title" className="text-base font-semibold">Optional analytics</h2>
               <p id="analytics-consent-description" className="mt-1 max-w-2xl text-sm leading-5 text-[#526253]">
-                Allow Google Analytics to measure basic product usage. It stays off unless you accept and analytics is configured. Your GPX, route details and feedback are never sent as analytics data. Read the <Link href="/privacy" className="underline underline-offset-2">Privacy Policy</Link> or change this choice later in Privacy settings.
+                Allow Google Analytics and Vercel Web Analytics to measure basic website and product usage. Both stay off unless you accept. Your GPX, route details and feedback are never sent as analytics data. Read the <Link href="/privacy" className="underline underline-offset-2">Privacy Policy</Link> or change this choice later in Privacy settings.
               </p>
-              {!isValidGaMeasurementId(measurementId) && <p className="mt-2 text-xs leading-5 text-[#59635d]">Analytics is not configured on this site, so accepting will not load an analytics script.</p>}
+              {!isValidGaMeasurementId(measurementId) && <p className="mt-2 text-xs leading-5 text-[#59635d]">Google Analytics is not configured; Vercel Web Analytics requires project activation and your consent.</p>}
               {storageNotice && <p role="status" className="mt-2 text-xs text-[#7a4b12]">{storageNotice}</p>}
             </div>
             {choice !== null && <button type="button" onClick={() => setOpen(false)} aria-label="Close privacy settings" className="rounded px-2 py-1 text-sm text-[#526253] hover:bg-[#f1f2ec] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#71805d]">Close</button>}
@@ -85,6 +91,7 @@ function ConsentExperience() {
           </div>
         </section>
       )}
+      {choice === "accepted" && <Analytics beforeSend={gateVercelAnalyticsEvent} />}
     </>
   );
 }
