@@ -108,13 +108,23 @@ export function startBasicAnalytics(document: Document, window: AnalyticsWindow,
   // when there is no existing tag to process the denial update.
   window.dataLayer = existingScript ? (window.dataLayer ?? []) : [];
   window.gtag = (...args: unknown[]) => { window.dataLayer?.push(args); };
+  if (!existingScript) {
+    // Basic Consent Mode keeps the Google tag absent until opt-in. Once accepted,
+    // establish explicit defaults before initialization, then apply the choice.
+    window.gtag("consent", "default", {
+      analytics_storage: "denied",
+      ad_storage: "denied",
+      ad_user_data: "denied",
+      ad_personalization: "denied",
+    });
+    window.gtag("js", new Date());
+  }
   window.gtag("consent", "update", {
     analytics_storage: "granted",
     ad_storage: "denied",
     ad_user_data: "denied",
     ad_personalization: "denied",
   });
-  if (!existingScript) window.gtag("js", new Date());
   const page = safeAnalyticsPage(pathname);
   window.gtag("config", measurementId, {
     send_page_view: false,
