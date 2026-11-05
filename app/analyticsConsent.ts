@@ -107,7 +107,10 @@ export function startBasicAnalytics(document: Document, window: AnalyticsWindow,
   // A fresh queue prevents events queued before a withdrawal from being replayed
   // when there is no existing tag to process the denial update.
   window.dataLayer = existingScript ? (window.dataLayer ?? []) : [];
-  window.gtag = (...args: unknown[]) => { window.dataLayer?.push(args); };
+  // Match Google's documented queue contract: gtag pushes its arguments
+  // object, which the asynchronously loaded tag drains in command order.
+  // eslint-disable-next-line prefer-rest-params -- Google's gtag queue contract uses the arguments object.
+  window.gtag = function gtag() { window.dataLayer?.push(arguments); };
   if (!existingScript) {
     // Basic Consent Mode keeps the Google tag absent until opt-in. Once accepted,
     // establish explicit defaults before initialization, then apply the choice.

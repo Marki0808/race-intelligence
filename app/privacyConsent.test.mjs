@@ -58,16 +58,17 @@ test("accepted analytics configuration disables automatic page view and inserts 
   // The queue establishes denied defaults, initializes gtag, grants only the
   // accepted analytics choice, and configures the destination before page_view.
   assert.equal(window.dataLayer.length, 4);
-  assert.deepEqual(window.dataLayer[0], ["consent", "default", {
+  assert.deepEqual(Array.from(window.dataLayer[0]), ["consent", "default", {
     analytics_storage: "denied", ad_storage: "denied", ad_user_data: "denied", ad_personalization: "denied",
   }]);
   assert.equal(window.dataLayer[1][0], "js");
-  assert.deepEqual(window.dataLayer[2], ["consent", "update", {
+  assert.deepEqual(Array.from(window.dataLayer[2]), ["consent", "update", {
     analytics_storage: "granted", ad_storage: "denied", ad_user_data: "denied", ad_personalization: "denied",
   }]);
+  assert.equal(Object.prototype.toString.call(window.dataLayer[0]), "[object Arguments]", "queued commands use Google's documented gtag arguments-object format");
   window.gtag = (...args) => calls.push(args);
   // The config queued values are safe, including sanitized page URL.
-  assert.deepEqual(window.dataLayer[3].slice(0, 2), ["config", "G-ABCD1234"]);
+  assert.deepEqual(Array.from(window.dataLayer[3]).slice(0, 2), ["config", "G-ABCD1234"]);
   assert.equal(window.dataLayer[3][2].page_path, "/route");
   assert.equal(window.dataLayer[3][2].page_location, "https://endurset.com/route");
   assert.equal(window.dataLayer[3][2].cookie_domain, "endurset.com");
