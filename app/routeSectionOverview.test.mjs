@@ -86,6 +86,7 @@ test("overview remains compact and responsive while detailed inspection behavior
     readFile(new URL("./customRouteSections.ts", import.meta.url), "utf8"),
   ]);
   assert.match(overview, /FULL ROUTE OVERVIEW/);
+  assert.match(overview, /<span className="text-xs font-semibold uppercase tracking-\[0\.14em\] text-\[var\(--analysis-muted\)\]">FULL ROUTE OVERVIEW/);
   assert.match(overview, /Selected section highlighted/);
   assert.match(overview, /className="block h-\[124px\] w-full/);
   assert.match(overview, /preserveAspectRatio="none"/);

@@ -42,7 +42,7 @@ export default function RouteSectionOverview({ section, routePoints, units }: {
 
   return <figure className="mt-4 min-w-0">
     <figcaption className="mb-1 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-      <span className="text-xs font-semibold uppercase tracking-[0.14em] text-white/85">FULL ROUTE OVERVIEW</span>
+      <span className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--analysis-muted)]">FULL ROUTE OVERVIEW</span>
       <span className="text-[10px] text-white/55">{layout.selectedRange ? "Selected section highlighted" : "Section bounds unavailable"}</span>
     </figcaption>
     <svg
