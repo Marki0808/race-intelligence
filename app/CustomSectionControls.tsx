@@ -1,7 +1,7 @@
 "use client";
 
 import type { CustomSectionBoundary, CustomSectionPlan } from "./customRouteSections";
-import { MAX_CUSTOM_SECTION_BOUNDARIES } from "./customRouteSections";
+import { MAX_CUSTOM_SECTION_BOUNDARIES, sortCustomSectionBoundaries } from "./customRouteSections";
 import { useState } from "react";
 import { useRouteUnits } from "./RouteUnitPreference";
 import { distanceKmToInput, distanceUnit, distanceInputToKm, formatDistanceMeters } from "./routeUnits";
@@ -34,7 +34,10 @@ export default function CustomSectionControls({
   const changeDistanceInput = (boundary: CustomSectionBoundary, value: string) => {
     const canonicalValue = distanceInputToKm(value, units);
     setDistanceDrafts((current) => ({ ...current, [boundary.id]: { units, value, canonicalValue } }));
-    updateBoundary(boundary.id, { distanceKm: canonicalValue });
+    onChange(sortCustomSectionBoundaries({
+      ...plan,
+      boundaries: plan.boundaries.map((item) => item.id === boundary.id ? { ...item, distanceKm: canonicalValue } : item),
+    }));
   };
   const removeBoundary = (id: string) => {
     setDistanceDrafts((current) => { const next = { ...current }; delete next[id]; return next; });

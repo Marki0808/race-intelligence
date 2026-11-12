@@ -7,9 +7,11 @@ import { useRouteUnits } from "./RouteUnitPreference";
 import { formatDistanceMeters, type RouteUnitSystem } from "./routeUnits";
 
 const categories = [
-  { key: "gentle", label: "Gentle", definition: ">0–10%" },
-  { key: "moderate", label: "Moderate", definition: ">10–20%" },
-  { key: "steep", label: "Steep", definition: ">20%" },
+  { key: "gentle", label: "Gentle", definition: "0–<5%" },
+  { key: "moderate", label: "Moderate", definition: "5–<10%" },
+  { key: "steep", label: "Steep", definition: "10–<15%" },
+  { key: "very-steep", label: "Very steep", definition: "15–<20%" },
+  { key: "extreme", label: "Extreme", definition: "20%+" },
 ] as const;
 
 const directions: Array<{ value: GradientDistributionDirection; label: string }> = [
@@ -86,7 +88,7 @@ export default function ClimbingProfile({ routeDynamics }: { routeDynamics: Rout
           How gradients are calculated
         </summary>
         <p className="mt-3 text-xs leading-5">
-          Gradient bands use the smoothed GPX elevation profile, resampled every {formatMethodDistance(100, units)} with a {formatMethodDistance(150, units)}-radius median filter and a {formatMethodDistance(250, units)}-radius moving average. Uphill distribution counts intervals with positive gradients; downhill distribution uses the absolute grade of intervals with negative gradients. Flat intervals and intervals in the opposite direction are excluded. Each direction requires at least {formatMethodDistance(500, units)} across five qualifying intervals and sufficiently complete samples; otherwise its distribution is unavailable. Smoothing can reduce or remove short, steep features, so a brief ramp may not appear in its steepest category.
+          Gradient bands use the smoothed GPX elevation profile, resampled every {formatMethodDistance(100, units)} with a {formatMethodDistance(150, units)}-radius median filter and a {formatMethodDistance(250, units)}-radius moving average. Uphill distribution counts intervals with positive gradients; downhill distribution uses the absolute grade of intervals with negative gradients. Bands use non-overlapping ranges [0, 5), [5, 10), [10, 15), [15, 20), and [20, +∞), in percent; flat intervals and intervals in the opposite direction are excluded. Each direction requires at least {formatMethodDistance(500, units)} across five qualifying intervals and sufficiently complete samples; otherwise its distribution is unavailable. Smoothing can reduce or remove short, steep features, so a brief ramp may not appear in its steepest category.
         </p>
       </details>
     </section>

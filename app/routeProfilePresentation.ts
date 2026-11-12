@@ -1,6 +1,6 @@
 import type { RouteSection } from "./routeSectionEngine";
-import { routeSectionSelectionKey } from "./routeSectionSelection";
-import { formatDistanceMeters, type RouteUnitSystem } from "./routeUnits";
+import { routeSectionSelectionKey } from "./routeSectionSelection.ts";
+import { formatDistanceMeters, type RouteUnitSystem } from "./routeUnits.ts";
 
 export type NiceAxisScale = {
   minimum: number;

@@ -81,7 +81,7 @@ export default function RouteSectionProfile({ section, routePoints, sectionKind 
   const inspectedX = inspected ? x(inspected.distanceM) : null;
   const inspectedY = inspected ? y(inspected.elevationM) : null;
   return <div className="mt-6">
-    <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-[var(--analysis-muted)]">Section elevation profile · full-route distance</p>
+    <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-[var(--analysis-muted)]">ZOOMED SECTION DETAIL · FULL-ROUTE DISTANCE</p>
     <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} className="h-52 w-full rounded-xl bg-[#17211c] touch-pan-y sm:h-56" role="img" aria-label={accessible}
       onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={() => { if (timer.current !== null) window.clearTimeout(timer.current); timer.current = null; gesture.current = null; }}
       onPointerCancel={() => { if (timer.current !== null) window.clearTimeout(timer.current); timer.current = null; gesture.current = null; setInspected(null); }} onPointerLeave={(event) => { if (event.pointerType === "mouse") setInspected(null); }}>

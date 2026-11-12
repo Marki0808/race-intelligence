@@ -232,6 +232,14 @@ test("privacy route, footer/settings entry points, and consent UI are accessible
   assert.match(manager, /Allow Google Analytics and Vercel Web Analytics/);
   assert.match(manager, /choice === "accepted" && <Analytics beforeSend=\{gateVercelAnalyticsEvent\} \/>/);
   assert.match(page, /Vercel Web Analytics also loads only after you accept analytics/);
+  assert.match(page, /basemap from OpenFreeMap and terrain elevation tiles from Mapterhorn/);
+  assert.match(page, /If you switch to 2D Map, your browser requests raster tiles from OpenStreetMap Foundation/);
+  assert.match(page, /not controlled by analytics consent/);
+  assert.match(page, /geographic tile identifiers requested/);
+  assert.match(page, /complete route geometry are not sent to OpenFreeMap, Mapterhorn, or OpenStreetMap Foundation/);
+  assert.match(page, /OpenFreeMap privacy policy/);
+  assert.match(page, /Mapterhorn privacy policy/);
+  assert.match(page, /OpenStreetMap Foundation privacy policy/);
   assert.match(page, /visitor identifier from the incoming request/);
   assert.match(page, /stops future analytics events from both systems/);
 });

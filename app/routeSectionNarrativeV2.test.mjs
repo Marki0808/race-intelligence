@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildRouteNarrativePhasesV2 } from "./routeNarrativePhases.ts";
 import { presentRouteSectionNarrativeV2 } from "./routeSectionNarrativeV2.ts";
+import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis.ts";
+import { buildCustomRouteSections, createCustomSectionPlan } from "./customRouteSections.ts";
+import { buildGradientIntelligenceV1 } from "./gradientIntelligence.ts";
 
 function interval(index, direction, grade, { length = 500, segmentIndex = 0, confidence, startDistanceM = index * length } = {}) {
   const endDistanceM = startDistanceM + length;
@@ -168,8 +171,45 @@ test("incomplete interval coverage fails closed and narrative avoids unsupported
   incomplete.sections[0].intervals.pop();
   const invalid = buildRouteNarrativePhasesV2(incomplete, [section], section);
   assert.equal(invalid.status, "invalid-data");
+  assert.deepEqual(presentRouteSectionNarrativeV2(incomplete, [section], section).paragraphs,
+    ["A reliable section narrative is not available for this elevation profile."]);
   const output = presentRouteSectionNarrativeV2(gradient, [section], section);
   assert.doesNotMatch(output.paragraphs.join(" "), /trail|surface|technical|exposure|weather|speed|effort|fitness|pace|difficult/i);
+});
+
+test("valid sustained climb and descent from clipped GPX profiles produce grounded section narratives", () => {
+  function buildProfile(direction) {
+    const points = [];
+    for (let index = 0; index <= 200; index += 1) {
+      const distanceM = index * 100;
+      const fraction = Math.max(0, Math.min(1, (distanceM - 8150) / (15760 - 8150)));
+      const elevationM = direction === "descent" ? 1020 - 961 * fraction : 59 + 961 * fraction;
+      points.push(`<trkpt lat="${45 + distanceM / 111195}" lon="13"><ele>${elevationM}</ele></trkpt>`);
+    }
+    const analysis = analyzeGpxRoute(parseGpxText(`<gpx><trk><trkseg>${points.join("")}</trkseg></trk></gpx>`));
+    assert.ok(analysis);
+    const plan = { ...createCustomSectionPlan(), boundaries: [
+      { id: "narrative-start", distanceKm: "8.150", name: "Start of selected interval" },
+      { id: "narrative-end", distanceKm: "15.760", name: "End of selected interval" },
+    ] };
+    const custom = buildCustomRouteSections(analysis, plan);
+    assert.equal(custom.available, true);
+    const section = custom.sections.find((item) => item.startPosition.distanceM > 8000 && item.startPosition.distanceM < 8300);
+    assert.ok(section);
+    const gradient = buildGradientIntelligenceV1(analysis.routeDynamics, custom.sections);
+    return { section, sections: custom.sections, gradient, narrative: presentRouteSectionNarrativeV2(gradient, custom.sections, section) };
+  }
+
+  const descent = buildProfile("descent");
+  assert.equal(descent.narrative.status, "available");
+  assert.match(descent.narrative.paragraphs.join(" "), /long descent.*km 8\.2–15\.8/i);
+  assert.match(descent.narrative.paragraphs.join(" "), /averaging −12\./);
+  assert.doesNotMatch(descent.narrative.paragraphs.join(" "), /reliable section narrative is not available/i);
+
+  const climb = buildProfile("climb");
+  assert.equal(climb.narrative.status, "available");
+  assert.match(climb.narrative.paragraphs.join(" "), /long climb.*km 8\.2–15\.8/i);
+  assert.match(climb.narrative.paragraphs.join(" "), /averaging \+12\./);
 });
 
 test("short direction sequences remain distinct and route section bounds are unchanged", () => {

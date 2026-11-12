@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { calculateClimbingProfile, calculateGradientDistribution } from "./climbingProfileModel.ts";
+import { calculateClimbingProfile, calculateGradientDistribution, calculateSectionGradientDistribution, categoryForAbsoluteGrade, defaultSectionGradientDirection } from "./climbingProfileModel.ts";
 import { analyzeRouteDynamics } from "./routeDynamics.ts";
 import { formatDistanceMeters } from "./routeUnits.ts";
 
@@ -30,23 +30,32 @@ function makeRoutePoints({ distanceM = 10_000, spacingM = 50, gradePct = 5, nois
   return points;
 }
 
-test("uphill grade boundaries are mutually exclusive and measured uphill shares total 100%", () => {
-  const grades = [
-    ...Array(10).fill(5),
-    ...Array(10).fill(10),
-    ...Array(10).fill(10.01),
-    ...Array(10).fill(20),
-    ...Array(10).fill(20.01),
-  ];
+test("five uphill bands use exact non-overlapping boundaries and reconcile distance and percentages", () => {
+  const grades = [4.99, 5, 9.99, 10, 14.99, 15, 19.99, 20].flatMap((grade) => Array(10).fill(grade));
   const result = calculateClimbingProfile(dynamicsFromGrades(grades));
   assert.equal(result.status, "available");
   assert.deepEqual(result.categories, {
-    gentle: { distanceM: 2000, percent: 40 },
-    moderate: { distanceM: 2000, percent: 40 },
-    steep: { distanceM: 1000, percent: 20 },
+    gentle: { distanceM: 1000, percent: 13 },
+    moderate: { distanceM: 2000, percent: 25 },
+    steep: { distanceM: 2000, percent: 25 },
+    "very-steep": { distanceM: 2000, percent: 25 },
+    extreme: { distanceM: 1000, percent: 12 },
   });
   assert.equal(Object.values(result.categories).reduce((sum, category) => sum + category.distanceM, 0), result.measuredUphillDistanceM);
   assert.equal(Object.values(result.categories).reduce((sum, category) => sum + category.percent, 0), 100);
+});
+
+test("five-band lower bounds are inclusive and upper bounds are exclusive", () => {
+  assert.deepEqual([0, 4.999, 5, 9.999, 10, 14.999, 15, 19.999, 20].map(categoryForAbsoluteGrade), [
+    "gentle", "gentle", "moderate", "moderate", "steep", "steep", "very-steep", "very-steep", "extreme",
+  ]);
+});
+
+test("section Gradient Distribution defaults to the dominant direction and uses uphill for mixed or flat sections", () => {
+  assert.equal(defaultSectionGradientDirection("descent"), "downhill");
+  assert.equal(defaultSectionGradientDirection("climb"), "uphill");
+  assert.equal(defaultSectionGradientDirection("rolling"), "uphill");
+  assert.equal(defaultSectionGradientDirection("flat"), "uphill");
 });
 
 test("downhill and flat intervals do not enter the uphill-distance denominator", () => {
@@ -55,23 +64,19 @@ test("downhill and flat intervals do not enter the uphill-distance denominator",
   ]));
   assert.equal(result.status, "available");
   assert.equal(result.measuredUphillDistanceM, 2000);
-  assert.deepEqual(Object.values(result.categories).map(({ distanceM }) => distanceM), [2000, 0, 0]);
+  assert.deepEqual(Object.values(result.categories).map(({ distanceM }) => distanceM), [0, 2000, 0, 0, 0]);
 });
 
-test("downhill uses absolute negative grades with the same exact category boundaries", () => {
-  const grades = [
-    ...Array(10).fill(-5),
-    ...Array(10).fill(-10),
-    ...Array(10).fill(-10.01),
-    ...Array(10).fill(-20),
-    ...Array(10).fill(-20.01),
-  ];
+test("downhill uses absolute negative grades with the same five exact category boundaries", () => {
+  const grades = [-4.99, -5, -9.99, -10, -14.99, -15, -19.99, -20].flatMap((grade) => Array(10).fill(grade));
   const result = calculateGradientDistribution(dynamicsFromGrades(grades), "downhill");
   assert.equal(result.status, "available");
   assert.deepEqual(result.categories, {
-    gentle: { distanceM: 2000, percent: 40 },
-    moderate: { distanceM: 2000, percent: 40 },
-    steep: { distanceM: 1000, percent: 20 },
+    gentle: { distanceM: 1000, percent: 13 },
+    moderate: { distanceM: 2000, percent: 25 },
+    steep: { distanceM: 2000, percent: 25 },
+    "very-steep": { distanceM: 2000, percent: 25 },
+    extreme: { distanceM: 1000, percent: 12 },
   });
   assert.equal(Object.values(result.categories).reduce((sum, category) => sum + category.distanceM, 0), result.measuredDistanceM);
   assert.equal(Object.values(result.categories).reduce((sum, category) => sum + category.percent, 0), 100);
@@ -79,7 +84,7 @@ test("downhill uses absolute negative grades with the same exact category bounda
 
 test("cumulative category distances format in selected units without changing percentages", () => {
   const result = calculateGradientDistribution(dynamicsFromGrades([
-    ...Array(10).fill(5), ...Array(10).fill(15), ...Array(10).fill(25),
+    ...Array(10).fill(4), ...Array(10).fill(15), ...Array(10).fill(25),
   ]), "uphill");
   assert.equal(result.status, "available");
   const metricPresentation = Object.fromEntries(Object.entries(result.categories).map(([key, value]) => [key, {
@@ -107,8 +112,8 @@ test("mixed route directions use separate uphill and downhill distance denominat
   assert.equal(downhill.status, "available");
   assert.equal(uphill.measuredDistanceM, 2000);
   assert.equal(downhill.measuredDistanceM, 2000);
-  assert.deepEqual(Object.values(uphill.categories).map(({ distanceM }) => distanceM), [1000, 0, 1000]);
-  assert.deepEqual(Object.values(downhill.categories).map(({ distanceM }) => distanceM), [1000, 1000, 0]);
+  assert.deepEqual(Object.values(uphill.categories).map(({ distanceM }) => distanceM), [0, 1000, 0, 0, 1000]);
+  assert.deepEqual(Object.values(downhill.categories).map(({ distanceM }) => distanceM), [0, 1000, 0, 1000, 0]);
 });
 
 test("each direction can be available independently of the opposite direction", () => {
@@ -124,8 +129,8 @@ test("uses Route Dynamics smoothed samples so high-frequency GPX noise does not 
   const routeDynamics = analyzeRouteDynamics(makeRoutePoints({ noiseM: 6 }));
   const result = calculateClimbingProfile(routeDynamics);
   assert.equal(result.status, "available");
-  assert.ok(result.categories.gentle.percent + result.categories.moderate.percent >= 95);
-  assert.ok(result.categories.steep.percent <= 5);
+  assert.ok(result.categories.gentle.percent + result.categories.moderate.percent + result.categories.steep.percent >= 95);
+  assert.ok(result.categories.extreme.percent <= 5);
 });
 
 test("disconnected components are classified separately with no synthetic elevation transition", () => {
@@ -134,11 +139,49 @@ test("disconnected components are classified separately with no synthetic elevat
   const result = calculateClimbingProfile({ resampledPoints: [...first, ...second] });
   assert.equal(result.status, "available");
   assert.equal(result.measuredUphillDistanceM, 2000);
-  assert.deepEqual(Object.values(result.categories).map(({ distanceM }) => distanceM), [1000, 1000, 0]);
+  assert.deepEqual(Object.values(result.categories).map(({ distanceM }) => distanceM), [0, 1000, 0, 1000, 0]);
   const downhill = calculateGradientDistribution({ resampledPoints: [...first, ...second] }, "downhill");
   assert.equal(downhill.status, "available");
   assert.equal(downhill.measuredDistanceM, 1000);
-  assert.deepEqual(Object.values(downhill.categories).map(({ distanceM }) => distanceM), [1000, 0, 0]);
+  assert.deepEqual(Object.values(downhill.categories).map(({ distanceM }) => distanceM), [0, 1000, 0, 0, 0]);
+});
+
+test("section distributions clip fractional boundaries, preserve five band totals, and keep uphill and downhill separate", () => {
+  const makeSection = (sign) => {
+    let elevationM = 1000;
+    const grades = [4, 6, 11, 16, 21, 4, 6, 11, 16, 21];
+    const profile = [{ distanceM: 0, elevationM }];
+    for (let index = 0; index < grades.length; index += 1) {
+      elevationM += grades[index] * sign;
+      profile.push({ distanceM: (index + 1) * 100, elevationM });
+    }
+    return {
+      startPosition: { distanceM: 50, segmentIndex: 0 },
+      endPosition: { distanceM: 950, segmentIndex: 0 },
+      elevationProfile: profile,
+    };
+  };
+  const uphill = calculateSectionGradientDistribution(makeSection(1), "uphill");
+  const downhill = calculateSectionGradientDistribution(makeSection(-1), "downhill");
+  assert.equal(uphill.status, "available");
+  assert.equal(downhill.status, "available");
+  assert.deepEqual(Object.values(uphill.categories).map(({ distanceM }) => distanceM), [150, 200, 200, 200, 150]);
+  assert.deepEqual(Object.values(downhill.categories).map(({ distanceM }) => distanceM), [150, 200, 200, 200, 150]);
+  assert.equal(uphill.measuredDistanceM, 900);
+  assert.equal(downhill.measuredDistanceM, 900);
+  assert.equal(Object.values(uphill.categories).reduce((sum, category) => sum + category.percent, 0), 100);
+  assert.deepEqual(uphill.categories, downhill.categories);
+});
+
+test("section distributions exclude flat and opposite-direction distance and reject component or sample gaps", () => {
+  const profile = Array.from({ length: 11 }, (_, index) => ({ distanceM: index * 100, elevationM: 100 + (index % 2 ? 5 : 0) }));
+  const section = { startPosition: { distanceM: 0, segmentIndex: 0 }, endPosition: { distanceM: 1000, segmentIndex: 0 }, elevationProfile: profile };
+  assert.deepEqual(calculateSectionGradientDistribution({ ...section, elevationProfile: Array.from({ length: 11 }, (_, index) => ({ distanceM: index * 100, elevationM: 10 })) }, "uphill"),
+    { status: "unavailable", reason: "insufficient-uphill-distance" });
+  assert.deepEqual(calculateSectionGradientDistribution({ ...section, endPosition: { distanceM: 1000, segmentIndex: 1 } }, "uphill"),
+    { status: "unavailable", reason: "incomplete-smoothed-profile" });
+  assert.deepEqual(calculateSectionGradientDistribution({ ...section, elevationProfile: [{ distanceM: 0, elevationM: 0 }, { distanceM: 200, elevationM: 20 }] }, "uphill"),
+    { status: "unavailable", reason: "incomplete-smoothed-profile" });
 });
 
 test("flat, very short uphill, missing, invalid and widely gapped profiles fail safely", () => {
@@ -174,6 +217,8 @@ test("Route Analysis shows an accessible two-direction Gradient Distribution nea
   assert.match(component, /Gentle/);
   assert.match(component, /Moderate/);
   assert.match(component, /Steep/);
+  assert.match(component, /Very steep/);
+  assert.match(component, /Extreme/);
   assert.match(component, /Percentages show the share of \{directionName\} distance/);
   assert.match(component, /<details[^>]*>[\s\S]*?<summary[^>]*>[\s\S]*?How gradients are calculated[\s\S]*?<\/summary>/);
   assert.doesNotMatch(component, /<details[^>]*open/);

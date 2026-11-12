@@ -11,6 +11,8 @@ import {
   type RouteRhythm,
 } from "./routeDynamics.ts";
 
+const MAX_PROFILE_INTERPOLATION_GAP_M = 250;
+
 export type RouteEmbeddedEvent = Pick<
   RouteDynamicEvent,
   "id" | "rhythm" | "startKm" | "endKm" | "ascentM" | "descentM" | "significance" | "segmentIndex" | "startPosition" | "endPosition"
@@ -816,7 +818,9 @@ function createSection(
   const endM = phase.endIndex === lastSegmentIndex
     ? dynamics.samples[phase.endIndex].distanceM
     : (dynamics.samples[phase.endIndex].distanceM + dynamics.samples[phase.endIndex + 1].distanceM) / 2;
-  const route = dynamics.resampledPoints.filter((point) => (point.segmentIndex ?? 0) === segmentIndex && point.distanceM >= startM && point.distanceM <= endM);
+  const componentProfile = dynamics.resampledPoints.filter((point) => (point.segmentIndex ?? 0) === segmentIndex);
+  const route = componentProfile.filter((point) => point.distanceM >= startM && point.distanceM <= endM);
+  const clippedProfile = clipSmoothedProfileToBounds(componentProfile, startM, endM);
   const sourceExtrema = measureRouteSourceElevationExtrema(routePoints, segmentIndex, startM, endM);
   let ascentM = 0;
   let descentM = 0;
@@ -864,7 +868,10 @@ function createSection(
     elevationMaxM: Math.round(sourceExtrema?.maximum ?? route.reduce((maximum, point) => Math.max(maximum, point.elevationM), Number.NEGATIVE_INFINITY)),
     ascentM: Math.round(ascentM),
     descentM: Math.round(descentM),
-    elevationProfile: route.map((point) => ({ distanceM: point.distanceM, elevationM: point.smoothedElevationM })),
+    // Section grade models require coverage of the exact boundaries. Keep their
+    // profile component-scoped and interpolate only across supported sample gaps.
+    // The existing `route` samples above continue to drive the established stats.
+    elevationProfile: clippedProfile ?? route.map((point) => ({ distanceM: point.distanceM, elevationM: point.smoothedElevationM })),
     embeddedEvents,
     dynamicsSummary: {
       verticalIntensityMPerKm: round1(verticalIntensityMPerKm),
@@ -876,6 +883,36 @@ function createSection(
     mapData: routePoints.filter((point) => (point.segmentIndex ?? 0) === segmentIndex && point.distanceM >= startM && point.distanceM <= endM)
       .map(({ latitude, longitude, elevationM, distanceM, segmentIndex: pointSegment }) => ({ latitude, longitude, elevationM, distanceM, segmentIndex: pointSegment })),
   };
+}
+
+function clipSmoothedProfileToBounds(
+  points: readonly { distanceM: number; smoothedElevationM: number }[],
+  startDistanceM: number,
+  endDistanceM: number,
+) {
+  const start = interpolateSmoothedProfile(points, startDistanceM);
+  const end = interpolateSmoothedProfile(points, endDistanceM);
+  if (!start || !end || endDistanceM <= startDistanceM) return null;
+  return [start,
+    ...points.filter((point) => point.distanceM > startDistanceM && point.distanceM < endDistanceM)
+      .map((point) => ({ distanceM: point.distanceM, elevationM: point.smoothedElevationM })),
+    end];
+}
+
+function interpolateSmoothedProfile(
+  points: readonly { distanceM: number; smoothedElevationM: number }[],
+  distanceM: number,
+) {
+  const exact = points.find((point) => Math.abs(point.distanceM - distanceM) < 0.001);
+  if (exact) return { distanceM, elevationM: exact.smoothedElevationM };
+  const rightIndex = points.findIndex((point) => point.distanceM > distanceM);
+  if (rightIndex <= 0) return null;
+  const left = points[rightIndex - 1];
+  const right = points[rightIndex];
+  const spanM = right.distanceM - left.distanceM;
+  if (spanM <= 0 || spanM > MAX_PROFILE_INTERPOLATION_GAP_M || distanceM < left.distanceM || distanceM > right.distanceM) return null;
+  const ratio = (distanceM - left.distanceM) / spanM;
+  return { distanceM, elevationM: left.smoothedElevationM + (right.smoothedElevationM - left.smoothedElevationM) * ratio };
 }
 
 function phaseSummary(phase: Phase, dynamics: RouteDynamicsResult) {

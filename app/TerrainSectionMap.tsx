@@ -9,6 +9,11 @@ import { formatRouteDistanceKm } from "./routeUnits";
 import { clipRoutePointsToSection } from "./routeSectionSelection";
 import { groupAnalyzedPointsBySegment } from "./gpxAnalysis";
 import { ROUTE_MAP_STYLES } from "./routeMapStyles";
+import { attachMapWheelZoom } from "./mapWheelZoom";
+import dynamic from "next/dynamic";
+import { RouteMapModeSelector, type RouteMapMode } from "./RouteMapMode";
+
+const MapLibreRouteMap = dynamic(() => import("./MapLibreRouteMap"), { ssr: false });
 
 export default function TerrainSectionMap({
   points,
@@ -16,22 +21,31 @@ export default function TerrainSectionMap({
   startDistanceKm,
   endDistanceKm,
   units = "metric",
+  mapMode = "3d",
+  onMapModeChange = () => undefined,
 }: {
   points: readonly GpxRoutePointData[];
   section: Pick<RouteSection, "id" | "segmentIndex" | "startPosition" | "endPosition">;
   startDistanceKm: number;
   endDistanceKm: number;
   units?: RouteUnitSystem;
+  mapMode?: RouteMapMode;
+  onMapModeChange?: (mode: RouteMapMode) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<LeafletMap | null>(null);
+  const interactionRef = useRef<HTMLDivElement | null>(null);
+  const wheelZoomRef = useRef<ReturnType<typeof attachMapWheelZoom> | null>(null);
   const leafletRef = useRef<typeof import("leaflet") | null>(null);
   const selectionLayers = useRef<Layer[]>([]);
   const [mapReady, setMapReady] = useState(false);
+  const [wheelZoomActive, setWheelZoomActive] = useState(false);
   const components = useMemo(() => groupAnalyzedPointsBySegment(points), [points]);
+  const selectedPoints = useMemo(() => clipRoutePointsToSection(points, section), [points, section]);
+  const sectionFocusPoints = useMemo(() => points.filter((point) => point.segmentIndex === section.segmentIndex && point.distanceM >= section.startPosition.distanceM - 1500 && point.distanceM <= section.endPosition.distanceM + 1500), [points, section]);
 
   useEffect(() => {
-    if (!containerRef.current || points.length < 2) return;
+    if (mapMode !== "2d" || !containerRef.current || points.length < 2) return;
     let cancelled = false;
     let map: LeafletMap | undefined;
     let resizeObserver: ResizeObserver | undefined;
@@ -42,7 +56,8 @@ export default function TerrainSectionMap({
       leafletRef.current = L;
       map = L.map(containerRef.current, { scrollWheelZoom: false, zoomControl: true, attributionControl: true });
       mapRef.current = map;
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "&copy; OpenStreetMap contributors", maxZoom: 19 }).addTo(map);
+      wheelZoomRef.current = attachMapWheelZoom(map, interactionRef.current ?? containerRef.current, setWheelZoomActive);
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "&copy; OpenStreetMap contributors", maxZoom: 19 }).addTo(map);
       const coordinates = components.filter((segment) => segment.length > 1).map((segment) => segment.map(({ latitude, longitude }) => [latitude, longitude] as [number, number]));
       for (const path of coordinates) {
         L.polyline(path, ROUTE_MAP_STYLES.contextHalo).addTo(map);
@@ -62,24 +77,55 @@ export default function TerrainSectionMap({
     }
     const intersection = new IntersectionObserver((entries) => { if (entries.some((entry) => entry.isIntersecting)) { intersection.disconnect(); void initialize(); } }, { rootMargin: "240px" });
     intersection.observe(containerRef.current);
-    return () => { cancelled = true; intersection?.disconnect(); resizeObserver?.disconnect(); map?.remove(); mapRef.current = null; leafletRef.current = null; selectionLayers.current = []; setMapReady(false); };
-  }, [components, points]);
+    return () => { cancelled = true; intersection?.disconnect(); resizeObserver?.disconnect(); wheelZoomRef.current?.dispose(); wheelZoomRef.current = null; map?.remove(); mapRef.current = null; leafletRef.current = null; selectionLayers.current = []; setMapReady(false); };
+  }, [components, mapMode, points]);
 
   useEffect(() => {
     const map = mapRef.current;
     const L = leafletRef.current;
-    if (!map || !L || !mapReady) return;
+    if (mapMode !== "2d" || !map || !L || !mapReady) return;
     for (const layer of selectionLayers.current) layer.removeFrom(map);
     selectionLayers.current = [];
-    const selectedPoints = clipRoutePointsToSection(points, section);
     if (selectedPoints.length > 1) {
       const coordinates = selectedPoints.map(({ latitude, longitude }) => [latitude, longitude]) as [number, number][];
       selectionLayers.current.push(L.polyline(coordinates, ROUTE_MAP_STYLES.selectedHalo).addTo(map));
       selectionLayers.current.push(L.polyline(coordinates, ROUTE_MAP_STYLES.selectedSection).addTo(map));
     }
-  }, [mapReady, points, section]);
+  }, [mapMode, mapReady, points, section, selectedPoints]);
 
   return points.length >= 2 ? (
-    <div ref={containerRef} className="mt-3 h-56 w-full min-w-0 overflow-hidden rounded-xl border border-black/10 bg-[#e7e8e2] sm:h-64" role="region" aria-label={`Full route map with Route Section ${formatRouteDistanceKm(startDistanceKm, units, 2)} to ${formatRouteDistanceKm(endDistanceKm, units, 2)} highlighted in dark line. OpenStreetMap basemap.`} />
+    <div className="mt-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="text-xs font-medium text-[var(--analysis-muted)]">Map view</span>
+        <RouteMapModeSelector mode={mapMode} onChange={onMapModeChange} label="Section map display" />
+      </div>
+      <div ref={interactionRef} className="relative w-full min-w-0">
+        {mapMode === "3d" ? (
+          <MapLibreRouteMap
+            points={points}
+            selectedPoints={selectedPoints}
+            showSelectedSectionMarkers
+            focusPoints={sectionFocusPoints}
+            focusKey={`section:${section.segmentIndex}:${section.id}`}
+            focusOnKeyChange={false}
+            onFallbackTo2d={() => onMapModeChange("2d")}
+            label={`Route map with section from ${formatRouteDistanceKm(startDistanceKm, units, 2)} to ${formatRouteDistanceKm(endDistanceKm, units, 2)} highlighted`}
+            frameClassName="relative h-56 w-full min-w-0 overflow-hidden rounded-xl border border-black/10 bg-[#e7e8e2] sm:h-64"
+          />
+        ) : (
+          <div className="relative h-56 w-full min-w-0 overflow-hidden rounded-xl border border-black/10 bg-[#e7e8e2] sm:h-64">
+            <div ref={containerRef} className="absolute inset-0" role="region" aria-label={`Full route map with Route Section ${formatRouteDistanceKm(startDistanceKm, units, 2)} to ${formatRouteDistanceKm(endDistanceKm, units, 2)} highlighted in dark line. OpenStreetMap basemap.`} />
+            {mapMode === "2d" && <button
+              type="button"
+              aria-pressed={wheelZoomActive}
+              aria-label={wheelZoomActive ? "Disable map scroll-wheel zoom" : "Enable map scroll-wheel zoom"}
+              onClick={() => wheelZoomActive ? wheelZoomRef.current?.deactivate() : wheelZoomRef.current?.activate()}
+              disabled={!mapReady}
+              className="absolute right-3 top-3 z-[600] max-w-[calc(100%-4rem)] rounded-full border border-black/10 bg-white/90 px-3 py-2 text-xs font-medium text-[#17211c] shadow-sm backdrop-blur transition hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#315b43] disabled:opacity-60"
+            >{wheelZoomActive ? "Scroll to zoom · Esc to exit" : "Enable wheel zoom"}</button>}
+          </div>
+        )}
+    </div>
+    </div>
   ) : <div className="mt-3 flex h-56 w-full items-center justify-center rounded-xl border border-black/10 bg-[#e7e8e2] px-4 text-center text-sm text-[var(--analysis-muted)]" role="note">The full route map is unavailable because this analysis has fewer than two location points.</div>;
 }

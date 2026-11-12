@@ -10,10 +10,14 @@ import { getRouteImageryPresentation, getTerrainSectionPresentation, numberRoute
 import { routeSectionSelectionKey } from "./routeSectionSelection";
 import TerrainSectionMap from "./TerrainSectionMap";
 import RouteSectionProfile from "./RouteSectionProfile";
+import RouteSectionOverview from "./RouteSectionOverview";
 import type { GpxRoutePointData } from "./gpxAnalysis";
 import { TERRAIN_INTELLIGENCE_V1_ENABLED } from "./featureFlags";
 import { useRouteUnits } from "./RouteUnitPreference";
 import { formatDistanceMeters, formatRouteDistanceKm, formatElevationMeters, type RouteUnitSystem } from "./routeUnits";
+import { calculateSectionGradeMetrics } from "./sectionGradeMetrics";
+import SectionGradientDistribution from "./SectionGradientDistribution";
+import type { RouteMapMode } from "./RouteMapMode";
 
 const rhythmLabels: Record<RouteSection["dominantRhythm"], string> = {
   climb: "Mostly climbing",
@@ -35,6 +39,8 @@ export default function RouteSectionBrowser({
   sectionLabels,
   sectionKind = "Route Section",
   emptyMessage,
+  mapMode = "3d",
+  onMapModeChange = () => undefined,
 }: {
   sections: readonly RouteSection[];
   routePoints?: readonly GpxRoutePointData[];
@@ -48,6 +54,8 @@ export default function RouteSectionBrowser({
   sectionLabels?: ReadonlyMap<string, { from: string; to: string }>;
   sectionKind?: "Route Section" | "Aid Station Section" | "Custom Section";
   emptyMessage?: string;
+  mapMode?: RouteMapMode;
+  onMapModeChange?: (mode: RouteMapMode) => void;
 }) {
   const { units } = useRouteUnits();
   const orderedSections = numberRouteSectionsForDisplay(sections);
@@ -94,6 +102,8 @@ export default function RouteSectionBrowser({
                         boundaryLabels={boundaryLabels}
                         onSelectImage={onSelectImage}
                         onClose={() => onSelectSection(null)}
+                        mapMode={mapMode}
+                        onMapModeChange={onMapModeChange}
                       />
                     </div>
                   )}
@@ -139,6 +149,8 @@ function SectionDetail({
   boundaryLabels,
   onSelectImage,
   onClose,
+  mapMode,
+  onMapModeChange,
 }: {
   section: RouteSection;
   ordinal: number;
@@ -153,6 +165,8 @@ function SectionDetail({
   boundaryLabels?: { from: string; to: string };
   onSelectImage: (image: MapillaryImageEvidence) => void;
   onClose: () => void;
+  mapMode: RouteMapMode;
+  onMapModeChange: (mode: RouteMapMode) => void;
 }) {
   const isAidStationSection = sectionKind === "Aid Station Section";
   const title = boundaryLabels ? `${boundaryLabels.from} → ${boundaryLabels.to}` : rhythmLabels[section.dominantRhythm];
@@ -161,6 +175,7 @@ function SectionDetail({
   const expectation = isAidStationSection && boundaryLabels ? null
     : presentRouteSectionNarrativeV2(gradientIntelligence, routeSections, section, narrativeContext, units);
   const whatToExpect = expectation?.paragraphs.length ? expectation.paragraphs : [`${rhythmLabels[section.dominantRhythm]} across this section.`];
+  const gradeMetrics = calculateSectionGradeMetrics(section);
 
   return (
     <article className="rounded-3xl border border-[#71805d]/30 bg-[#f4f2ed] p-5 sm:p-8" aria-label={`${sectionKind} ${ordinal} details`}>
@@ -193,10 +208,41 @@ function SectionDetail({
         <SectionMetric label="Elevation range" value={`${formatElevationMeters(section.elevationMinM, units)}–${formatElevationMeters(section.elevationMaxM, units)}`} />
         <SectionMetric label="Section pattern" value={title} />
       </div>
+      <section className="mt-6 rounded-2xl border border-black/10 bg-white/75 p-4 sm:p-5" aria-label="Section grade metrics">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <SectionSubheading>Section grades</SectionSubheading>
+          <span className="text-[11px] text-[var(--analysis-muted)]">Smoothed GPX profile</span>
+        </div>
+        {gradeMetrics.status === "unavailable" ? (
+          <p className="mt-3 text-sm text-[var(--analysis-muted)]" role="status">Grade details are unavailable because the section profile is incomplete.</p>
+        ) : (
+          <>
+            <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-4 sm:grid-cols-2">
+              <SectionMetric
+                label="Average uphill grade"
+                value={gradeMetrics.averageUphillGradePct === null ? "No meaningful ascent" : formatSignedGrade(gradeMetrics.averageUphillGradePct)}
+              />
+              <SectionMetric
+                label="Average downhill grade"
+                value={gradeMetrics.averageDownhillGradePct === null ? "No meaningful descent" : formatSignedGrade(-gradeMetrics.averageDownhillGradePct)}
+              />
+            </div>
+            <p className="mt-4 border-t border-black/10 pt-3 text-xs font-semibold uppercase tracking-[0.14em] text-[var(--analysis-muted)]">Steepest sustained grades</p>
+            <p className="mt-1 text-[11px] leading-5 text-[var(--analysis-muted)]">Net grade over an exact horizontal window on the smoothed profile; windows stay within this section.</p>
+            <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3">
+              {getSustainedGradeMetrics(gradeMetrics, section.dominantRhythm).map((metric) => (
+                <SustainedGradeMetric key={metric.key} label={metric.label} window={metric.window} windowM={metric.windowM} direction={metric.direction} sectionLengthM={section.endPosition.distanceM - section.startPosition.distanceM} units={units} />
+              ))}
+            </div>
+          </>
+        )}
+      </section>
+      {!isAidStationSection && <SectionGradientDistribution section={section} />}
+      <RouteSectionOverview section={section} routePoints={routePoints} units={units} />
       <RouteSectionProfile section={section} routePoints={routePoints} sectionKind={sectionKind} />
       <div className="mt-6 border-t border-black/10 pt-5">
         <SectionSubheading>Section map · GPX-derived</SectionSubheading>
-        <TerrainSectionMap points={routePoints} section={section} startDistanceKm={section.startKm} endDistanceKm={section.endKm} units={units} />
+        <TerrainSectionMap points={routePoints} section={section} startDistanceKm={section.startKm} endDistanceKm={section.endKm} units={units} mapMode={mapMode} onMapModeChange={onMapModeChange} />
       </div>
       {TERRAIN_INTELLIGENCE_V1_ENABLED && sectionKind === "Route Section" && <section className="mt-6 min-w-0 border-t border-black/10 pt-5" aria-label="Mapped terrain evidence">
         <SectionSubheading>Mapped terrain</SectionSubheading>
@@ -243,6 +289,41 @@ function SectionDetail({
 
 function SectionMetric({ label, value }: { label: string; value: string }) {
   return <div><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--analysis-muted)]">{label}</p><p className="mt-1 text-sm font-semibold text-black/70">{value}</p></div>;
+}
+
+function getSustainedGradeMetrics(metrics: Extract<ReturnType<typeof calculateSectionGradeMetrics>, { status: "available" }>, rhythm: RouteSection["dominantRhythm"]) {
+  const uphill = [
+    { key: "uphill-100", label: "Steepest 100 m uphill", windowM: 100 as const, direction: "uphill" as const, window: metrics.steepestUphill100m },
+    { key: "uphill-500", label: "Steepest 500 m uphill", windowM: 500 as const, direction: "uphill" as const, window: metrics.steepestUphill500m },
+  ];
+  const downhill = [
+    { key: "downhill-100", label: "Steepest 100 m downhill", windowM: 100 as const, direction: "downhill" as const, window: metrics.steepestDownhill100m },
+    { key: "downhill-500", label: "Steepest 500 m downhill", windowM: 500 as const, direction: "downhill" as const, window: metrics.steepestDownhill500m },
+  ];
+  return rhythm === "descent" ? [...downhill, ...uphill] : [...uphill, ...downhill];
+}
+
+function SustainedGradeMetric({ label, window, windowM, direction, sectionLengthM, units }: {
+  label: string;
+  window: { gradePct: number; startDistanceM: number; endDistanceM: number } | null;
+  windowM: 100 | 500;
+  direction: "uphill" | "downhill";
+  sectionLengthM: number;
+  units: RouteUnitSystem;
+}) {
+  const unavailable = sectionLengthM < windowM
+    ? `Section is shorter than ${formatDistanceMeters(windowM, units)}`
+    : `No meaningful ${direction} window`;
+  return <div>
+    <p className="text-xs font-semibold text-black/75">{label}</p>
+    {window ? <p className="mt-1 text-sm font-semibold tabular-nums text-black/70">{formatSignedGrade(window.gradePct)} <span className="block text-xs font-normal text-[var(--analysis-muted)]">{formatDistanceMeters(window.startDistanceM, units)}–{formatDistanceMeters(window.endDistanceM, units)}</span></p>
+      : <p className="mt-1 text-xs text-[var(--analysis-muted)]">{unavailable}</p>}
+  </div>;
+}
+
+function formatSignedGrade(gradePct: number): string {
+  const rounded = Math.abs(gradePct) < 0.05 ? 0 : gradePct;
+  return `${rounded > 0 ? "+" : rounded < 0 ? "−" : ""}${Math.abs(rounded).toFixed(1)}%`;
 }
 
 function SectionSubheading({ children }: { children: ReactNode }) {

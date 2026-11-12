@@ -6,7 +6,11 @@ import {
   appendCustomSectionBoundary,
   buildCustomRouteSections,
   createCustomSectionPlan,
+  insertProfileCustomBoundary,
   MAX_CUSTOM_SECTION_BOUNDARIES,
+  removeCustomSectionBoundary,
+  sortCustomSectionBoundaries,
+  undoLastProfileBoundary,
   validateCustomSectionPlan,
 } from "./customRouteSections.ts";
 import { buildAidStationSections } from "./aidStationSections.ts";
@@ -104,6 +108,71 @@ test("boundary add chooses an unused midpoint and respects the count cap", () =>
   assert.equal(plan.boundaries.at(-1).distanceKm, "7.50");
   const capped = { ...plan, boundaries: Array.from({ length: MAX_CUSTOM_SECTION_BOUNDARIES }, (_, index) => ({ id: `custom-point-${index + 1}`, distanceKm: `${index + 1}`, name: "" })) };
   assert.equal(appendCustomSectionBoundary(capped, 100000), capped);
+});
+
+test("profile-picked boundaries insert in sorted order and are shared with the interval engine", () => {
+  const analysis = makeAnalysis();
+  const routeDistanceM = analysis.points.at(-1).distanceM;
+  let plan = createCustomSectionPlan();
+  const later = insertProfileCustomBoundary(plan, routeDistanceM, routeDistanceM * 0.75);
+  assert.equal(later.status, "added");
+  plan = later.plan;
+  const earlier = insertProfileCustomBoundary(plan, routeDistanceM, routeDistanceM * 0.25);
+  assert.equal(earlier.status, "added");
+  plan = earlier.plan;
+  assert.deepEqual(plan.boundaries.map(({ distanceKm }) => Number(distanceKm)), [
+    Number((routeDistanceM * 0.25 / 1000).toFixed(3)),
+    Number((routeDistanceM * 0.75 / 1000).toFixed(3)),
+  ]);
+  const built = buildCustomRouteSections(analysis, plan);
+  assert.equal(built.available, true);
+  assert.deepEqual(built.sections.filter((section) => section.segmentIndex === 0).map(({ startPosition, endPosition }) => [startPosition.distanceM, endPosition.distanceM]), [
+    [0, Number(plan.boundaries[0].distanceKm) * 1000],
+    [Number(plan.boundaries[0].distanceKm) * 1000, Number(plan.boundaries[1].distanceKm) * 1000],
+    [Number(plan.boundaries[1].distanceKm) * 1000, routeDistanceM],
+  ]);
+});
+
+test("profile boundary placement rejects endpoints, duplicate/nearby points, and the 20-boundary limit", () => {
+  const base = createCustomSectionPlan();
+  assert.equal(insertProfileCustomBoundary(base, 10000, 0).status, "endpoint");
+  assert.equal(insertProfileCustomBoundary(base, 10000, 10000).status, "endpoint");
+  const one = insertProfileCustomBoundary(base, 10000, 3000);
+  assert.equal(one.status, "added");
+  assert.equal(insertProfileCustomBoundary(one.plan, 10000, 3000).status, "too-close");
+  assert.equal(insertProfileCustomBoundary(one.plan, 10000, 3050).status, "too-close");
+  const capped = { ...base, boundaries: Array.from({ length: MAX_CUSTOM_SECTION_BOUNDARIES }, (_, index) => ({ id: `custom-point-${index + 1}`, distanceKm: String(index + 1), name: "" })) };
+  assert.equal(insertProfileCustomBoundary(capped, 100000, 50000).status, "limit");
+});
+
+test("profile placement adapts minimum spacing for short routes and numeric boundaries sort canonically", () => {
+  const base = createCustomSectionPlan();
+  assert.equal(insertProfileCustomBoundary(base, 400, 50).status, "too-close");
+  const shortRoute = insertProfileCustomBoundary(base, 400, 100);
+  assert.equal(shortRoute.status, "added", "short routes use a shorter proportional spacing threshold");
+  const unordered = { ...base, boundaries: [
+    { id: "custom-point-1", distanceKm: "2.00", name: "" },
+    { id: "custom-point-2", distanceKm: "1.00", name: "" },
+  ] };
+  assert.deepEqual(sortCustomSectionBoundaries(unordered).boundaries.map(({ distanceKm }) => distanceKm), ["1.00", "2.00"]);
+});
+
+test("profile boundary markers remove the shared-plan boundary and undo session additions in reverse order", () => {
+  const plan = { ...createCustomSectionPlan(), boundaries: [
+    { id: "custom-point-1", distanceKm: "1.000", name: "First" },
+    { id: "custom-point-2", distanceKm: "2.000", name: "Second" },
+  ] };
+  const removed = removeCustomSectionBoundary(plan, "custom-point-1");
+  assert.equal(removed.removed.name, "First");
+  assert.deepEqual(removed.plan.boundaries.map(({ id }) => id), ["custom-point-2"]);
+
+  const undone = undoLastProfileBoundary(plan, ["custom-point-1", "removed-by-user", "custom-point-2"]);
+  assert.equal(undone.removed.name, "Second");
+  assert.deepEqual(undone.history, ["custom-point-1", "removed-by-user"]);
+  assert.deepEqual(undone.plan.boundaries.map(({ id }) => id), ["custom-point-1"]);
+  const afterAllUndone = undoLastProfileBoundary(undone.plan, undone.history);
+  assert.equal(afterAllUndone.removed.name, "First");
+  assert.deepEqual(afterAllUndone.plan.boundaries, []);
 });
 
 test("invalid, duplicate, unordered and endpoint boundaries fail closed", () => {
@@ -205,6 +274,9 @@ test("Route Analysis presents the shared custom section browser without changing
   assert.match(view, /segmentationMode: "terrain" \| "custom" \| "aid-station"/);
   assert.match(view, /customPlanState\.analysis === analysis \? customPlanState\.plan : createCustomSectionPlan\(\)/, "the plan remains separate from the selected view mode");
   assert.match(view, /CustomSectionControls/);
+  assert.match(view, /onStartProfileBoundaryEditing=\{startProfileBoundaryEditing\}/);
+  assert.match(view, /onAddProfileBoundary=\{addProfileBoundary\}/);
+  assert.match(view, /insertProfileCustomBoundary\(customPlan, routeDistanceM, distanceM\)/);
   assert.match(view, /selectionSections=\{activeSections\}/);
   assert.match(view, /buildCustomRouteSections\(analysis, customPlan, units\)/);
   assert.match(view, /selectedMoment=\{selectedMoment\}/);

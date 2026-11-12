@@ -5,6 +5,7 @@ import { formatDistanceMeters, type RouteUnitSystem } from "./routeUnits.ts";
 import type { RouteSection } from "./routeSectionEngine.ts";
 
 export const MAX_CUSTOM_SECTION_BOUNDARIES = 20;
+export const PROFILE_BOUNDARY_MIN_SPACING_M = 100;
 const MAX_BOUNDARY_NAME_LENGTH = 60;
 
 export type CustomSectionBoundary = { id: string; distanceKm: string; name: string };
@@ -38,7 +39,68 @@ export function appendCustomSectionBoundary(plan: CustomSectionPlan, routeDistan
   const midpointM = midpointKm * 1000;
   if (!(midpointM > widestStart && midpointM < widestEnd)) return plan;
   const nextId = plan.boundaries.reduce((max, boundary) => Math.max(max, Number(boundary.id.match(/(\d+)$/)?.[1] ?? 0)), 0) + 1;
-  return { ...plan, boundaries: [...plan.boundaries, { id: `custom-point-${nextId}`, distanceKm: midpointKm.toFixed(2), name: "" }] };
+  return sortCustomSectionBoundaries({ ...plan, boundaries: [...plan.boundaries, { id: `custom-point-${nextId}`, distanceKm: midpointKm.toFixed(2), name: "" }] });
+}
+
+export function sortCustomSectionBoundaries(plan: CustomSectionPlan): CustomSectionPlan {
+  return { ...plan, boundaries: [...plan.boundaries].sort((left, right) => {
+    const leftKm = Number(left.distanceKm);
+    const rightKm = Number(right.distanceKm);
+    if (!Number.isFinite(leftKm)) return Number.isFinite(rightKm) ? 1 : 0;
+    if (!Number.isFinite(rightKm)) return -1;
+    return leftKm - rightKm;
+  }) };
+}
+
+export function removeCustomSectionBoundary(plan: CustomSectionPlan, boundaryId: string): { plan: CustomSectionPlan; removed: CustomSectionBoundary | null } {
+  const removed = plan.boundaries.find((boundary) => boundary.id === boundaryId) ?? null;
+  return removed
+    ? { plan: { ...plan, boundaries: plan.boundaries.filter((boundary) => boundary.id !== boundaryId) }, removed }
+    : { plan, removed: null };
+}
+
+/** Undo only removes boundaries added during this active profile-selection session. */
+export function undoLastProfileBoundary(plan: CustomSectionPlan, history: readonly string[]): { plan: CustomSectionPlan; history: string[]; removed: CustomSectionBoundary | null } {
+  const remainingHistory = [...history];
+  while (remainingHistory.length) {
+    const boundaryId = remainingHistory.pop()!;
+    const result = removeCustomSectionBoundary(plan, boundaryId);
+    if (result.removed) return { ...result, history: remainingHistory };
+  }
+  return { plan, history: remainingHistory, removed: null };
+}
+
+export type ProfileBoundaryInsertResult =
+  | { status: "added"; plan: CustomSectionPlan; distanceKm: number }
+  | { status: "invalid-route" | "invalid-distance" | "endpoint" | "too-close" | "limit"; plan: CustomSectionPlan };
+
+/** Adds a profile-picked boundary in route order; the spacing adapts for short routes. */
+export function insertProfileCustomBoundary(plan: CustomSectionPlan, routeDistanceM: number, distanceM: number): ProfileBoundaryInsertResult {
+  if (!Number.isFinite(routeDistanceM) || routeDistanceM <= 0) return { status: "invalid-route", plan };
+  if (!Number.isFinite(distanceM)) return { status: "invalid-distance", plan };
+  if (distanceM <= 0 || distanceM >= routeDistanceM) return { status: "endpoint", plan };
+  if (plan.boundaries.length >= MAX_CUSTOM_SECTION_BOUNDARIES) return { status: "limit", plan };
+
+  // One-metre canonical precision is useful for tuning; the graph itself does
+  // not imply more accuracy than the selected horizontal position.
+  const distanceKm = Math.round(distanceM) / 1000;
+  const snappedDistanceM = distanceKm * 1000;
+  if (snappedDistanceM <= 0 || snappedDistanceM >= routeDistanceM) return { status: "endpoint", plan };
+  const minimumSpacingM = Math.min(PROFILE_BOUNDARY_MIN_SPACING_M, routeDistanceM / 5);
+  const existingDistancesM = [0, ...plan.boundaries.map(({ distanceKm: value }) => Number(value) * 1000), routeDistanceM];
+  if (existingDistancesM.some((existing) => Number.isFinite(existing) && Math.abs(existing - snappedDistanceM) < 1)) {
+    return { status: "too-close", plan };
+  }
+  if (existingDistancesM.some((existing) => Number.isFinite(existing) && Math.abs(existing - snappedDistanceM) < minimumSpacingM)) {
+    return { status: "too-close", plan };
+  }
+
+  const nextId = plan.boundaries.reduce((max, boundary) => Math.max(max, Number(boundary.id.match(/(\d+)$/)?.[1] ?? 0)), 0) + 1;
+  const nextPlan = sortCustomSectionBoundaries({
+    ...plan,
+    boundaries: [...plan.boundaries, { id: `custom-point-${nextId}`, distanceKm: distanceKm.toFixed(3), name: "" }],
+  });
+  return { status: "added", plan: nextPlan, distanceKm };
 }
 
 export function validateCustomSectionPlan(plan: CustomSectionPlan, routeDistanceM: number, units: RouteUnitSystem = "metric"): CustomSectionValidation {

@@ -6,14 +6,24 @@ import type { KeyMomentData } from "./raceTypes";
 import type { KeyMomentProfileMarkerInput } from "./routeKeyMomentProfileMarkers";
 import { groupAnalyzedPointsBySegment, type RouteAnalysisData } from "./gpxAnalysis";
 import type { RouteSection } from "./routeSectionEngine";
+import type { CustomSectionBoundary } from "./customRouteSections";
 import { clipRoutePointsToKeyMoment, clipRoutePointsToSection, findSelectedRouteSection, resolveKeyMomentInterval } from "./routeSectionSelection";
 import { avoidRouteDistanceTickLabelOverlap, getNiceAxisScale, getPositionedRouteDistanceTicks, getRouteDistancePosition, getRouteSectionBoundaryMarkers } from "./routeProfilePresentation";
 import { nearestRouteProfilePoint } from "./routeProfileInspection";
+import { profileClientXToDistanceM, profilePointerMoved } from "./routeProfileBoundaryEditing";
 import { layoutKeyMomentProfileMarkers } from "./routeKeyMomentProfileMarkers";
 import { ROUTE_MAP_STYLES } from "./routeMapStyles";
+import { attachMapWheelZoom } from "./mapWheelZoom";
 import { getElevationRange, getRouteElevationMetricDescription } from "./routeElevationMetrics";
 import { RouteUnitToggle, useRouteUnits } from "./RouteUnitPreference";
 import { distanceUnit, elevationUnit, formatDistanceMeters, formatElevationMeters, formatElevationNumber } from "./routeUnits";
+import dynamic from "next/dynamic";
+import { RouteMapModeSelector, type RouteMapMode } from "./RouteMapMode";
+
+const MapLibreRouteMap = dynamic(() => import("./MapLibreRouteMap"), {
+  ssr: false,
+  loading: () => <div className="absolute inset-0 flex items-center justify-center bg-[#dfe3d8] text-sm text-[var(--analysis-muted)]" role="status">Loading 3D terrain map…</div>,
+});
 
 export default function CourseExplorer({
   selectedMoment,
@@ -36,6 +46,18 @@ export default function CourseExplorer({
   showUnitToggle = false,
   className = "mt-10 sm:mt-14",
   headingRef,
+  profileBoundaryEditing = false,
+  profileBoundaryStatus = "",
+  canUndoProfileBoundary = false,
+  customBoundaries = [],
+  showCustomBoundaries = false,
+  onStartProfileBoundaryEditing,
+  onStopProfileBoundaryEditing,
+  onAddProfileBoundary,
+  onRemoveProfileBoundary,
+  onUndoProfileBoundary,
+  mapMode = "3d",
+  onMapModeChange = () => undefined,
 }: {
   selectedMoment: string | null;
   selectedSectionKey?: string | null;
@@ -57,12 +79,29 @@ export default function CourseExplorer({
   showUnitToggle?: boolean;
   className?: string;
   headingRef?: Ref<HTMLHeadingElement>;
+  profileBoundaryEditing?: boolean;
+  profileBoundaryStatus?: string;
+  canUndoProfileBoundary?: boolean;
+  customBoundaries?: readonly CustomSectionBoundary[];
+  showCustomBoundaries?: boolean;
+  onStartProfileBoundaryEditing?: () => void;
+  onStopProfileBoundaryEditing?: () => void;
+  onAddProfileBoundary?: (distanceM: number) => void;
+  onRemoveProfileBoundary?: (boundaryId: string) => void;
+  onUndoProfileBoundary?: () => void;
+  mapMode?: RouteMapMode;
+  onMapModeChange?: (mode: RouteMapMode) => void;
 }) {
   const { units } = useRouteUnits();
   const [mapExpanded, setMapExpanded] = useState(false);
+  const mapFrameHeightClass = mapExpanded ? "h-[26rem] sm:h-[32rem] lg:h-[38rem]" : "h-56 sm:h-[17.5rem] lg:h-[17.5rem]";
+  const mapMinHeightClass = mapExpanded ? "min-h-[26rem] sm:min-h-[32rem] lg:min-h-[38rem]" : "min-h-56 sm:min-h-[17.5rem] lg:min-h-[17.5rem]";
   const [mapReady, setMapReady] = useState(false);
   const mapRef = useRef<HTMLDivElement | null>(null);
   const leafletMapRef = useRef<LeafletMap | null>(null);
+  const mapInteractionRef = useRef<HTMLDivElement | null>(null);
+  const mapWheelZoomRef = useRef<ReturnType<typeof attachMapWheelZoom> | null>(null);
+  const [mapWheelZoomActive, setMapWheelZoomActive] = useState(false);
   const leafletRef = useRef<typeof import("leaflet") | null>(null);
   const routeLineRefs = useRef<Map<number, Polyline>>(new Map());
   const highlightLineRefs = useRef<Layer[]>([]);
@@ -101,7 +140,7 @@ export default function CourseExplorer({
   const maximumElevation = elevationRange?.maximum ?? 0;
 
   useEffect(() => {
-    if (!mapRef.current || points.length === 0) return;
+    if (mapMode !== "2d" || !mapRef.current || points.length === 0) return;
 
     let map: LeafletMap | undefined;
     let cancelled = false;
@@ -114,7 +153,8 @@ export default function CourseExplorer({
       leafletRef.current = L;
       map = L.map(mapRef.current, { scrollWheelZoom: false });
       leafletMapRef.current = map;
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      mapWheelZoomRef.current = attachMapWheelZoom(map, mapInteractionRef.current ?? mapRef.current, setMapWheelZoomActive);
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
         attribution: "&copy; OpenStreetMap contributors",
       }).addTo(map);
 
@@ -174,6 +214,8 @@ export default function CourseExplorer({
     return () => {
       cancelled = true;
       resizeObserver?.disconnect();
+      mapWheelZoomRef.current?.dispose();
+      mapWheelZoomRef.current = null;
       map?.remove();
       leafletMapRef.current = null;
       leafletRef.current = null;
@@ -182,7 +224,7 @@ export default function CourseExplorer({
       lastMapSelectionRef.current = null;
       setMapReady(false);
     };
-  }, [finishLocation, points, startLocation]);
+  }, [finishLocation, mapMode, points, startLocation]);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => leafletMapRef.current?.invalidateSize({ pan: false }));
@@ -192,7 +234,7 @@ export default function CourseExplorer({
   useEffect(() => {
     const map = leafletMapRef.current;
     const L = leafletRef.current;
-    if (!map || !L || !mapReady) return;
+    if (mapMode !== "2d" || !map || !L || !mapReady) return;
 
     for (const line of highlightLineRefs.current) line.removeFrom(map);
     highlightLineRefs.current = [];
@@ -237,7 +279,7 @@ export default function CourseExplorer({
     } else if (previous !== null && previous !== "none" && selection === "none" && points.length > 0) {
       map.fitBounds(points.map((point) => [point.latitude, point.longitude]), { padding: [30, 30] });
     }
-  }, [mapReady, points, selectedMomentData, selectedMomentFocusPoints, selectedMomentInterval, selectedMomentPoints, selectedSection, selectedSectionPoints]);
+  }, [mapMode, mapReady, points, selectedMomentData, selectedMomentFocusPoints, selectedMomentInterval, selectedMomentPoints, selectedSection, selectedSectionPoints]);
 
   return (
     <div className={`${className} overflow-hidden rounded-[2rem] border border-black/10 bg-[#17211c] text-white`}>
@@ -262,6 +304,11 @@ export default function CourseExplorer({
               sections={sections}
               sectionKind={sectionKind}
               onSelectSection={onSelectSection}
+              customBoundaries={customBoundaries}
+              showCustomBoundaries={showCustomBoundaries}
+              boundaryEditing={profileBoundaryEditing}
+              onAddBoundaryAtDistance={onAddProfileBoundary}
+              onRemoveCustomBoundary={onRemoveProfileBoundary}
             />
           ) : (
             <div className="flex min-h-48 flex-col items-center justify-center gap-4 px-3 text-center text-sm text-white/65" aria-live={loading ? "polite" : undefined}>
@@ -274,6 +321,31 @@ export default function CourseExplorer({
             </div>
           )}
         </div>
+
+        {onStartProfileBoundaryEditing && points.length > 0 && (
+          <div className="mt-4 flex flex-col gap-3 rounded-xl border border-white/10 bg-white/[0.035] px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-5">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-white/90">Want to focus on specific climbs or descents?</p>
+              {profileBoundaryEditing && <p id="profile-boundary-edit-hint" className="mt-1 text-xs leading-5 text-white/65">Click or tap the profile to add a boundary. Set its exact distance below.</p>}
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              {profileBoundaryEditing && <button type="button" onClick={onUndoProfileBoundary} disabled={!canUndoProfileBoundary} className="min-h-11 rounded-full border border-white/20 px-4 py-2 text-sm font-semibold text-white/85 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#a7c957]">Undo last boundary</button>}
+              <button type="button" onClick={profileBoundaryEditing ? onStopProfileBoundaryEditing : onStartProfileBoundaryEditing} className="min-h-11 shrink-0 rounded-full border border-[#a7c957]/70 bg-[#a7c957] px-4 py-2 text-sm font-semibold text-[#17211c] transition hover:bg-[#b8d86b] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white">
+                {profileBoundaryEditing ? "Done selecting" : "Select sections on profile"}
+              </button>
+            </div>
+          </div>
+        )}
+        {profileBoundaryStatus && <p role="status" aria-live="polite" className="mt-2 min-h-5 px-1 text-xs text-white/70">{profileBoundaryStatus}</p>}
+        {showCustomBoundaries && customBoundaries.length > 0 && <div className="mt-3 flex items-start gap-3 rounded-xl border border-[#a7c957]/20 bg-[#a7c957]/[0.07] px-4 py-3">
+          <span aria-hidden="true" className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#a7c957]/15 text-[#c6e384]">
+            <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M10 3v12m-4-4 4 4 4-4M4 18h12" /></svg>
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold leading-5 text-white/90">Your custom sections are ready below</p>
+            <p className="mt-0.5 text-xs leading-5 text-white/65">Scroll down to explore your sections, adjust distances, rename them, or remove boundaries.</p>
+          </div>
+        </div>}
 
         {displayedMetrics && (
           <div className="mt-7 border-t border-white/10 pt-5">
@@ -315,18 +387,38 @@ export default function CourseExplorer({
           <span>{mapExpanded ? "Reduce map" : "Expand map"} <span className="ml-2 text-xs font-normal text-white/70">{mapExpanded ? "Large view" : "Compact view"}</span></span>
           <span aria-hidden="true" className="text-lg text-[#a7c957]">{mapExpanded ? "−" : "+"}</span>
         </button>
-        <div id="course-explorer-map" className={`relative border-t border-white/10 bg-[#dfe3d8] transition-[height] duration-200 ${mapExpanded ? "h-[26rem] sm:h-[32rem] lg:h-[38rem]" : "h-56 sm:h-[17.5rem] lg:h-[17.5rem]"}`}>
-          {(loading || error) && (
-            <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#dfe3d8] p-6">
-              <div className="max-w-sm text-center text-sm leading-6 text-[var(--analysis-muted)]">{loading ? "Loading course map…" : error}</div>
-            </div>
-          )}
-          <div ref={mapRef} className="absolute inset-0" />
-          {!loading && !error && metrics && (
-            <div className="pointer-events-none absolute bottom-4 left-4 z-[500] max-w-[calc(100%-2rem)] truncate rounded-full bg-white/90 px-4 py-2 text-xs font-semibold text-black shadow-sm backdrop-blur sm:bottom-5 sm:left-5">
+        <div className="flex min-h-12 items-center justify-between gap-3 border-t border-white/10 bg-[#202c26] px-4 sm:px-8">
+          <span className="text-xs font-medium text-white/70">Map view</span>
+          <RouteMapModeSelector mode={mapMode} onChange={onMapModeChange} label="Route map display" />
+        </div>
+        <div ref={mapInteractionRef} id="course-explorer-map" className={`relative min-w-0 border-t border-white/10 bg-[#dfe3d8] ${mapMinHeightClass}`}>
+          {mapMode === "3d" ? <MapLibreRouteMap
+            points={points}
+            selectedPoints={selectedSection ? selectedSectionPoints : selectedMomentPoints}
+            showSelectedSectionMarkers={Boolean(selectedSection)}
+            focusPoints={!selectedSection && selectedMomentData ? selectedMomentFocusPoints : []}
+            focusKey={!selectedSection && selectedMomentData ? selectedMomentData.id : null}
+            onFallbackTo2d={() => onMapModeChange("2d")}
+            label={`${routeName} full-route map`}
+            mapBadgeText={!loading && !error && metrics ? `${routeName} · GPX-derived` : undefined}
+            frameClassName={`relative w-full min-w-0 overflow-hidden bg-[#dfe3d8] ${mapFrameHeightClass}`}
+          /> : <div className={`relative w-full min-w-0 overflow-hidden bg-[#dfe3d8] ${mapFrameHeightClass}`}>
+            <div ref={mapRef} className="absolute inset-0" />
+            {mapMode === "2d" && <button
+            type="button"
+            aria-pressed={mapWheelZoomActive}
+            aria-label={mapWheelZoomActive ? "Disable map scroll-wheel zoom" : "Enable map scroll-wheel zoom"}
+            onClick={() => mapWheelZoomActive ? mapWheelZoomRef.current?.deactivate() : mapWheelZoomRef.current?.activate()}
+            disabled={!mapReady}
+            className="absolute right-3 top-3 z-[600] max-w-[calc(100%-4rem)] rounded-full border border-black/10 bg-white/90 px-3 py-2 text-xs font-medium text-[#17211c] shadow-sm backdrop-blur transition hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#315b43] disabled:opacity-60"
+            >{mapWheelZoomActive ? "Scroll to zoom · Esc to exit" : "Enable wheel zoom"}</button>}
+            {!loading && !error && metrics && (
+              <div className="pointer-events-none absolute bottom-4 left-4 z-[500] max-w-[calc(100%-2rem)] truncate rounded-full bg-white/90 px-4 py-2 text-xs font-semibold text-black shadow-sm backdrop-blur sm:bottom-5 sm:left-5">
               {routeName} · GPX-derived
-            </div>
-          )}
+              </div>
+            )}
+          </div>}
+          {(loading || error) && <div className={`absolute inset-x-0 top-0 z-20 flex items-center justify-center bg-[#dfe3d8]/90 p-6 ${mapFrameHeightClass}`}><div className="max-w-sm text-center text-sm leading-6 text-[var(--analysis-muted)]">{loading ? "Loading course map…" : error}</div></div>}
         </div>
       </div>
     </div>
@@ -348,6 +440,11 @@ export function ElevationProfile({
   sections,
   sectionKind = "Route Section",
   onSelectSection,
+  customBoundaries = [],
+  showCustomBoundaries = false,
+  boundaryEditing = false,
+  onAddBoundaryAtDistance,
+  onRemoveCustomBoundary,
   momentMarkers = [],
   selectedMoment = null,
   onSelectMoment,
@@ -362,36 +459,35 @@ export function ElevationProfile({
   sections: readonly RouteSection[];
   sectionKind?: "Route Section" | "Aid Station Section" | "Custom Section";
   onSelectSection?: (section: RouteSection | null) => void;
+  customBoundaries?: readonly CustomSectionBoundary[];
+  showCustomBoundaries?: boolean;
+  boundaryEditing?: boolean;
+  onAddBoundaryAtDistance?: (distanceM: number) => void;
+  onRemoveCustomBoundary?: (boundaryId: string) => void;
   momentMarkers?: readonly KeyMomentProfileMarkerInput[];
   selectedMoment?: string | null;
   onSelectMoment?: (momentId: string) => void;
 }) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const profileScrollerRef = useRef<HTMLDivElement | null>(null);
-  const profileScrollLeftRef = useRef(0);
   const [chartSize, setChartSize] = useState({ width: 1200, height: 288 });
   const pointerGesture = useRef<{ pointerId: number; startX: number; startY: number; moved: boolean; longPressed: boolean } | null>(null);
   const longPressTimer = useRef<number | null>(null);
   const touchInspection = useRef(false);
   const [inspectedPoint, setInspectedPoint] = useState<RouteAnalysisData["points"][number] | null>(null);
-  const [profileScrollLeft, setProfileScrollLeft] = useState(0);
-  const [profileScrollerWidth, setProfileScrollerWidth] = useState(0);
   useEffect(() => {
     const svg = svgRef.current;
     if (!svg) return;
     const measure = () => {
       const bounds = svg.getBoundingClientRect();
-      const scrollerBounds = profileScrollerRef.current?.getBoundingClientRect();
       if (bounds.width > 0 && bounds.height > 0) {
         const next = { width: Math.round(bounds.width), height: Math.round(bounds.height) };
         setChartSize((current) => current.width === next.width && current.height === next.height ? current : next);
       }
-      if (scrollerBounds && scrollerBounds.width > 0) setProfileScrollerWidth(Math.round(scrollerBounds.width));
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(svg);
-    if (profileScrollerRef.current) observer.observe(profileScrollerRef.current);
     return () => observer.disconnect();
   }, []);
   const { width, height } = chartSize;
@@ -411,6 +507,19 @@ export function ElevationProfile({
     return `${x},${y}`;
   };
   const paths = groupAnalyzedPointsBySegment(points);
+  const addBoundaryAtClientX = (clientX: number) => {
+    const bounds = svgRef.current?.getBoundingClientRect();
+    if (!bounds || !onAddBoundaryAtDistance) return;
+    const distanceM = profileClientXToDistanceM(clientX, {
+      svgLeft: bounds.left,
+      svgWidth: bounds.width,
+      chartWidth: width,
+      plotLeft: plot.left,
+      plotRight: plot.right,
+      routeDistanceM: totalDistance,
+    });
+    if (distanceM !== null) onAddBoundaryAtDistance(distanceM);
+  };
   const inspectAt = (clientX: number, clientY: number) => {
     const box = svgRef.current?.getBoundingClientRect();
     if (!box || box.width <= 0 || box.height <= 0) return;
@@ -422,7 +531,6 @@ export function ElevationProfile({
     }
     const distanceM = ((viewX - plot.left) / (width - plot.left - plot.right)) * totalDistance;
     const elevationM = elevationScale.maximum - ((viewY - plot.top) / plotHeight) * (elevationScale.maximum - elevationScale.minimum);
-    setProfileScrollLeft(profileScrollLeftRef.current);
     setInspectedPoint(nearestRouteProfilePoint(points, distanceM, elevationM));
   };
   const onPointerDown = (event: PointerEvent<SVGSVGElement>) => {
@@ -430,7 +538,7 @@ export function ElevationProfile({
     touchInspection.current = false;
     setInspectedPoint(null);
     pointerGesture.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, moved: false, longPressed: false };
-    if (event.pointerType === "touch") {
+    if (event.pointerType === "touch" && !boundaryEditing) {
       longPressTimer.current = window.setTimeout(() => {
         const gesture = pointerGesture.current;
         if (gesture?.pointerId !== event.pointerId || gesture.moved) return;
@@ -442,14 +550,14 @@ export function ElevationProfile({
   };
   const onPointerMove = (event: PointerEvent<SVGSVGElement>) => {
     const gesture = pointerGesture.current;
-    if (gesture?.pointerId === event.pointerId && Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY) > 8) {
+    if (gesture?.pointerId === event.pointerId && profilePointerMoved(gesture.startX, gesture.startY, event.clientX, event.clientY)) {
       gesture.moved = true;
       if (longPressTimer.current !== null) {
         window.clearTimeout(longPressTimer.current);
         longPressTimer.current = null;
       }
     }
-    if (event.pointerType === "mouse" || gesture?.longPressed) inspectAt(event.clientX, event.clientY);
+    if (event.pointerType === "mouse" || (!boundaryEditing && gesture?.longPressed)) inspectAt(event.clientX, event.clientY);
   };
   const onPointerUp = () => {
     if (longPressTimer.current !== null) window.clearTimeout(longPressTimer.current);
@@ -459,6 +567,7 @@ export function ElevationProfile({
     onPointerUp();
     if (touchInspection.current) return;
     setInspectedPoint(null);
+    if (boundaryEditing && pointerGesture.current?.moved) return;
     pointerGesture.current = null;
   };
   const ignorePointerSelection = (event: ReactMouseEvent<SVGRectElement>) => {
@@ -484,8 +593,14 @@ export function ElevationProfile({
 
   return (
     <div className="relative">
-      <div ref={profileScrollerRef} role="region" aria-label="Scrollable full-route elevation profile" tabIndex={0} onScroll={(event) => { profileScrollLeftRef.current = event.currentTarget.scrollLeft; if (inspectedPoint) { setProfileScrollLeft(event.currentTarget.scrollLeft); setInspectedPoint(null); } }} className="relative w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#a7c957]">
-    <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} className="h-56 w-full min-w-[720px] touch-auto sm:min-w-0 sm:touch-pan-y sm:h-64 lg:h-72" preserveAspectRatio="none" aria-label={`GPX elevation profile. Elevation is shown in ${units === "metric" ? "meters" : "feet"} and distance in ${units === "metric" ? "kilometers" : "miles"}. Hover to inspect values, or press and hold on touch. Select a section interval to update its metrics; selected Key Moments are highlighted.`} aria-describedby={onSelectSection && sections.length > 0 ? "full-route-profile-selection-hint" : undefined} role="group" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerLeave} onPointerLeave={onPointerLeave}>
+      <div className="mb-2 flex h-10 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] px-2 text-xs" role="status" aria-live="polite" aria-label="Elevation profile inspection values">
+        <div className="flex max-w-full items-center gap-3 sm:gap-4">
+          <div className="flex min-w-0 items-baseline gap-1.5 whitespace-nowrap"><span className="shrink-0 text-white/55">Distance</span><span className="font-semibold tabular-nums text-white/90">{inspectedPoint ? formatDistanceMeters(inspectedPoint.distanceM, units) : "—"}</span></div>
+          <div className="flex min-w-0 items-baseline gap-1.5 whitespace-nowrap border-l border-white/20 pl-3 sm:pl-4"><span className="shrink-0 text-white/55">Elevation</span><span className="font-semibold tabular-nums text-white/90">{inspectedPoint ? formatElevationMeters(inspectedPoint.elevationM, units) : "—"}</span></div>
+        </div>
+      </div>
+      <div ref={profileScrollerRef} role="region" aria-label="Scrollable full-route elevation profile" tabIndex={0} onScroll={() => { if (inspectedPoint) setInspectedPoint(null); }} className="relative w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#a7c957]">
+    <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} className={`h-56 w-full min-w-[720px] touch-auto sm:min-w-0 sm:touch-pan-y sm:h-64 lg:h-72 ${boundaryEditing ? "cursor-crosshair" : ""}`} preserveAspectRatio="none" aria-label={`GPX elevation profile. Elevation is shown in ${units === "metric" ? "meters" : "feet"} and distance in ${units === "metric" ? "kilometers" : "miles"}. ${boundaryEditing ? "Click or tap to add a custom section boundary." : "Hover to inspect values, or press and hold on touch. Select a section interval to update its metrics; selected Key Moments are highlighted."}`} aria-describedby={boundaryEditing ? "profile-boundary-edit-hint" : onSelectSection && sections.length > 0 ? "full-route-profile-selection-hint" : undefined} role="group" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerLeave} onPointerLeave={onPointerLeave}>
       <title>Elevation profile in {elevationUnit(units)} across the route distance in {distanceUnit(units)}</title>
       {elevationScale.ticks.map((tick) => {
         const y = yForElevation(tick);
@@ -513,8 +628,17 @@ export function ElevationProfile({
         fillOpacity="0.12"
         pointerEvents="none"
       />}
-      {boundaries.map(({ distanceM, sectionKeys }) => <line key={`boundary-${distanceM}-${sectionKeys.join("_")}`} x1={xForDistance(distanceM)} x2={xForDistance(distanceM)} y1={plot.top} y2={height - plot.bottom} stroke="white" strokeOpacity="0.24" strokeWidth="2" strokeDasharray="5 7" pointerEvents="none" />)}
-      {onSelectSection && <rect
+      {!showCustomBoundaries && boundaries.map(({ distanceM, sectionKeys }) => <line key={`boundary-${distanceM}-${sectionKeys.join("_")}`} x1={xForDistance(distanceM)} x2={xForDistance(distanceM)} y1={plot.top} y2={height - plot.bottom} stroke="white" strokeOpacity="0.24" strokeWidth="2" strokeDasharray="5 7" pointerEvents="none" />)}
+      {showCustomBoundaries && customBoundaries.map((boundary) => {
+        const distanceM = Number(boundary.distanceKm) * 1000;
+        return Number.isFinite(distanceM) && distanceM > 0 && distanceM < totalDistance
+          ? <g key={`custom-boundary-${boundary.id}`} pointerEvents="none">
+              <line x1={xForDistance(distanceM)} x2={xForDistance(distanceM)} y1={plot.top} y2={height - plot.bottom} stroke="#a7c957" strokeWidth="3" />
+              <circle cx={xForDistance(distanceM)} cy={height - plot.bottom} r="5" fill="#a7c957" stroke="#17211c" strokeWidth="2" />
+            </g>
+          : null;
+      })}
+      {onSelectSection && !boundaryEditing && <rect
         x={plot.left}
         y={plot.top}
         width={width - plot.left - plot.right}
@@ -528,7 +652,7 @@ export function ElevationProfile({
           onSelectSection(null);
         }}
       />}
-      {onSelectSection && sections.filter((section) =>
+      {onSelectSection && !boundaryEditing && sections.filter((section) =>
         section.startPosition.segmentIndex === section.segmentIndex &&
         section.endPosition.segmentIndex === section.segmentIndex &&
         Number.isFinite(section.startPosition.distanceM) &&
@@ -576,16 +700,38 @@ export function ElevationProfile({
           <circle cx={marker.markerX} cy={marker.markerY} r="16" fill="transparent" pointerEvents="all" />
         </g>;
       })}
+      {boundaryEditing && <rect
+        x={plot.left}
+        y={plot.top}
+        width={width - plot.left - plot.right}
+        height={plotHeight}
+        fill="transparent"
+        pointerEvents="all"
+        onClick={(event) => {
+          if (event.detail > 0 && ignorePointerSelection(event)) return;
+          addBoundaryAtClientX(event.clientX);
+        }}
+      />}
+      {boundaryEditing && onRemoveCustomBoundary && customBoundaries.map((boundary) => {
+        const distanceM = Number(boundary.distanceKm) * 1000;
+        if (!Number.isFinite(distanceM) || distanceM <= 0 || distanceM >= totalDistance) return null;
+        const remove = () => onRemoveCustomBoundary(boundary.id);
+        return <g key={`remove-boundary-${boundary.id}`} data-custom-boundary-marker="true" role="button" tabIndex={0} aria-label={`Remove custom boundary at ${formatDistanceMeters(distanceM, units)}`} aria-keyshortcuts="Enter Space Delete Backspace" className="cursor-pointer outline-none focus-visible:drop-shadow-[0_0_4px_#f2d675]" onPointerDown={(event) => event.stopPropagation()} onPointerMove={(event) => event.stopPropagation()} onPointerUp={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); remove(); }} onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " " || event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); event.stopPropagation(); remove(); }
+        }}>
+          <circle cx={xForDistance(distanceM)} cy={height - plot.bottom} r="13" fill="transparent" pointerEvents="all" />
+          <circle cx={xForDistance(distanceM)} cy={height - plot.bottom} r="8" fill="#17211c" stroke="#a7c957" strokeWidth="2" pointerEvents="none" />
+          <path d={`M ${xForDistance(distanceM) - 3} ${height - plot.bottom - 3} l 6 6 m 0 -6 l -6 6`} stroke="white" strokeWidth="1.5" strokeLinecap="round" pointerEvents="none" />
+          <title>Remove boundary at {formatDistanceMeters(distanceM, units)}</title>
+        </g>;
+      })}
       {inspectedPoint && <g pointerEvents="none">
-        <line x1={xForDistance(inspectedPoint.distanceM)} x2={xForDistance(inspectedPoint.distanceM)} y1={plot.top} y2={height - plot.bottom} stroke="white" strokeOpacity="0.6" strokeWidth="2" strokeDasharray="5 6" />
+        <line x1={xForDistance(inspectedPoint.distanceM)} x2={xForDistance(inspectedPoint.distanceM)} y1={plot.top} y2={height - plot.bottom} stroke={boundaryEditing ? "#f2d675" : "white"} strokeOpacity="0.85" strokeWidth="2" strokeDasharray={boundaryEditing ? "6 5" : undefined} />
         <circle cx={xForDistance(inspectedPoint.distanceM)} cy={yForElevation(inspectedPoint.elevationM)} r="8" fill="#f2d675" stroke="#17211c" strokeWidth="3" />
       </g>}
     </svg>
-    {inspectedPoint && <div aria-live="polite" className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded-lg bg-white px-3 py-2 text-xs font-semibold text-[#17211c] shadow-lg" style={{ left: `${Math.max(60, Math.min(profileScrollerWidth - 60, xForDistance(inspectedPoint.distanceM) - profileScrollLeft))}px`, top: `${Math.max(18, Math.min(86, (yForElevation(inspectedPoint.elevationM) / height) * 100))}%` }}>
-      {`${formatDistanceMeters(inspectedPoint.distanceM, units)} · ${formatElevationMeters(inspectedPoint.elevationM, units)}`}
-    </div>}
       </div>
-      {onSelectSection && sections.length > 0 && <p id="full-route-profile-selection-hint" className="mt-2 px-1 text-xs text-white/65">
+      {!boundaryEditing && onSelectSection && sections.length > 0 && <p id="full-route-profile-selection-hint" className="mt-2 px-1 text-xs text-white/65">
         <span className="hidden sm:inline">Click an interval on the elevation profile to explore route sections.</span>
         <span className="sm:hidden">Tap an interval on the elevation profile to explore route sections.</span>
       </p>}

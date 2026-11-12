@@ -3,9 +3,12 @@ import test from "node:test";
 import { analyzeGpxRoute, parseGpxText } from "./gpxAnalysis.ts";
 import { createRouteFingerprint } from "./routeFingerprint.ts";
 import { createAnalysisInputFingerprint } from "./analysisInputFingerprint.ts";
+import { calculateSectionGradientDistribution } from "./climbingProfileModel.ts";
+import { calculateSectionGradeMetrics } from "./sectionGradeMetrics.ts";
 import {
   cacheMapillaryEnrichment,
   cacheOsmEnrichment,
+  cacheRouteAnalysis,
   getCachedOsmEnrichment,
   getOrCreateRouteAnalysis,
   hasReusableMapillaryEvidence,
@@ -221,6 +224,58 @@ test("analysis version change deterministically recomputes stale analysis", asyn
   const upgraded = await getOrCreateRouteAnalysis(store, fingerprint, inputFingerprint, "A", compute, { analysisVersion: ROUTE_ANALYSIS_VERSION + 1 });
   assert.equal(upgraded.cacheHit, false);
   assert.equal(calculations, 2);
+});
+
+test("the section profile fix invalidates cached analysis and the normal pipeline restores grade coverage", async () => {
+  const points = Array.from({ length: 201 }, (_, index) => {
+    const distanceM = index * 100;
+    const distanceKm = distanceM / 1000;
+    return {
+      latitude: 45 + distanceM / 111_000,
+      longitude: 14,
+      elevationM: distanceKm <= 10 ? 100 + distanceKm * 30 : 400 - (distanceKm - 10) * 30,
+      segmentIndex: 0,
+    };
+  });
+  const analysis = analyzeGpxRoute({ points, name: "Synthetic section-cache regression" });
+  const fingerprint = await createRouteFingerprint(points.map(({ latitude, longitude }) => ({ latitude, longitude })));
+  const inputFingerprint = await createAnalysisInputFingerprint(points);
+  const staleAnalysis = {
+    ...analysis,
+    routeSections: analysis.routeSections.map((section) => ({
+      ...section,
+      // Version 6 cached only resampling points inside each boundary, omitting
+      // interpolated endpoint coverage added by the section-profile fix.
+      elevationProfile: analysis.routeDynamics.resampledPoints
+        .filter((point) => point.segmentIndex === section.segmentIndex &&
+          point.distanceM >= section.startPosition.distanceM && point.distanceM <= section.endPosition.distanceM)
+        .map((point) => ({ distanceM: point.distanceM, elevationM: point.smoothedElevationM })),
+    })),
+  };
+  const store = new MemoryStore();
+  await cacheRouteAnalysis(store, fingerprint, staleAnalysis, inputFingerprint, { analysisVersion: ROUTE_ANALYSIS_VERSION - 1, now: 10 });
+
+  let calculations = 0;
+  const result = await getOrCreateRouteAnalysis(store, fingerprint, inputFingerprint, "Učka test", () => {
+    calculations += 1;
+    return analyzeGpxRoute({ points, name: "Fresh Učka test" });
+  });
+
+  assert.equal(result.cacheHit, false, "a prior version's incomplete section profile must not be reused");
+  assert.equal(calculations, 1);
+  assert.ok(result.analysis.routeSections.length > 1);
+  const distributions = [];
+  for (const section of result.analysis.routeSections) {
+    const profile = section.elevationProfile;
+    assert.equal(profile[0].distanceM, section.startPosition.distanceM);
+    assert.equal(profile.at(-1).distanceM, section.endPosition.distanceM);
+    assert.ok(profile.slice(1).every((point, index) => point.distanceM - profile[index].distanceM <= 150));
+    assert.equal(calculateSectionGradeMetrics(section).status, "available");
+    distributions.push(calculateSectionGradientDistribution(section, "uphill"), calculateSectionGradientDistribution(section, "downhill"));
+  }
+  assert.ok(distributions.every((distribution) => distribution.status === "available" ||
+    distribution.reason === "insufficient-uphill-distance" || distribution.reason === "insufficient-downhill-distance"));
+  assert.ok(distributions.some((distribution) => distribution.status === "available"));
 });
 
 test("local persistence failure does not prevent GPX analysis", async () => {

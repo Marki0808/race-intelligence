@@ -5,11 +5,12 @@ import test from "node:test";
 import ts from "typescript";
 import { nearestRouteProfilePoint } from "./routeProfileInspection.ts";
 
-const [explorer, routeAnalysisView, raceSection, sectionBrowser] = await Promise.all([
+const [explorer, routeAnalysisView, raceSection, sectionBrowser, boundaryEditing] = await Promise.all([
   readFile(new URL("./CourseExplorer.tsx", import.meta.url), "utf8"),
   readFile(new URL("./RouteAnalysisView.tsx", import.meta.url), "utf8"),
   readFile(new URL("./CourseSection.tsx", import.meta.url), "utf8"),
   readFile(new URL("./RouteSectionBrowser.tsx", import.meta.url), "utf8"),
+  readFile(new URL("./routeProfileBoundaryEditing.ts", import.meta.url), "utf8"),
 ]);
 const require = createRequire(import.meta.url);
 
@@ -65,7 +66,8 @@ test("profile inspection shows measured point values and distinguishes drags fro
   assert.match(explorer, /nearestRouteProfilePoint\(points, distanceM, elevationM\)/);
   assert.match(explorer, /formatDistanceMeters\(inspectedPoint\.distanceM, units\)/);
   assert.match(explorer, /inspectedPoint\.elevationM/);
-  assert.match(explorer, /Math\.hypot\(event\.clientX - gesture\.startX, event\.clientY - gesture\.startY\) > 8/);
+  assert.match(explorer, /profilePointerMoved\(gesture\.startX, gesture\.startY, event\.clientX, event\.clientY\)/);
+  assert.match(boundaryEditing, /Math\.hypot\(clientX - startX, clientY - startY\) > thresholdPx/);
   assert.match(explorer, /gesture\.longPressed = true/);
   assert.match(explorer, /window\.setTimeout\(\(\) =>/);
   assert.match(explorer, /ignorePointerSelection\(event\)/);
