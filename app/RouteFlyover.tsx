@@ -70,11 +70,13 @@ export default function RouteFlyover({
   points,
   units,
   terrainStatus,
+  fullscreenLayout = false,
 }: {
   map: MapLibreMap;
   points: readonly GpxRoutePointData[];
   units: RouteUnitSystem;
   terrainStatus: TerrainReadiness;
+  fullscreenLayout?: boolean;
 }) {
   const pathResult = useMemo(() => buildFlyoverPath(points), [points]);
   const path = pathResult.available ? pathResult.path : null;
@@ -99,6 +101,9 @@ export default function RouteFlyover({
   const unitsRef = useRef(units);
   const readoutTextRef = useRef<string | null>(null);
   const diagnosticsEnabled = process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_FLYOVER_DIAGNOSTICS === "true";
+  const controlsClassName = fullscreenLayout
+    ? `${flyoverPanelClass} map-fullscreen-controls mb-[max(.5rem,env(safe-area-inset-bottom))]`
+    : flyoverPanelClass;
   useEffect(() => {
     terrainStatusRef.current = terrainStatus;
   }, [terrainStatus]);
@@ -515,7 +520,7 @@ export default function RouteFlyover({
     return <p className="mt-2 rounded-lg border border-black/10 bg-white px-3 py-2 text-xs text-[#46514d]" role="status">{message}</p>;
   }
 
-  if (preparing) return <div className={`${flyoverPanelClass} flex items-center justify-between gap-3`} role="status" aria-live="polite">
+  if (preparing) return <div className={`${controlsClassName} flex items-center justify-between gap-3`} role="status" aria-live="polite">
     <span>Preparing flyover…</span>
     <button type="button" onClick={cancelPreparation} className={controlClass}>Cancel</button>
   </div>;
@@ -524,7 +529,7 @@ export default function RouteFlyover({
   const currentDistanceM = displayedSample?.distanceM ?? playback.distanceM;
   const progress = rangeM > 0 ? ((currentDistanceM - path.startDistanceM) / rangeM) * 1000 : 0;
   const accessibleValues = displayedSample ? formatFlyoverReadout(displayedSample, units) : null;
-  return playback.phase === "idle" ? <div className={flyoverPanelClass} role="group" aria-label="Route flyover controls">
+  return playback.phase === "idle" ? <div className={controlsClassName} role="group" aria-label="Route flyover controls">
       <button
       type="button"
       onClick={() => start()}
@@ -532,7 +537,7 @@ export default function RouteFlyover({
       aria-label="Start 3D route flyover"
     >Start Flyover</button>
   </div> : <>
-    <div className={flyoverPanelClass} role="group" aria-label="Route flyover controls">
+    <div className={controlsClassName} role="group" aria-label="Route flyover controls">
       <div className="flex min-w-0 items-center gap-3">
         <input
           type="range"

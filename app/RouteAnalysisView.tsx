@@ -44,6 +44,7 @@ import { buildRouteNarrativeRouteContextV2 } from "./routeNarrativePhases";
 import { useRouteUnits } from "./RouteUnitPreference";
 import { trackSafeAnalyticsEvent } from "./analyticsClient";
 import { formatDistanceMeters } from "./routeUnits";
+import { findCustomSectionEndingAtBoundary, resolveAutomaticSectionSelection, shouldReturnToAutomaticAfterEditing } from "./liveCustomSectionSummaryModel";
 
 export default function RouteAnalysisView({
   analysis,
@@ -82,6 +83,8 @@ export default function RouteAnalysisView({
   const customPlan = useMemo(() => customPlanState.analysis === analysis ? customPlanState.plan : createCustomSectionPlan(), [customPlanState, analysis]);
   const [profileEditorState, setProfileEditorState] = useState(() => ({ analysis, active: false, status: "" }));
   const [profileBoundaryUndoIds, setProfileBoundaryUndoIds] = useState<string[]>([]);
+  const sectionBrowserRef = useRef<HTMLDivElement | null>(null);
+  const automaticSectionSelectionRef = useRef<{ analysis: RouteAnalysisData; key: string | null }>({ analysis, key: null });
   const profileBoundaryEditing = profileEditorState.analysis === analysis && profileEditorState.active;
   const profileBoundaryStatus = profileEditorState.analysis === analysis ? profileEditorState.status : "";
   const routeDistanceM = analysis.points.at(-1)?.distanceM ?? 0;
@@ -127,6 +130,12 @@ export default function RouteAnalysisView({
       if (added) setProfileBoundaryUndoIds((ids) => [...ids, added.id]);
     }
     updateCustomPlan(nextPlan);
+    const added = nextPlan.boundaries.find((boundary) => !customPlan.boundaries.some((existing) => existing.id === boundary.id));
+    if (added) {
+      const nextSections = buildCustomRouteSections(analysis, nextPlan, units);
+      const completedSection = nextSections.available ? findCustomSectionEndingAtBoundary(nextSections.sections, nextPlan.boundaries, added.id) : null;
+      updateViewState({ segmentationMode: "custom", selectedSectionKey: completedSection ? routeSectionSelectionKey(completedSection) : null, selectedMoment: null });
+    }
   }
 
   function startProfileBoundaryEditing() {
@@ -136,8 +145,19 @@ export default function RouteAnalysisView({
   }
 
   function stopProfileBoundaryEditing() {
+    if (profileBoundaryEditing && showingCustomSections && shouldReturnToAutomaticAfterEditing(customPlan.boundaries)) {
+      switchToAutomaticSections();
+      return;
+    }
     setProfileBoundaryUndoIds([]);
     setProfileEditorState({ analysis, active: false, status: "Profile boundary selection is off." });
+  }
+
+  function switchToAutomaticSections() {
+    setProfileBoundaryUndoIds([]);
+    setProfileEditorState({ analysis, active: false, status: "Profile boundary selection is off." });
+    const previousAutomaticKey = automaticSectionSelectionRef.current.analysis === analysis ? automaticSectionSelectionRef.current.key : null;
+    updateViewState({ ...resolveAutomaticSectionSelection(displayedSections, previousAutomaticKey), selectedMoment: null });
   }
 
   function addProfileBoundary(distanceM: number) {
@@ -145,7 +165,12 @@ export default function RouteAnalysisView({
     if (result.status === "added") {
       updateCustomPlan(result.plan);
       const added = result.plan.boundaries.find((boundary) => !customPlan.boundaries.some((existing) => existing.id === boundary.id));
-      if (added) setProfileBoundaryUndoIds((ids) => [...ids, added.id]);
+      if (added) {
+        setProfileBoundaryUndoIds((ids) => [...ids, added.id]);
+        const nextSections = buildCustomRouteSections(analysis, result.plan, units);
+        const completedSection = nextSections.available ? findCustomSectionEndingAtBoundary(nextSections.sections, result.plan.boundaries, added.id) : null;
+        updateViewState({ segmentationMode: "custom", selectedSectionKey: completedSection ? routeSectionSelectionKey(completedSection) : null, selectedMoment: null });
+      }
       setProfileEditorState({ analysis, active: true, status: `Boundary added at ${formatDistanceMeters(result.distanceKm * 1000, units)}. ${result.plan.boundaries.length} custom ${result.plan.boundaries.length === 1 ? "boundary" : "boundaries"}.` });
       return;
     }
@@ -167,6 +192,13 @@ export default function RouteAnalysisView({
     setProfileEditorState({ analysis, active: true, status: `Boundary at ${formatDistanceMeters(Number(result.removed.distanceKm) * 1000, units)} removed.` });
   }
 
+  function editCustomBoundaryDistance(plan: CustomSectionPlan, boundaryId: string) {
+    updateCustomPlan(plan);
+    const updatedSections = buildCustomRouteSections(analysis, plan, units);
+    const precedingSection = updatedSections.available ? findCustomSectionEndingAtBoundary(updatedSections.sections, plan.boundaries, boundaryId) : null;
+    updateViewState({ segmentationMode: "custom", selectedSectionKey: precedingSection ? routeSectionSelectionKey(precedingSection) : null, selectedMoment: null });
+  }
+
   function undoProfileBoundary() {
     const result = undoLastProfileBoundary(customPlan, profileBoundaryUndoIds);
     setProfileBoundaryUndoIds(result.history);
@@ -180,7 +212,21 @@ export default function RouteAnalysisView({
   }
 
   function selectSection(section: RouteSection | null) {
-    updateViewState({ selectedSectionKey: section ? routeSectionSelectionKey(section) : null, ...(section ? { selectedMoment: null } : {}) });
+    const selectionKey = section ? routeSectionSelectionKey(section) : null;
+    if (!showingCustomSections && !showingAidStationSections) automaticSectionSelectionRef.current = { analysis, key: selectionKey };
+    updateViewState({ selectedSectionKey: selectionKey, ...(section ? { selectedMoment: null } : {}) });
+  }
+
+  function viewFullSectionAnalysis(section: RouteSection) {
+    stopProfileBoundaryEditing();
+    const selectionKey = routeSectionSelectionKey(section);
+    if (!showingCustomSections && !showingAidStationSections) automaticSectionSelectionRef.current = { analysis, key: selectionKey };
+    updateViewState({ segmentationMode: showingCustomSections ? "custom" : "terrain", selectedSectionKey: selectionKey, selectedMoment: null });
+    requestAnimationFrame(() => {
+      const items = sectionBrowserRef.current?.querySelectorAll<HTMLElement>("[data-route-section-selection-key]");
+      const target = items ? Array.from(items).find((item) => item.dataset.routeSectionSelectionKey === selectionKey) : null;
+      (target ?? sectionBrowserRef.current)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
   }
 
   async function loadEvidence() {
@@ -319,6 +365,8 @@ export default function RouteAnalysisView({
             onAddProfileBoundary={addProfileBoundary}
             onRemoveProfileBoundary={removeProfileBoundary}
             onUndoProfileBoundary={undoProfileBoundary}
+            onViewFullSectionAnalysis={viewFullSectionAnalysis}
+            showLiveSectionSummary
             mapMode={mapMode}
             onMapModeChange={(nextMapMode) => updateViewState({ mapMode: nextMapMode })}
           />
@@ -333,18 +381,25 @@ export default function RouteAnalysisView({
           <RouteSectionBrowserHeading controls={(
             <>
               <div className="mt-4 inline-flex flex-wrap rounded-full border border-black/10 bg-[#f4f2ed] p-1" role="group" aria-label="Route section view">
-                <button type="button" aria-pressed={segmentationMode === "terrain" || (segmentationMode === "aid-station" && !showingAidStationSections)} onClick={() => { trackSafeAnalyticsEvent({ type: "sections_mode_selected", mode: "terrain" }); stopProfileBoundaryEditing(); updateViewState({ segmentationMode: "terrain", selectedSectionKey: null }); }} className={`min-h-10 rounded-full px-4 text-sm font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d] ${segmentationMode === "terrain" || (segmentationMode === "aid-station" && !showingAidStationSections) ? "bg-[#17211c] text-white" : "text-[var(--analysis-muted)] hover:bg-white"}`}>Terrain Sections</button>
+                <button type="button" aria-pressed={segmentationMode === "terrain" || (segmentationMode === "aid-station" && !showingAidStationSections)} onClick={() => { trackSafeAnalyticsEvent({ type: "sections_mode_selected", mode: "terrain" }); switchToAutomaticSections(); }} className={`min-h-10 rounded-full px-4 text-sm font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d] ${segmentationMode === "terrain" || (segmentationMode === "aid-station" && !showingAidStationSections) ? "bg-[#17211c] text-white" : "text-[var(--analysis-muted)] hover:bg-white"}`}>Terrain Sections</button>
                 <button type="button" aria-pressed={showingCustomSections} onClick={() => { trackSafeAnalyticsEvent({ type: "sections_mode_selected", mode: "custom" }); stopProfileBoundaryEditing(); updateViewState({ segmentationMode: "custom", selectedSectionKey: null }); }} className={`min-h-10 rounded-full px-4 text-sm font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d] ${showingCustomSections ? "bg-[#17211c] text-white" : "text-[var(--analysis-muted)] hover:bg-white"}`}>Custom Sections</button>
                 {aidStationSections.available && <button type="button" aria-label={aidStationSections.positionMode === "official-kilometer-approximate" ? `Aid Station Sections, boundaries use approximate official source positions displayed in ${units === "metric" ? "kilometers" : "miles"}` : "Aid Station Sections"} aria-pressed={showingAidStationSections} onClick={() => { stopProfileBoundaryEditing(); updateViewState({ segmentationMode: "aid-station", selectedSectionKey: null }); }} className={`min-h-10 rounded-full px-4 text-sm font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d] ${showingAidStationSections ? "bg-[#17211c] text-white" : "text-[var(--analysis-muted)] hover:bg-white"}`}>
                   {aidStationSections.positionMode === "official-kilometer-approximate" ? `Aid Station Sections · approx. ${units === "metric" ? "km" : "mi"}` : "Aid Station Sections"}
                 </button>}
               </div>
-              {showingCustomSections && <CustomSectionControls plan={customPlan} routeDistanceM={routeDistanceM} errors={customSections.available ? [] : customSections.errors} onChange={updateCustomPlan} onAdd={addCustomBoundary} />}
+              {showingCustomSections && <>
+                <CustomSectionControls plan={customPlan} routeDistanceM={routeDistanceM} errors={customSections.available ? [] : customSections.errors} onChange={updateCustomPlan} onBoundaryDistanceChange={editCustomBoundaryDistance} onAdd={addCustomBoundary} />
+                <div className="mt-3 flex justify-end">
+                  <button type="button" onClick={() => { trackSafeAnalyticsEvent({ type: "sections_mode_selected", mode: "terrain" }); switchToAutomaticSections(); }} className="min-h-11 rounded-full bg-[#17211c] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#334238] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d]">Switch to automatic sections</button>
+                </div>
+              </>}
             </>
           )} action={TERRAIN_INTELLIGENCE_V1_ENABLED ? (
             <TerrainEvidenceAction state={terrainEvidenceState} onCheck={() => void loadEvidence()} />
           ) : undefined} />
-          <RouteSectionBrowser sections={activeSections} routePoints={analysis.points} gradientIntelligence={activeGradientIntelligence} narrativeContext={routeNarrativeContext} selectedSectionKey={selectedSectionKey} onSelectSection={selectSection} imageEvidence={showingAidStationSections || showingCustomSections ? new Map() : imageEvidence} onSelectImage={(image) => updateViewState({ selectedImage: image })} terrainEvidenceState={terrainEvidenceState} sectionKind={showingAidStationSections ? "Aid Station Section" : showingCustomSections ? "Custom Section" : "Route Section"} sectionLabels={showingAidStationSections ? aidStationSections.labels : showingCustomSections && customSections.available ? customSections.labels : undefined} emptyMessage={showingCustomSections && !customSections.available ? "Enter valid custom boundaries to display sections." : undefined} mapMode={mapMode} onMapModeChange={(nextMapMode) => updateViewState({ mapMode: nextMapMode })} />
+          <div ref={sectionBrowserRef}>
+            <RouteSectionBrowser sections={activeSections} routePoints={analysis.points} gradientIntelligence={activeGradientIntelligence} narrativeContext={routeNarrativeContext} selectedSectionKey={selectedSectionKey} onSelectSection={selectSection} imageEvidence={showingAidStationSections || showingCustomSections ? new Map() : imageEvidence} onSelectImage={(image) => updateViewState({ selectedImage: image })} terrainEvidenceState={terrainEvidenceState} sectionKind={showingAidStationSections ? "Aid Station Section" : showingCustomSections ? "Custom Section" : "Route Section"} sectionLabels={showingAidStationSections ? aidStationSections.labels : showingCustomSections && customSections.available ? customSections.labels : undefined} emptyMessage={showingCustomSections && !customSections.available ? "Enter valid custom boundaries to display sections." : undefined} mapMode={mapMode} onMapModeChange={(nextMapMode) => updateViewState({ mapMode: nextMapMode })} />
+          </div>
           </div>
         </div>
       </section>

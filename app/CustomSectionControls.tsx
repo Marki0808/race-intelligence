@@ -11,12 +11,14 @@ export default function CustomSectionControls({
   routeDistanceM,
   errors,
   onChange,
+  onBoundaryDistanceChange,
   onAdd,
 }: {
   plan: CustomSectionPlan;
   routeDistanceM: number;
   errors: readonly string[];
   onChange: (plan: CustomSectionPlan) => void;
+  onBoundaryDistanceChange?: (plan: CustomSectionPlan, boundaryId: string) => void;
   onAdd: () => void;
 }) {
   const { units } = useRouteUnits();
@@ -34,10 +36,12 @@ export default function CustomSectionControls({
   const changeDistanceInput = (boundary: CustomSectionBoundary, value: string) => {
     const canonicalValue = distanceInputToKm(value, units);
     setDistanceDrafts((current) => ({ ...current, [boundary.id]: { units, value, canonicalValue } }));
-    onChange(sortCustomSectionBoundaries({
+    const nextPlan = sortCustomSectionBoundaries({
       ...plan,
       boundaries: plan.boundaries.map((item) => item.id === boundary.id ? { ...item, distanceKm: canonicalValue } : item),
-    }));
+    });
+    if (onBoundaryDistanceChange) onBoundaryDistanceChange(nextPlan, boundary.id);
+    else onChange(nextPlan);
   };
   const removeBoundary = (id: string) => {
     setDistanceDrafts((current) => { const next = { ...current }; delete next[id]; return next; });

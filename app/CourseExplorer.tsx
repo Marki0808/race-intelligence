@@ -19,6 +19,8 @@ import { RouteUnitToggle, useRouteUnits } from "./RouteUnitPreference";
 import { distanceUnit, elevationUnit, formatDistanceMeters, formatElevationMeters, formatElevationNumber } from "./routeUnits";
 import dynamic from "next/dynamic";
 import { RouteMapModeSelector, type RouteMapMode } from "./RouteMapMode";
+import MapFullscreenRegion, { MAP_CONTROL_BUTTON_CLASS } from "./MapFullscreenRegion";
+import LiveSectionSummary from "./LiveSectionSummary";
 
 const MapLibreRouteMap = dynamic(() => import("./MapLibreRouteMap"), {
   ssr: false,
@@ -56,6 +58,8 @@ export default function CourseExplorer({
   onAddProfileBoundary,
   onRemoveProfileBoundary,
   onUndoProfileBoundary,
+  onViewFullSectionAnalysis,
+  showLiveSectionSummary = false,
   mapMode = "3d",
   onMapModeChange = () => undefined,
 }: {
@@ -89,6 +93,8 @@ export default function CourseExplorer({
   onAddProfileBoundary?: (distanceM: number) => void;
   onRemoveProfileBoundary?: (boundaryId: string) => void;
   onUndoProfileBoundary?: () => void;
+  onViewFullSectionAnalysis?: (section: RouteSection) => void;
+  showLiveSectionSummary?: boolean;
   mapMode?: RouteMapMode;
   onMapModeChange?: (mode: RouteMapMode) => void;
 }) {
@@ -309,6 +315,8 @@ export default function CourseExplorer({
               boundaryEditing={profileBoundaryEditing}
               onAddBoundaryAtDistance={onAddProfileBoundary}
               onRemoveCustomBoundary={onRemoveProfileBoundary}
+              onViewFullSectionAnalysis={onViewFullSectionAnalysis}
+              showLiveSectionSummary={showLiveSectionSummary}
             />
           ) : (
             <div className="flex min-h-48 flex-col items-center justify-center gap-4 px-3 text-center text-sm text-white/65" aria-live={loading ? "polite" : undefined}>
@@ -402,22 +410,29 @@ export default function CourseExplorer({
             label={`${routeName} full-route map`}
             mapBadgeText={!loading && !error && metrics ? `${routeName} · GPX-derived` : undefined}
             frameClassName={`relative w-full min-w-0 overflow-hidden bg-[#dfe3d8] ${mapFrameHeightClass}`}
-          /> : <div className={`relative w-full min-w-0 overflow-hidden bg-[#dfe3d8] ${mapFrameHeightClass}`}>
+          /> : <MapFullscreenRegion
+            label={`${routeName} full-route map`}
+            className={`relative w-full min-w-0 ${mapFrameHeightClass}`}
+            onResize={() => leafletMapRef.current?.invalidateSize({ pan: false })}
+          >{(fullscreen, fullscreenButton) => <div className={`relative w-full min-w-0 overflow-hidden bg-[#dfe3d8] ${fullscreen ? "map-fullscreen-map-viewport h-full" : "h-full"}`}>
             <div ref={mapRef} className="absolute inset-0" />
-            {mapMode === "2d" && <button
+            {mapMode === "2d" && <div className="absolute left-3 top-3 z-[600] flex max-w-[calc(100%-3rem)] flex-wrap gap-2">
+            <button
             type="button"
             aria-pressed={mapWheelZoomActive}
             aria-label={mapWheelZoomActive ? "Disable map scroll-wheel zoom" : "Enable map scroll-wheel zoom"}
             onClick={() => mapWheelZoomActive ? mapWheelZoomRef.current?.deactivate() : mapWheelZoomRef.current?.activate()}
             disabled={!mapReady}
-            className="absolute right-3 top-3 z-[600] max-w-[calc(100%-4rem)] rounded-full border border-black/10 bg-white/90 px-3 py-2 text-xs font-medium text-[#17211c] shadow-sm backdrop-blur transition hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#315b43] disabled:opacity-60"
-            >{mapWheelZoomActive ? "Scroll to zoom · Esc to exit" : "Enable wheel zoom"}</button>}
+            className={MAP_CONTROL_BUTTON_CLASS}
+            >{mapWheelZoomActive ? "Scroll to zoom · Esc to exit" : "Enable wheel zoom"}</button>
+            {fullscreenButton}
+            </div>}
             {!loading && !error && metrics && (
               <div className="pointer-events-none absolute bottom-4 left-4 z-[500] max-w-[calc(100%-2rem)] truncate rounded-full bg-white/90 px-4 py-2 text-xs font-semibold text-black shadow-sm backdrop-blur sm:bottom-5 sm:left-5">
               {routeName} · GPX-derived
               </div>
             )}
-          </div>}
+          </div>}</MapFullscreenRegion>}
           {(loading || error) && <div className={`absolute inset-x-0 top-0 z-20 flex items-center justify-center bg-[#dfe3d8]/90 p-6 ${mapFrameHeightClass}`}><div className="max-w-sm text-center text-sm leading-6 text-[var(--analysis-muted)]">{loading ? "Loading course map…" : error}</div></div>}
         </div>
       </div>
@@ -445,6 +460,8 @@ export function ElevationProfile({
   boundaryEditing = false,
   onAddBoundaryAtDistance,
   onRemoveCustomBoundary,
+  onViewFullSectionAnalysis,
+  showLiveSectionSummary = false,
   momentMarkers = [],
   selectedMoment = null,
   onSelectMoment,
@@ -464,6 +481,8 @@ export function ElevationProfile({
   boundaryEditing?: boolean;
   onAddBoundaryAtDistance?: (distanceM: number) => void;
   onRemoveCustomBoundary?: (boundaryId: string) => void;
+  onViewFullSectionAnalysis?: (section: RouteSection) => void;
+  showLiveSectionSummary?: boolean;
   momentMarkers?: readonly KeyMomentProfileMarkerInput[];
   selectedMoment?: string | null;
   onSelectMoment?: (momentId: string) => void;
@@ -731,6 +750,13 @@ export function ElevationProfile({
       </g>}
     </svg>
       </div>
+      {showLiveSectionSummary && onSelectSection && onViewFullSectionAnalysis && ((sectionKind === "Custom Section" && showCustomBoundaries && customBoundaries.length > 0) || (sectionKind === "Route Section" && selectedSection !== null)) && <LiveSectionSummary
+        sections={sections}
+        selectedSection={selectedSection}
+        units={units}
+        onSelectSection={onSelectSection}
+        onViewFullSectionAnalysis={onViewFullSectionAnalysis}
+      />}
       {!boundaryEditing && onSelectSection && sections.length > 0 && <p id="full-route-profile-selection-hint" className="mt-2 px-1 text-xs text-white/65">
         <span className="hidden sm:inline">Click an interval on the elevation profile to explore route sections.</span>
         <span className="sm:hidden">Tap an interval on the elevation profile to explore route sections.</span>

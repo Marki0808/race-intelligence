@@ -12,6 +12,7 @@ import { ROUTE_MAP_STYLES } from "./routeMapStyles";
 import { attachMapWheelZoom } from "./mapWheelZoom";
 import dynamic from "next/dynamic";
 import { RouteMapModeSelector, type RouteMapMode } from "./RouteMapMode";
+import MapFullscreenRegion, { MAP_CONTROL_BUTTON_CLASS } from "./MapFullscreenRegion";
 
 const MapLibreRouteMap = dynamic(() => import("./MapLibreRouteMap"), { ssr: false });
 
@@ -113,17 +114,24 @@ export default function TerrainSectionMap({
             frameClassName="relative h-56 w-full min-w-0 overflow-hidden rounded-xl border border-black/10 bg-[#e7e8e2] sm:h-64"
           />
         ) : (
-          <div className="relative h-56 w-full min-w-0 overflow-hidden rounded-xl border border-black/10 bg-[#e7e8e2] sm:h-64">
+          <MapFullscreenRegion
+            label={`Route section map ${formatRouteDistanceKm(startDistanceKm, units, 2)} to ${formatRouteDistanceKm(endDistanceKm, units, 2)}`}
+            className="relative h-56 w-full min-w-0 sm:h-64"
+            onResize={() => mapRef.current?.invalidateSize({ pan: false })}
+          >{(fullscreen, fullscreenButton) => <div className={`relative w-full min-w-0 overflow-hidden rounded-xl border border-black/10 bg-[#e7e8e2] ${fullscreen ? "map-fullscreen-map-viewport h-full" : "h-full"}`}>
             <div ref={containerRef} className="absolute inset-0" role="region" aria-label={`Full route map with Route Section ${formatRouteDistanceKm(startDistanceKm, units, 2)} to ${formatRouteDistanceKm(endDistanceKm, units, 2)} highlighted in dark line. OpenStreetMap basemap.`} />
-            {mapMode === "2d" && <button
+            {mapMode === "2d" && <div className="absolute left-3 top-3 z-[600] flex max-w-[calc(100%-3rem)] flex-wrap gap-2">
+            <button
               type="button"
               aria-pressed={wheelZoomActive}
               aria-label={wheelZoomActive ? "Disable map scroll-wheel zoom" : "Enable map scroll-wheel zoom"}
               onClick={() => wheelZoomActive ? wheelZoomRef.current?.deactivate() : wheelZoomRef.current?.activate()}
               disabled={!mapReady}
-              className="absolute right-3 top-3 z-[600] max-w-[calc(100%-4rem)] rounded-full border border-black/10 bg-white/90 px-3 py-2 text-xs font-medium text-[#17211c] shadow-sm backdrop-blur transition hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#315b43] disabled:opacity-60"
-            >{wheelZoomActive ? "Scroll to zoom · Esc to exit" : "Enable wheel zoom"}</button>}
-          </div>
+              className={MAP_CONTROL_BUTTON_CLASS}
+            >{wheelZoomActive ? "Scroll to zoom · Esc to exit" : "Enable wheel zoom"}</button>
+            {fullscreenButton}
+            </div>}
+          </div>}</MapFullscreenRegion>
         )}
     </div>
     </div>

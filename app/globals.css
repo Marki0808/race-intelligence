@@ -75,6 +75,39 @@ html {
   padding-inline: clamp(.65rem, 1.2vw, 1rem);
 }
 
+.map-fullscreen-region {
+  min-width: 0;
+}
+
+.map-fullscreen-region--active,
+.map-fullscreen-region:fullscreen {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 10000 !important;
+  display: flex;
+  width: 100vw !important;
+  height: 100vh !important;
+  height: 100dvh !important;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  background: #17211c;
+}
+
+.map-fullscreen-region--active .map-fullscreen-map-viewport {
+  min-height: 0 !important;
+  height: auto !important;
+  flex: 1 1 0%;
+}
+
+.map-fullscreen-region--active .map-fullscreen-controls {
+  max-height: min(42dvh, 20rem);
+  flex: 0 0 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 @media (max-width: 640px) {
   .topo-hero {
     background-image: linear-gradient(180deg, rgba(245, 246, 239, .92) 0%, rgba(239, 242, 233, .86) 34%, rgba(239, 242, 233, .58) 58%, rgba(239, 242, 233, .2) 100%), url("/hero-trail-runner.webp");

@@ -9,6 +9,7 @@ import type { KeyMomentMapMarker } from "./routeKeyMomentMapMarkers";
 import { layoutKeyMomentMarkerOffsets } from "./routeKeyMomentMarkerLayout";
 import { useRouteUnits } from "./RouteUnitPreference";
 import RouteFlyover from "./RouteFlyover";
+import MapFullscreenRegion, { MAP_CONTROL_BUTTON_CLASS } from "./MapFullscreenRegion";
 import { buildRouteMapFeatures, buildSelectedSectionEndpointFeatures, getRouteMapBounds, getRouteMapLineStyles } from "./routeMapPresentation";
 import { attachMapLibreWheelZoom } from "./mapLibreWheelZoom";
 import { expireTerrainLoadingHint, resolveTerrainReadiness, TERRAIN_LOADING_HINT_DELAY_MS, type TerrainReadiness } from "./mapLibreTerrainStatus";
@@ -426,8 +427,9 @@ export default function MapLibreRouteMap({
 
   // Keep the fixed-height map viewport and its controls in normal document
   // flow so the Flyover panel below never covers the rendered terrain.
-  return <>
-    <div className={`relative min-h-0 min-w-0 overflow-hidden ${frameClassName}`}>
+  return <MapFullscreenRegion label={label} onResize={() => mapRef.current?.resize()}>
+    {(fullscreen, fullscreenButton) => <>
+    <div className={`relative min-h-0 min-w-0 overflow-hidden ${fullscreen ? "map-fullscreen-map-viewport w-full bg-[#dfe3d8]" : frameClassName}`}>
     <div ref={containerRef} className="absolute inset-0" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", minWidth: 0, minHeight: 0 }} role="region" aria-label={`${label}. Use map controls, mouse drag, wheel or touch gestures to navigate.`} />
     {basemapStatus === "loading" && <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#f5f5ef]/80 text-sm text-[#46514d]" role="status">Loading 3D terrain map…</div>}
     {(basemapStatus === "unavailable" || routeStatus === "unavailable") && <div className="absolute inset-x-3 bottom-3 z-20 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-red-900/15 bg-white/95 p-3 text-sm text-[#17211c] shadow" role="alert">
@@ -440,20 +442,23 @@ export default function MapLibreRouteMap({
     {styleReady && basemapStatus === "degraded" && <div className="absolute inset-x-3 bottom-3 z-20 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white/95 px-3 py-2 text-xs text-[#46514d] shadow" role="status"><span>Some basemap tiles are unavailable; the GPX route may remain visible.</span>{allow2dFallback && <button type="button" onClick={onFallbackTo2d} className="min-h-8 rounded-full bg-[#17211c] px-3 font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71805d]">Switch to 2D</button>}</div>}
     <div className="sr-only" aria-live="polite">{basemapStatus === "degraded" ? "The basemap has limited tile availability." : ""}{routeStatus === "ready" ? "GPX route displayed." : routeStatus === "unavailable" ? "GPX route could not be displayed." : ""}</div>
     <div className="absolute bottom-1 right-1 z-10 rounded bg-white/75 px-2 py-1 text-[10px] text-[#17211c]">© OpenFreeMap · © OpenStreetMap · © Mapterhorn</div>
-    <div className="absolute left-2 top-2 z-10 flex flex-wrap gap-2">
-      <button type="button" onClick={() => fitRoute(false)} disabled={!styleReady || !bounds} className="min-h-9 rounded-full border border-black/10 bg-white/90 px-3 text-xs font-semibold text-[#17211c] shadow-sm hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#315b43] disabled:opacity-50">Fit route</button>
-      <button type="button" onClick={() => fitRoute(true)} disabled={!styleReady || !bounds} className="min-h-9 rounded-full border border-black/10 bg-white/90 px-3 text-xs font-semibold text-[#17211c] shadow-sm hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#315b43] disabled:opacity-50">Reset 3D view</button>
+    <div className="absolute left-2 top-2 z-10 flex max-w-[calc(100%-3rem)] flex-wrap gap-2">
+      <button type="button" onClick={() => fitRoute(false)} disabled={!styleReady || !bounds} className={MAP_CONTROL_BUTTON_CLASS}>Fit route</button>
+      <button type="button" onClick={() => fitRoute(true)} disabled={!styleReady || !bounds} className={MAP_CONTROL_BUTTON_CLASS}>Reset 3D view</button>
+      <button type="button" aria-pressed={wheelZoomActive} aria-label={wheelZoomActive ? "Disable map scroll-wheel zoom" : "Enable map scroll-wheel zoom"} onClick={() => wheelZoomActive ? wheelZoomRef.current?.deactivate() : wheelZoomRef.current?.activate()} disabled={!styleReady} className={MAP_CONTROL_BUTTON_CLASS}>{wheelZoomActive ? "Scroll to zoom · Esc to exit" : "Enable wheel zoom"}</button>
+      {fullscreenButton}
     </div>
     {mapBadgeText && <div className="pointer-events-none absolute bottom-4 left-4 z-10 max-w-[calc(100%-2rem)] truncate rounded-full bg-white/90 px-4 py-2 text-xs font-semibold text-black shadow-sm backdrop-blur sm:bottom-5 sm:left-5">{mapBadgeText}</div>}
-    <button type="button" aria-pressed={wheelZoomActive} aria-label={wheelZoomActive ? "Disable map scroll-wheel zoom" : "Enable map scroll-wheel zoom"} onClick={() => wheelZoomActive ? wheelZoomRef.current?.deactivate() : wheelZoomRef.current?.activate()} disabled={!styleReady} className="absolute left-2 top-14 z-10 min-h-9 rounded-full border border-black/10 bg-white/90 px-3 text-xs font-semibold text-[#17211c] shadow-sm hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#315b43] disabled:opacity-50">{wheelZoomActive ? "Scroll to zoom · Esc to exit" : "Enable wheel zoom"}</button>
     </div>
     {enableFlyover && styleReady && mapInstance && <RouteFlyover
       map={mapInstance}
       points={showSelectedSectionMarkers ? selectedPoints : points}
       units={units}
       terrainStatus={terrainStatus}
+      fullscreenLayout={fullscreen}
     />}
-  </>;
+    </>}
+  </MapFullscreenRegion>;
 }
 
 function keyMomentFeatureCollection(markers: readonly KeyMomentMapMarker[], selectedId: string | null, displayCoordinates?: ReadonlyMap<string, [number, number]>) {

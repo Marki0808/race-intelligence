@@ -103,7 +103,7 @@ test("Route Analysis lazily selects 3D by default and keeps Leaflet limited to 2
   assert.match(mapLibre, /setWorkerUrl\(MAPLIBRE_WORKER_URL\)/);
   assert.match(mapLibre, /scrollZoom:\s*false/);
   assert.match(mapLibre, /new ResizeObserver/);
-  assert.match(mapLibre, /className=\{`relative min-h-0 min-w-0 overflow-hidden \$\{frameClassName\}`\}/, "MapLibre owns a bounded map frame");
+  assert.match(mapLibre, /fullscreen \? "map-fullscreen-map-viewport w-full bg-\[#dfe3d8\]" : frameClassName/, "MapLibre keeps its bounded frame normally and expands the same instance in fullscreen");
   assert.match(fullMap, /mapExpanded \? "h-\[26rem\] sm:h-\[32rem\] lg:h-\[38rem\]" : "h-56 sm:h-\[17\.5rem\] lg:h-\[17\.5rem\]"/);
   assert.match(fullMap, /min-h-56 sm:min-h-\[17\.5rem\] lg:min-h-\[17\.5rem\]/, "full map wrapper grows to accommodate controls below the map");
   assert.match(sectionMap, /frameClassName="relative h-56 w-full min-w-0 overflow-hidden rounded-xl border border-black\/10 bg-\[#e7e8e2\] sm:h-64"/);

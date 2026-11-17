@@ -15,7 +15,7 @@ import type { GpxRoutePointData } from "./gpxAnalysis";
 import { TERRAIN_INTELLIGENCE_V1_ENABLED } from "./featureFlags";
 import { useRouteUnits } from "./RouteUnitPreference";
 import { formatDistanceMeters, formatRouteDistanceKm, formatElevationMeters, type RouteUnitSystem } from "./routeUnits";
-import { calculateSectionGradeMetrics } from "./sectionGradeMetrics";
+import { calculateSectionGradeMetrics, formatSectionGradePercent } from "./sectionGradeMetrics";
 import SectionGradientDistribution from "./SectionGradientDistribution";
 import type { RouteMapMode } from "./RouteMapMode";
 
@@ -68,7 +68,7 @@ export default function RouteSectionBrowser({
               const isSelected = routeSectionSelectionKey(section) === selectedSectionKey;
               const boundaryLabels = sectionLabels?.get(routeSectionSelectionKey(section));
               return (
-                <li key={routeSectionSelectionKey(section)}>
+                <li key={routeSectionSelectionKey(section)} data-route-section-selection-key={routeSectionSelectionKey(section)}>
                   <button
                     type="button"
                     aria-pressed={isSelected}
@@ -220,11 +220,11 @@ function SectionDetail({
             <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-4 sm:grid-cols-2">
               <SectionMetric
                 label="Average uphill grade"
-                value={gradeMetrics.averageUphillGradePct === null ? "No meaningful ascent" : formatSignedGrade(gradeMetrics.averageUphillGradePct)}
+                value={gradeMetrics.averageUphillGradePct === null ? "No meaningful ascent" : formatSectionGradePercent(gradeMetrics.averageUphillGradePct)}
               />
               <SectionMetric
                 label="Average downhill grade"
-                value={gradeMetrics.averageDownhillGradePct === null ? "No meaningful descent" : formatSignedGrade(-gradeMetrics.averageDownhillGradePct)}
+                value={gradeMetrics.averageDownhillGradePct === null ? "No meaningful descent" : formatSectionGradePercent(-gradeMetrics.averageDownhillGradePct)}
               />
             </div>
             <p className="mt-4 border-t border-black/10 pt-3 text-xs font-semibold uppercase tracking-[0.14em] text-[var(--analysis-muted)]">Steepest sustained grades</p>
@@ -316,14 +316,9 @@ function SustainedGradeMetric({ label, window, windowM, direction, sectionLength
     : `No meaningful ${direction} window`;
   return <div>
     <p className="text-xs font-semibold text-black/75">{label}</p>
-    {window ? <p className="mt-1 text-sm font-semibold tabular-nums text-black/70">{formatSignedGrade(window.gradePct)} <span className="block text-xs font-normal text-[var(--analysis-muted)]">{formatDistanceMeters(window.startDistanceM, units)}–{formatDistanceMeters(window.endDistanceM, units)}</span></p>
+    {window ? <p className="mt-1 text-sm font-semibold tabular-nums text-black/70">{formatSectionGradePercent(window.gradePct)} <span className="block text-xs font-normal text-[var(--analysis-muted)]">{formatDistanceMeters(window.startDistanceM, units)}–{formatDistanceMeters(window.endDistanceM, units)}</span></p>
       : <p className="mt-1 text-xs text-[var(--analysis-muted)]">{unavailable}</p>}
   </div>;
-}
-
-function formatSignedGrade(gradePct: number): string {
-  const rounded = Math.abs(gradePct) < 0.05 ? 0 : gradePct;
-  return `${rounded > 0 ? "+" : rounded < 0 ? "−" : ""}${Math.abs(rounded).toFixed(1)}%`;
 }
 
 function SectionSubheading({ children }: { children: ReactNode }) {

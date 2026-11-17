@@ -4,6 +4,11 @@ import { DEFAULT_ROUTE_DYNAMICS_CONFIG } from "./routeDynamics.ts";
 export const SECTION_GRADE_WINDOWS_M = [100, 500] as const;
 export const SECTION_GRADE_MINIMUM_VERTICAL_CHANGE_M = DEFAULT_ROUTE_DYNAMICS_CONFIG.meaningfulElevationStepM;
 
+export function formatSectionGradePercent(gradePct: number): string {
+  const rounded = Math.abs(gradePct) < 0.05 ? 0 : gradePct;
+  return `${rounded > 0 ? "+" : rounded < 0 ? "−" : ""}${Math.abs(rounded).toFixed(1)}%`;
+}
+
 export type SectionGradeWindow = { gradePct: number; startDistanceM: number; endDistanceM: number };
 export type SectionGradeMetrics = {
   status: "available";
